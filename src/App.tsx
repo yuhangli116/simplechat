@@ -4,6 +4,8 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/useAuthStore';
 import Login from '@/pages/auth/Login';
 import Register from '@/pages/auth/Register';
+import ForgotPassword from '@/pages/auth/ForgotPassword';
+import ResetPassword from '@/pages/auth/ResetPassword';
 import WorkspaceLayout from '@/layouts/WorkspaceLayout';
 import StoryEditor from '@/pages/workspace/StoryEditor';
 import Outline from '@/pages/workspace/Outline';
@@ -61,6 +63,8 @@ function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         
         {/* Redirect root to workspace */}
         <Route path="/" element={<Navigate to="/workspace/p/book-1/story/1" replace />} />
