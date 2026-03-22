@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, PenTool, Eye, EyeOff, CheckCircle, XCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { getRandomName, getRandomAvatar } from '@/utils/randomProfile';
 
 export default function Register() {
   const [email, setEmail] = useState('');
@@ -47,9 +48,19 @@ export default function Register() {
 
     setLoading(true);
     try {
+      const randomName = getRandomName();
+      // Use email + timestamp as seed for unique avatar
+      const randomAvatar = getRandomAvatar(`${email}-${Date.now()}`);
+      
       const { error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          data: {
+            name: randomName,
+            avatar_url: randomAvatar,
+          }
+        }
       });
       if (error) throw error;
       alert('注册成功！请检查邮箱完成验证');

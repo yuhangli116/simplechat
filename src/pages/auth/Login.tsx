@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Mail, Lock, ArrowRight, PenTool, Eye, EyeOff } from 'lucide-react';
+import { Mail, Lock, ArrowRight, PenTool, Eye, EyeOff, User } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/store/useAuthStore';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -10,8 +11,32 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [emailError, setEmailError] = useState('');
   const navigate = useNavigate();
+  const { setUser, setProfile, setDiamondBalance } = useAuthStore();
   const canSubmit = email.trim().length > 0 && password.trim().length > 0;
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const handleGuestLogin = () => {
+    // Manually set guest state
+    const guestUser: any = {
+        id: 'guest-' + Date.now(),
+        email: 'guest@simplechat.ai',
+        aud: 'authenticated',
+        role: 'authenticated',
+    };
+    
+    setUser(guestUser);
+    setProfile({
+        id: guestUser.id,
+        username: '访客体验',
+        avatar_url: '',
+        membership_type: 'free',
+        diamond_balance: 9999
+    });
+    setDiamondBalance(9999);
+    
+    alert('已进入访客体验模式');
+    navigate('/workspace');
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,15 +48,29 @@ export default function Login() {
     setLoading(true);
     
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
       if (error) throw error;
+      
+      // Explicitly update store immediately to avoid delay
+      if (data.user) {
+          setUser(data.user);
+          // fetchProfile will be triggered by App.tsx subscription
+      }
+      
       navigate('/workspace');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error logging in:', error);
-      alert('登录失败，请检查账号密码');
+      
+      let msg = '登录失败，请检查账号密码';
+      if (error.message === 'Invalid login credentials') msg = '账号或密码错误';
+      if (error.message.includes('Network')) msg = '网络连接失败，请检查网络';
+      
+      if (confirm(`${msg}\n\n是否使用“访客体验模式”直接进入？`)) {
+          handleGuestLogin();
+      }
     } finally {
       setLoading(false);
     }
@@ -132,6 +171,15 @@ export default function Login() {
                   <ArrowRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform" />
                 </>
               )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleGuestLogin}
+              className="w-full py-3.5 bg-white/5 border border-white/10 text-gray-300 rounded-xl font-medium hover:bg-white/10 hover:text-white transition-all duration-300 flex items-center justify-center gap-2 mt-4"
+            >
+              <User className="w-4 h-4" />
+              访客体验模式 (无需登录)
             </button>
           </form>
 

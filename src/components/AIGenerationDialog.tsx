@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { MODEL_PRICING } from '@/services/ai';
-import { X, HelpCircle, Send } from 'lucide-react';
+import { X, HelpCircle, Send, ChevronDown, Check } from 'lucide-react';
 
 interface AIGenerationDialogProps {
   isOpen: boolean;
@@ -11,6 +11,9 @@ interface AIGenerationDialogProps {
   nodeId: string;
   balance: number;
   position?: { x: number, y: number };
+  contexts?: Array<{ content: string, sourceName: string }>;
+  onAddContext?: () => void;
+  onRemoveContext?: (index: number) => void;
 }
 
 const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({ 
@@ -20,10 +23,32 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
   nodeLabel,
   nodeId,
   balance,
-  position 
+  position,
+  contexts = [],
+  onAddContext,
+  onRemoveContext
 }) => {
-  const [selectedModel, setSelectedModel] = useState('deepseek-r1');
+  const [selectedModel, setSelectedModel] = useState('deepseek');
   const [prompt, setPrompt] = useState('');
+
+  const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const dropdownRef = React.useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowModelDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleModelSelect = (modelKey: string) => {
+    setSelectedModel(modelKey);
+    setShowModelDropdown(false);
+  };
 
   if (!isOpen) return null;
 
@@ -82,25 +107,82 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
         </button>
       </div>
 
+      {/* Context Area */}
+      {onAddContext && (
+        <div className="px-4 py-2 border-b border-gray-100 bg-gray-50 flex flex-col gap-2 text-xs">
+           <div className="flex items-center justify-between">
+               <span className="font-medium text-gray-500">上下文参考:</span>
+               <button 
+                 onClick={onAddContext}
+                 className="text-blue-600 hover:text-blue-800 hover:underline font-medium"
+               >
+                 添加
+               </button>
+           </div>
+           
+           {contexts.length > 0 ? (
+               <div className="flex flex-wrap gap-1.5 max-h-[60px] overflow-y-auto custom-scrollbar">
+                   {contexts.map((ctx, idx) => (
+                       <span key={idx} className="flex items-center bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100 max-w-full">
+                           <span className="truncate max-w-[150px]">{ctx.sourceName}</span>
+                           {onRemoveContext && (
+                               <button 
+                                   onClick={() => onRemoveContext(idx)}
+                                   className="ml-1 hover:bg-blue-200 rounded-full w-3 h-3 flex items-center justify-center"
+                               >
+                                   ×
+                               </button>
+                           )}
+                       </span>
+                   ))}
+               </div>
+           ) : (
+               <div className="text-gray-400 italic">
+                   无 (仅使用当前节点)
+               </div>
+           )}
+        </div>
+      )}
+
       {/* Input Area */}
       <div className="p-4 bg-white">
         <div className="mb-3 text-xs text-gray-500 font-medium flex items-center justify-between">
-           <div className="flex items-center">
+           <div className="flex items-center relative" ref={dropdownRef}>
              <span className="inline-block w-1.5 h-1.5 rounded-full bg-purple-600 mr-2"></span>
-             当前节点：<span className="text-gray-900 font-bold max-w-[150px] truncate">{nodeLabel}</span>
-           </div>
+             <span className="text-gray-900 font-bold max-w-[150px] truncate mr-4">当前节点：{nodeLabel}</span>
            
-           <select 
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="text-xs border-none bg-gray-50 hover:bg-gray-100 rounded px-2 py-1 cursor-pointer outline-none text-gray-600 transition-colors"
-          >
-            {Object.entries(MODEL_PRICING).map(([key, config]) => (
-              <option key={key} value={key}>
-                {config.name} ({config.price}💎)
-              </option>
-            ))}
-          </select>
+              <button 
+                onClick={() => setShowModelDropdown(!showModelDropdown)}
+                className="flex items-center gap-1 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg px-2 py-1 text-xs text-gray-700 transition-colors"
+              >
+                <span>{MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING]?.name}</span>
+                <span className="text-gray-400 ml-1">
+                  ({MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING]?.input}星石/token)
+                </span>
+                <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${showModelDropdown ? 'rotate-180' : ''}`} />
+              </button>
+
+              {/* Custom Dropdown Menu */}
+              {showModelDropdown && (
+                <div className="absolute top-full right-0 mt-1 w-64 bg-white rounded-lg shadow-xl border border-gray-100 z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                  {Object.entries(MODEL_PRICING).map(([key, config]) => (
+                    <button
+                      key={key}
+                      onClick={() => handleModelSelect(key)}
+                      className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-gray-50 transition-colors ${
+                        selectedModel === key ? 'bg-purple-50 text-purple-700 font-medium' : 'text-gray-600'
+                      }`}
+                    >
+                      <div className="flex flex-col gap-0.5">
+                        <span>{config.name}</span>
+                        <span className="text-[10px] text-gray-400">消耗: {config.input}星石/token</span>
+                      </div>
+                      {selectedModel === key && <Check className="w-3 h-3 text-purple-600" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+           </div>
         </div>
         
         <div className="relative">

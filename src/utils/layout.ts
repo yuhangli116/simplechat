@@ -1,15 +1,15 @@
 import { Node, Edge, Position } from 'reactflow';
 import dagre from 'dagre';
 
-const dagreGraph = new dagre.graphlib.Graph();
-dagreGraph.setDefaultEdgeLabel(() => ({}));
-
-const nodeWidth = 172;
-const nodeHeight = 36;
-
 export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'LR') => {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+  
   const isHorizontal = direction === 'LR';
   dagreGraph.setGraph({ rankdir: direction });
+
+  const nodeWidth = 172;
+  const nodeHeight = 36;
 
   nodes.forEach((node) => {
     dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });

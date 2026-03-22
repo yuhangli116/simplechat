@@ -13,16 +13,22 @@ import {
 import { getUserProfile, getRandomAvatar } from '@/utils/randomProfile';
 
 const UserTopBar = () => {
-  const { user, signOut, diamondBalance } = useAuthStore();
+  const { user, signOut, diamondBalance, profile: storeProfile } = useAuthStore();
   const navigate = useNavigate();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Generate random profile for current user
+  // Generate random profile for current user or use store profile
   const profile = useMemo(() => {
     if (!user) return null;
-    return getUserProfile(user);
-  }, [user]);
+    const randomProf = getUserProfile(user);
+    
+    return {
+      name: storeProfile?.username || randomProf?.name,
+      avatar: storeProfile?.avatar_url || randomProf?.avatar,
+      isVip: (storeProfile?.membership_type && storeProfile.membership_type !== 'free') || randomProf?.isVip
+    };
+  }, [user, storeProfile]);
 
   // Close dropdown when clicking outside
   useEffect(() => {

@@ -16,13 +16,11 @@ import {
   LogOut,
   ChevronRight
 } from 'lucide-react';
-import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
 import FileTree from '@/components/FileTree';
 import UserTopBar from '@/components/UserTopBar';
 
 const WorkspaceLayout = () => {
-  const { user, diamondBalance, signOut } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
   const location = useLocation();
 

@@ -6,11 +6,14 @@ const Events = () => {
   const { workId } = useParams();
 
   return (
-    <div className="h-full flex flex-col bg-gray-50">
-      <div className="h-14 border-b border-gray-200 bg-white flex items-center px-6 justify-between flex-shrink-0">
-        <h1 className="text-lg font-medium text-gray-900">事件细纲</h1>
+    <div className="h-full flex flex-col p-4">
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-2xl font-bold text-gray-800">事件细纲</h1>
+        <div className="text-sm text-gray-500">
+          梳理故事脉络，规划核心事件与冲突
+        </div>
       </div>
-      <div className="flex-1 p-4 overflow-hidden">
+      <div className="flex-1 bg-gray-900 rounded-xl overflow-hidden border border-gray-800 shadow-lg">
         <MindMapEditor type="event" workId={workId} />
       </div>
     </div>

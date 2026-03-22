@@ -183,24 +183,27 @@ export const aiService = {
         const inputTokens = Math.ceil((request.context?.length || 0 + request.prompt.length) / 1.5);
         const outputTokens = Math.ceil(content.length / 1.5);
         
-        // Use real usage if available in response metadata
-        const usage = response.response_metadata?.tokenUsage || {
-          promptTokens: inputTokens,
-          completionTokens: outputTokens
-        };
+        const usageFromResponse = (response as any)?.response_metadata?.tokenUsage;
+        const promptTokens =
+          usageFromResponse?.promptTokens ??
+          usageFromResponse?.prompt_tokens ??
+          usageFromResponse?.input_tokens ??
+          inputTokens;
+        const completionTokens =
+          usageFromResponse?.completionTokens ??
+          usageFromResponse?.completion_tokens ??
+          usageFromResponse?.output_tokens ??
+          outputTokens;
 
-        const totalCost = Math.ceil(
-          (usage.promptTokens || inputTokens) * config.input + 
-          (usage.completionTokens || outputTokens) * config.output
-        );
+        const totalCost = Math.ceil(promptTokens * config.input + completionTokens * config.output);
 
         // Call RPC to deduct
         const { error: deductError } = await supabase.rpc('deduct_diamonds', {
           p_user_id: request.userId,
           p_cost: totalCost,
           p_model_name: config.name,
-          p_input_tokens: usage.promptTokens || inputTokens,
-          p_output_tokens: usage.completionTokens || outputTokens
+          p_input_tokens: promptTokens,
+          p_output_tokens: completionTokens
         });
 
         if (deductError) {
@@ -211,8 +214,8 @@ export const aiService = {
         return { 
           content, 
           usage: {
-            input_tokens: usage.promptTokens || inputTokens,
-            output_tokens: usage.completionTokens || outputTokens,
+            input_tokens: promptTokens,
+            output_tokens: completionTokens,
             total_cost: totalCost
           }
         };

@@ -16,12 +16,12 @@ import CustomMindMap from '@/pages/workspace/CustomMindMap';
 import Membership from '@/pages/Membership';
 import Prompts from '@/pages/Prompts';
 import Community from '@/pages/Community';
+import Trash from '@/pages/Trash';
+import Welfare from '@/pages/Welfare';
+import Guide from '@/pages/Guide';
+import Download from '@/pages/Download';
 import { 
-  Welfare, 
-  Guide, 
-  Records, 
-  Download,
-  Trash 
+  Records
 } from '@/pages/placeholders';
 
 // Redirect helper for legacy routes
@@ -32,7 +32,7 @@ const LegacyStoryRedirect = () => {
 
 // Placeholder Pages
 function App() {
-  const { setUser, setSession, fetchBalance } = useAuthStore();
+  const { setUser, setSession, fetchProfile } = useAuthStore();
 
   useEffect(() => {
     // Check active sessions and sets the user
@@ -40,7 +40,7 @@ function App() {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchBalance();
+        fetchProfile();
       }
     });
 
@@ -51,12 +51,12 @@ function App() {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchBalance();
+        fetchProfile();
       }
     });
 
     return () => subscription.unsubscribe();
-  }, [setUser, setSession, fetchBalance]);
+  }, [setUser, setSession, fetchProfile]);
 
   return (
     <BrowserRouter>

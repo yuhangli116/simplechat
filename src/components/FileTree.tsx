@@ -10,57 +10,34 @@ import {
   List,
   Plus,
   Edit2,
-  Trash2
+  Trash2,
+  Star,
+  Heart,
+  Flag,
+  Bookmark,
+  Tag,
+  Zap,
+  Award,
+  Box,
+  Circle,
+  Hexagon
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
+import CreateWorkDialog, { CreateWorkData } from './CreateWorkDialog';
+import { useAuthStore } from '@/store/useAuthStore';
+import { useFileStore, FileNode, initialFileStructure } from '@/store/useFileStore';
+import { useTrashStore } from '@/store/useTrashStore';
 
-export interface FileNode {
-  id: string;
-  name: string;
-  type: 'folder' | 'file' | 'mindmap';
-  mindMapType?: 'outline' | 'world' | 'character' | 'event';
-  children?: FileNode[];
-  path?: string; // Route path
-}
+export type { FileNode };
 
-const initialFileStructure: FileNode[] = [
-  {
-    id: 'root',
-    name: '我的作品',
-    type: 'folder',
-    children: [
-      {
-        id: 'book-1',
-        name: '武夫当家',
-        type: 'folder',
-        children: [
-          {
-            id: 'meta-book-1',
-            name: '作品相关',
-            type: 'folder',
-            children: [
-              { id: 'mm-outline', name: '作品大纲', type: 'mindmap', mindMapType: 'outline', path: '/workspace/p/book-1/outline' },
-              { id: 'mm-world', name: '世界设定', type: 'mindmap', mindMapType: 'world', path: '/workspace/p/book-1/world' },
-              { id: 'mm-char', name: '角色塑造', type: 'mindmap', mindMapType: 'character', path: '/workspace/p/book-1/characters' },
-              { id: 'mm-event', name: '事件细纲', type: 'mindmap', mindMapType: 'event', path: '/workspace/p/book-1/events' },
-            ]
-          },
-          {
-            id: 'chapters-book-1',
-            name: '正文情节',
-            type: 'folder',
-            children: [
-              { id: 'ch-1', name: '未命名章节1', type: 'file', path: '/workspace/p/book-1/story/1' },
-              { id: 'ch-2', name: '未命名章节2', type: 'file', path: '/workspace/p/book-1/story/2' },
-              { id: 'ch-3', name: '未命名章节3', type: 'file', path: '/workspace/p/book-1/story/3' },
-            ]
-          }
-        ]
-      }
-    ]
-  }
+const CUSTOM_ICONS = [
+  'Star', 'Heart', 'Flag', 'Bookmark', 'Tag', 'Zap', 'Award', 'Box', 'Circle', 'Hexagon'
 ];
+
+const getRandomIcon = () => {
+  return CUSTOM_ICONS[Math.floor(Math.random() * CUSTOM_ICONS.length)];
+};
 
 const FileTreeNode = ({ 
   node, 
@@ -140,6 +117,24 @@ const FileTreeNode = ({
 
   const getIcon = () => {
     if (node.type === 'folder') return <Folder className="w-4 h-4 text-yellow-500 fill-yellow-500/20" />;
+    
+    // Custom Icons
+    if (node.customIcon) {
+        switch(node.customIcon) {
+            case 'Star': return <Star className="w-4 h-4 text-amber-500" />;
+            case 'Heart': return <Heart className="w-4 h-4 text-rose-500" />;
+            case 'Flag': return <Flag className="w-4 h-4 text-red-500" />;
+            case 'Bookmark': return <Bookmark className="w-4 h-4 text-indigo-500" />;
+            case 'Tag': return <Tag className="w-4 h-4 text-emerald-500" />;
+            case 'Zap': return <Zap className="w-4 h-4 text-yellow-500" />;
+            case 'Award': return <Award className="w-4 h-4 text-orange-500" />;
+            case 'Box': return <Box className="w-4 h-4 text-cyan-500" />;
+            case 'Circle': return <Circle className="w-4 h-4 text-purple-500" />;
+            case 'Hexagon': return <Hexagon className="w-4 h-4 text-pink-500" />;
+            default: return <FileText className="w-4 h-4 text-gray-500" />;
+        }
+    }
+
     if (node.mindMapType === 'outline') return <GitBranch className="w-4 h-4 text-purple-500" />;
     if (node.mindMapType === 'world') return <Map className="w-4 h-4 text-green-500" />;
     if (node.mindMapType === 'character') return <Users className="w-4 h-4 text-blue-500" />;
@@ -259,26 +254,30 @@ const FileTreeNode = ({
 
 const FileTree = () => {
   const navigate = useNavigate();
+  const { user } = useAuthStore();
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
   
-  // Load initial state from localStorage or use default
-  const [files, setFiles] = useState<FileNode[]>(() => {
-    const saved = localStorage.getItem('my-works-tree');
-    return saved ? JSON.parse(saved) : initialFileStructure;
-  });
-
-  // Save to localStorage whenever files change
-  React.useEffect(() => {
-    localStorage.setItem('my-works-tree', JSON.stringify(files));
-  }, [files]);
+  const { files, setFiles, removeNode } = useFileStore();
+  const { addToTrash } = useTrashStore();
 
   const handleSelect = (node: FileNode) => {
     if (node.path) {
-      navigate(node.path);
+      // Pass the node name in the state so the target component can use it
+      navigate(node.path, { state: { fileName: node.name } });
     }
   };
 
   const handleAddChapter = (parentId: string) => {
+    // Dev Mode: Allow adding chapter without login
+    // if (!user) {
+    //   if (confirm('请先登录以创建章节')) {
+    //     // navigate('/login'); // Can't navigate from here easily without hook
+    //     window.location.href = '/login';
+    //   }
+    //   return;
+    // }
+
     // Generate default name: "未命名章节" + count
     // To be precise, we could count existing children, but a timestamp or random suffix is safer/easier
     // User asked for "未命名章节1"... logic. Let's just use "未命名章节" for now to ensure response.
@@ -323,8 +322,7 @@ const FileTree = () => {
     };
 
     setFiles(addNodeRecursive(files));
-    // Optional: navigate to new chapter immediately
-    // navigate(newChapter.path!); 
+    navigate(newChapter.path!, { state: { fileName: newChapter.name } });
   };
 
   const handleAddMindMap = (parentId: string) => {
@@ -344,6 +342,7 @@ const FileTree = () => {
         name: name,
         type: 'mindmap',
         mindMapType: 'outline',
+        customIcon: getRandomIcon(), // Assign random icon
         path: `/workspace/p/${workId}/mindmap/${newId}`
     };
 
@@ -381,38 +380,72 @@ const FileTree = () => {
   };
 
   const handleCreateWork = () => {
-    const name = '未命名作品';
-    
+    // Dev Mode: Allow creating work without login
+    // if (!user) {
+    //   if (confirm('创建新作品需要登录，是否立即登录？')) {
+    //     navigate('/login');
+    //   }
+    //   return;
+    // }
+    setShowCreateDialog(true);
+  };
+
+  const handleCreateWorkSubmit = (data: CreateWorkData) => {
     const newWorkId = uuidv4();
+    
+    // 1. Create Mind Map Nodes
+    const mindMapNodes: FileNode[] = [];
+    if (data.selectedPages.includes('outline')) {
+      mindMapNodes.push({ id: `mm-outline-${newWorkId}`, name: '作品大纲', type: 'mindmap', mindMapType: 'outline', path: `/workspace/p/${newWorkId}/outline` });
+    }
+    if (data.selectedPages.includes('world')) {
+      mindMapNodes.push({ id: `mm-world-${newWorkId}`, name: '世界设定', type: 'mindmap', mindMapType: 'world', path: `/workspace/p/${newWorkId}/world` });
+    }
+    if (data.selectedPages.includes('character')) {
+      mindMapNodes.push({ id: `mm-char-${newWorkId}`, name: '角色塑造', type: 'mindmap', mindMapType: 'character', path: `/workspace/p/${newWorkId}/characters` });
+    }
+    if (data.selectedPages.includes('event')) {
+      mindMapNodes.push({ id: `mm-event-${newWorkId}`, name: '事件细纲', type: 'mindmap', mindMapType: 'event', path: `/workspace/p/${newWorkId}/events` });
+    }
+
+    // 2. Create Chapter Nodes
+    const chapterNodes: FileNode[] = [];
+    for (let i = 1; i <= data.chapterCount; i++) {
+        const chapterId = uuidv4();
+        chapterNodes.push({ 
+            id: `ch-${chapterId}`, 
+            name: `未命名章节${i}`, 
+            type: 'file', 
+            path: `/workspace/p/${newWorkId}/story/${chapterId}` 
+        });
+    }
+
     const newWork: FileNode = {
       id: newWorkId,
-      name: name,
+      name: data.name,
       type: 'folder',
       children: [
         {
           id: `meta-${newWorkId}`,
           name: '作品相关',
           type: 'folder',
-          children: [
-            { id: `mm-outline-${newWorkId}`, name: '作品大纲', type: 'mindmap', mindMapType: 'outline', path: `/workspace/p/${newWorkId}/outline` },
-            { id: `mm-world-${newWorkId}`, name: '世界设定', type: 'mindmap', mindMapType: 'world', path: `/workspace/p/${newWorkId}/world` },
-            { id: `mm-char-${newWorkId}`, name: '角色塑造', type: 'mindmap', mindMapType: 'character', path: `/workspace/p/${newWorkId}/characters` },
-            { id: `mm-event-${newWorkId}`, name: '事件细纲', type: 'mindmap', mindMapType: 'event', path: `/workspace/p/${newWorkId}/events` },
-          ]
+          children: mindMapNodes
         },
         {
           id: `chapters-${newWorkId}`,
           name: '正文情节',
           type: 'folder',
-          children: [
-            { id: `ch-1-${newWorkId}`, name: '未命名章节1', type: 'file', path: `/workspace/p/${newWorkId}/story/new` },
-          ]
+          children: chapterNodes
         }
       ]
     };
 
     // Add to 'root' (files[0]) children
-    const newFiles = [...files];
+    let newFiles = [...files];
+    if (newFiles.length === 0) {
+      newFiles = JSON.parse(JSON.stringify(initialFileStructure));
+    }
+    
     if (newFiles[0].children) {
       newFiles[0].children.push(newWork);
     } else {
@@ -438,7 +471,49 @@ const FileTree = () => {
   };
 
   const handleDelete = (targetNode: FileNode) => {
-    if (!window.confirm(`确定要删除 "${targetNode.name}" 吗？此操作无法撤销。`)) return;
+    if (!window.confirm(`确定要将 "${targetNode.name}" 移至回收站吗？`)) return;
+
+    // Find parent and work context before deleting
+    let parentId: string | undefined;
+    let workName: string | undefined;
+
+    const findContext = (nodes: FileNode[], currentWorkName?: string, currentParentId?: string) => {
+      for (const node of nodes) {
+        if (node.id === targetNode.id) {
+          parentId = currentParentId;
+          workName = currentWorkName;
+          return true;
+        }
+        if (node.children) {
+          // If this is a top-level work (child of root), update currentWorkName
+          const nextWorkName = currentParentId === 'root' ? node.name : currentWorkName;
+          if (findContext(node.children, nextWorkName, node.id)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    findContext(files, undefined, 'root');
+
+    // If it's a top-level work, the workName is the node's name itself
+    if (parentId === 'root') {
+      workName = targetNode.name;
+    }
+
+    addToTrash({
+      originalId: targetNode.id,
+      type: targetNode.type === 'file' ? 'chapter' : targetNode.type === 'mindmap' ? 'mindmap' : targetNode.id === parentId ? 'work' : 'folder', // Approximate type mapping
+      title: targetNode.name,
+      content: targetNode, // Store the entire subtree
+      originalPath: targetNode.path,
+      parentId,
+      workName,
+      extra: {
+        isFullWork: parentId === 'root'
+      }
+    });
 
     const deleteNodeRecursive = (nodes: FileNode[]): FileNode[] => {
       return nodes.filter(node => node.id !== targetNode.id).map(node => {
@@ -471,7 +546,7 @@ const FileTree = () => {
       
       {/* Tree Content */}
       <div className="flex-1 overflow-y-auto py-2">
-        {files[0].children?.map(node => (
+        {files?.[0]?.children?.map(node => (
           <FileTreeNode 
             key={node.id} 
             node={node} 
@@ -486,6 +561,13 @@ const FileTree = () => {
           />
         ))}
       </div>
+      
+      {/* Create Work Dialog */}
+      <CreateWorkDialog 
+        isOpen={showCreateDialog}
+        onClose={() => setShowCreateDialog(false)}
+        onSubmit={handleCreateWorkSubmit}
+      />
     </div>
   );
 };

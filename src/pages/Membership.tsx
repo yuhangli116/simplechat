@@ -112,7 +112,7 @@ const MemberPlans = () => {
   );
 };
 
-const FuelPacks = ({ activeTab }: { activeTab: string }) => {
+const FuelPacks = () => {
   const packs = [
     {
       title: '应急补给包',
@@ -158,7 +158,7 @@ const FuelPacks = ({ activeTab }: { activeTab: string }) => {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
       {packs.map((pack, index) => (
-        <PricingCard key={index} {...pack} activeTab={activeTab} />
+        <PricingCard key={index} {...pack} activeTab="fuel" />
       ))}
     </div>
   );
@@ -205,7 +205,7 @@ const PricingCard = ({ title, price, originalPrice, tag, tagColor, features, act
       </div>
 
       {/* Button */}
-      <button className="w-full mt-8 py-3 bg-gray-50 hover:bg-gray-100 text-gray-900 font-bold rounded-lg transition-colors">
+      <button className="w-full mt-8 py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg transition-colors shadow-lg hover:shadow-purple-500/30">
         立即购买
       </button>
     </div>

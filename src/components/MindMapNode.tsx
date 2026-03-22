@@ -39,15 +39,26 @@ const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
   const handleAiClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent node selection/drag
     if (data.onAiClick) {
-      data.onAiClick(data.id, data.label);
+      data.onAiClick(data.id);
     }
   };
 
+  const theme = data.theme || 'dark';
+  
+  const themeStyles: Record<string, { rootBg: string, nodeBg: string, text: string, border: string }> = {
+    dark: { rootBg: 'bg-gradient-to-r from-blue-600 to-indigo-600', nodeBg: 'bg-white', text: 'text-gray-900', border: 'border-transparent' },
+    light: { rootBg: 'bg-gradient-to-r from-blue-500 to-cyan-500', nodeBg: 'bg-white', text: 'text-gray-900', border: 'border-gray-200 shadow-sm' },
+    beige: { rootBg: 'bg-gradient-to-r from-orange-400 to-amber-500', nodeBg: 'bg-[#fffbeb]', text: 'text-amber-900', border: 'border-orange-200' },
+    green: { rootBg: 'bg-gradient-to-r from-green-500 to-emerald-600', nodeBg: 'bg-[#f0fdf4]', text: 'text-green-900', border: 'border-green-200' },
+  };
+  
+  const currentStyle = themeStyles[theme] || themeStyles.dark;
+
   // Determine styles based on level (root vs child)
   const isRoot = data.isRoot;
-  const bgColor = isRoot ? 'bg-gradient-to-r from-blue-600 to-indigo-600' : 'bg-white';
-  const textColor = isRoot ? 'text-white' : 'text-gray-800';
-  const borderColor = selected ? 'ring-2 ring-purple-500 border-purple-500' : 'border-gray-200';
+  const bgColor = isRoot ? currentStyle.rootBg : currentStyle.nodeBg;
+  const textColor = isRoot ? 'text-white' : currentStyle.text;
+  const borderColor = selected ? 'ring-2 ring-purple-500 border-purple-500' : (isRoot ? 'border-transparent' : currentStyle.border);
   const shadow = selected ? 'shadow-lg shadow-purple-500/20' : 'shadow-sm';
 
   return (
