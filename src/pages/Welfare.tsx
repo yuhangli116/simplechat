@@ -158,7 +158,20 @@ const Welfare = () => {
     if (taskId === 'ad') {
         if (!confirm('正在播放广告... (模拟) \n\n观看完毕？')) return;
     } else if (taskId === 'share') {
-        alert('分享链接已复制到剪贴板！');
+        try {
+            await navigator.clipboard.writeText(window.location.origin);
+            alert('分享链接已复制到剪贴板！');
+        } catch (err) {
+            alert('复制链接失败，请手动分享本网站！');
+        }
+    } else if (taskId === 'profile') {
+        if (confirm('前往个人中心完善信息？')) {
+            // Note: Since we don't have a dedicated profile edit page yet, 
+            // we will simulate the completion here and just show a message.
+            alert('模拟：信息完善成功！');
+        } else {
+            return;
+        }
     }
 
     // Optimistic update
@@ -226,9 +239,9 @@ const Welfare = () => {
   return (
     <div className="flex-1 h-full bg-gray-50 flex flex-col overflow-y-auto">
       {/* Header Banner */}
-      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-8 text-white relative overflow-hidden">
-        <div className="relative z-10 flex justify-between items-center">
-          <div>
+      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 py-8 px-8 text-white relative overflow-hidden shrink-0">
+        <div className="w-full relative z-10 flex justify-between items-center">
+          <div className="flex flex-col justify-center">
             <h1 className="text-3xl font-bold mb-2 flex items-center">
               <Gift className="w-8 h-8 mr-3" />
               福利中心
@@ -243,7 +256,10 @@ const Welfare = () => {
               <div className="text-xs opacity-80">当前余额</div>
               <div className="text-2xl font-bold font-mono">{user ? diamondBalance : '--'}</div>
             </div>
-            <button className="ml-6 px-4 py-1.5 bg-yellow-400 text-yellow-900 rounded-lg text-sm font-bold hover:bg-yellow-300 transition-colors shadow-sm">
+            <button 
+              onClick={() => navigate('/membership')}
+              className="ml-6 px-4 py-1.5 bg-yellow-400 text-yellow-900 rounded-lg text-sm font-bold hover:bg-yellow-300 transition-colors shadow-sm"
+            >
               充值
             </button>
           </div>

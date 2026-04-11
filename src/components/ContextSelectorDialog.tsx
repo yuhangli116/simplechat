@@ -3,6 +3,9 @@ import { FileNode } from './FileTree';
 import { Node, Edge } from 'reactflow';
 import { ChevronRight, ChevronDown, FileText, Check, X, Folder, Layout, List } from 'lucide-react';
 import { getNodeContext } from '@/utils/mindmapUtils';
+import { useFileStore } from '@/store/useFileStore';
+import { useAuthStore } from '@/store/useAuthStore';
+import { loadChapterContent, loadMindMapContent } from '@/lib/workspacePersistence';
 
 interface ContextSelectorDialogProps {
   isOpen: boolean;
@@ -12,6 +15,8 @@ interface ContextSelectorDialogProps {
 }
 
 const ContextSelectorDialog: React.FC<ContextSelectorDialogProps> = ({ isOpen, onClose, onSelect, workId }) => {
+  const { files: storeFiles } = useFileStore();
+  const { user } = useAuthStore();
   const [files, setFiles] = useState<FileNode[]>([]);
   const [expandedFileNodes, setExpandedFileNodes] = useState<Set<string>>(new Set());
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
@@ -21,36 +26,131 @@ const ContextSelectorDialog: React.FC<ContextSelectorDialogProps> = ({ isOpen, o
   // Load file tree on mount
   useEffect(() => {
     if (!isOpen) return;
-    const saved = localStorage.getItem('my-works-tree');
-    if (saved) {
-        try {
-            const parsed: FileNode[] = JSON.parse(saved);
-            
-            const findWorkNode = (nodes: FileNode[]): FileNode | null => {
-                for (const node of nodes) {
-                    if (node.id === workId) return node;
-                    if (node.children) {
-                        const found = findWorkNode(node.children);
-                        if (found) return found;
-                    }
-                }
-                return null;
-            };
-
-            const workNode = workId ? findWorkNode(parsed) : null;
-            
-            if (workNode) {
-                 setFiles([workNode]);
-                 setExpandedFileNodes(new Set([workNode.id, `meta-${workNode.id}`])); // Expand work and meta folder by default
-            } else {
-                 setFiles(parsed);
-                 setExpandedFileNodes(new Set(['root']));
+    const findWorkNode = (nodes: FileNode[]): FileNode | null => {
+        for (const node of nodes) {
+            if (node.id === workId) return node;
+            if (node.children) {
+                const found = findWorkNode(node.children);
+                if (found) return found;
             }
-        } catch (e) {
-            console.error("Failed to parse file tree", e);
         }
+        return null;
+    };
+
+    const workNode = workId ? findWorkNode(storeFiles) : null;
+    
+    if (workNode) {
+         setFiles([workNode]);
+         setExpandedFileNodes(new Set([workNode.id, `meta-${workNode.id}`]));
+    } else {
+         setFiles(storeFiles);
+         setExpandedFileNodes(new Set(['root']));
     }
-  }, [isOpen, workId]);
+  }, [isOpen, workId, storeFiles]);
+
+  const loadStoryContext = async (file: FileNode) => {
+      let key = '';
+      let activeWorkId = '';
+      let activeChapterId = '';
+      if (file.path) {
+          const parts = file.path.split('/');
+          const storyIndex = parts.indexOf('story');
+          if (storyIndex !== -1 && storyIndex + 1 < parts.length) {
+              activeWorkId = parts[storyIndex - 1];
+              activeChapterId = parts[storyIndex + 1];
+              key = `story-${activeWorkId}-${activeChapterId}`;
+          }
+      }
+
+      let content = key ? localStorage.getItem(key) : null;
+
+      if (!content && user && activeChapterId) {
+          try {
+              content = await loadChapterContent(activeChapterId);
+              if (content && key) {
+                  localStorage.setItem(key, content);
+              }
+          } catch (error) {
+              console.error('Failed to load story context from Supabase', error);
+          }
+      }
+
+      if (!content) {
+          setFileContent(null);
+          return;
+      }
+
+      const plainText = content.replace(/<[^>]+>/g, '\n').replace(/\n+/g, '\n').trim();
+      setFileContent({
+          nodes: [{
+              id: file.id,
+              type: 'mindMap',
+              data: { label: file.name, content: plainText },
+              position: { x: 0, y: 0 }
+          }],
+          edges: []
+      });
+      setSelectedNodeId(file.id);
+  };
+
+  const loadMindMapContext = async (file: FileNode) => {
+      let key = '';
+      let mapType = 'outline';
+      let activeWorkId = '';
+      let recordId = '';
+
+      if (file.path) {
+          const parts = file.path.split('/');
+          if (parts.includes('mindmap')) {
+              const idIndex = parts.indexOf('mindmap') + 1;
+              if (idIndex < parts.length) {
+                  recordId = parts[idIndex];
+                  activeWorkId = parts[parts.indexOf('p') + 1];
+                  key = `mindmap-${recordId}`;
+              }
+          } else if (parts.includes('p')) {
+              const pIndex = parts.indexOf('p');
+              activeWorkId = parts[pIndex + 1];
+              let t = parts[pIndex + 2];
+              if (t === 'characters') t = 'character';
+              if (t === 'events') t = 'event';
+              key = `mindmap-${activeWorkId}-${t}`;
+              mapType = t;
+          }
+      }
+
+      let content = key ? localStorage.getItem(key) : null;
+      if (!content && user && activeWorkId) {
+          try {
+              const remoteContent = await loadMindMapContent({
+                  workId: activeWorkId,
+                  id: recordId || undefined,
+                  type: recordId ? undefined : mapType as 'outline' | 'world' | 'character' | 'event'
+              });
+              if (remoteContent) {
+                  content = JSON.stringify(remoteContent);
+                  if (key) {
+                      localStorage.setItem(key, content);
+                  }
+              }
+          } catch (error) {
+              console.error('Failed to load mind map context from Supabase', error);
+          }
+      }
+
+      if (content) {
+          try {
+              setFileContent(JSON.parse(content));
+          } catch (e) {
+              console.error("Failed to parse mindmap content", e);
+              setFileContent(null);
+          }
+      } else if (['outline', 'world', 'character', 'event'].includes(mapType)) {
+          setFileContent(getDefaultData(mapType));
+      } else {
+          setFileContent(null);
+      }
+  };
 
   const getDefaultData = (type: string) => {
     const rootId = 'root';
@@ -73,7 +173,7 @@ const ContextSelectorDialog: React.FC<ContextSelectorDialogProps> = ({ isOpen, o
   };
 
   // Load file content when a mind map file is selected
-  const handleFileSelect = (file: FileNode) => {
+  const handleFileSelect = async (file: FileNode) => {
       if (file.type === 'folder') {
           // Toggle folder
           const newExpanded = new Set(expandedFileNodes);
@@ -90,86 +190,11 @@ const ContextSelectorDialog: React.FC<ContextSelectorDialogProps> = ({ isOpen, o
       setSelectedNodeId(null); 
       
       if (file.type === 'file') {
-          // Handle regular story files
-          let key = '';
-          if (file.path) {
-              const parts = file.path.split('/');
-              // /workspace/p/book-1/story/1
-              const storyIndex = parts.indexOf('story');
-              if (storyIndex !== -1 && storyIndex + 1 < parts.length) {
-                  const wId = parts[storyIndex - 1];
-                  const chapterId = parts[storyIndex + 1];
-                  key = `story-${wId}-${chapterId}`;
-              }
-          }
-
-          if (key) {
-              const content = localStorage.getItem(key);
-              if (content) {
-                  // Convert plain text story to a "virtual node" for the context system
-                  // Strip HTML tags for cleaner context
-                  const plainText = content.replace(/<[^>]+>/g, '\n').replace(/\n+/g, '\n').trim();
-                  setFileContent({
-                      nodes: [{
-                          id: file.id,
-                          type: 'mindMap',
-                          data: { label: file.name, content: plainText },
-                          position: { x: 0, y: 0 }
-                      }],
-                      edges: []
-                  });
-                  setSelectedNodeId(file.id);
-              } else {
-                   setFileContent(null);
-              }
-          } else {
-               setFileContent(null);
-          }
+          await loadStoryContext(file);
           return;
       }
 
-      // Handle mind map files
-      let key = '';
-      let type = 'outline';
-      if (file.path) {
-          const parts = file.path.split('/');
-          if (parts.includes('mindmap')) {
-              const idIndex = parts.indexOf('mindmap') + 1;
-              if (idIndex < parts.length) {
-                  const id = parts[idIndex];
-                  key = `mindmap-${id}`;
-              }
-          } else if (parts.includes('p')) {
-              // Standard page: /workspace/p/{workId}/{type}
-              const pIndex = parts.indexOf('p');
-              const wId = parts[pIndex + 1];
-              let t = parts[pIndex + 2];
-              
-              // Fix singular/plural mismatch for standard pages
-              if (t === 'characters') t = 'character';
-              if (t === 'events') t = 'event';
-              
-              key = `mindmap-${wId}-${t}`;
-              type = t;
-          }
-      }
-      
-      const content = localStorage.getItem(key);
-      if (content) {
-          try {
-              setFileContent(JSON.parse(content));
-          } catch (e) {
-              console.error("Failed to parse mindmap content", e);
-              setFileContent(null);
-          }
-      } else {
-          // If no content found, try to load default data for standard pages
-          if (['outline', 'world', 'character', 'event'].includes(type)) {
-              setFileContent(getDefaultData(type));
-          } else {
-              setFileContent(null);
-          }
-      }
+      await loadMindMapContext(file);
   };
   
   // Recursive render of File Tree
@@ -332,7 +357,7 @@ const ContextSelectorDialog: React.FC<ContextSelectorDialogProps> = ({ isOpen, o
       
       // Deduplicate root name if it matches file name
       // Example: File="作品大纲", Path=["作品大纲", "第一章"] -> Result "作品大纲 > 第一章"
-      let displayPath = [...path];
+      const displayPath = [...path];
       if (file?.name && displayPath.length > 0 && displayPath[0] === file.name) {
           displayPath.shift(); // Remove duplicate root
       }

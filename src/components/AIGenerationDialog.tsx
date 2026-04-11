@@ -14,6 +14,13 @@ interface AIGenerationDialogProps {
   contexts?: Array<{ content: string, sourceName: string }>;
   onAddContext?: () => void;
   onRemoveContext?: (index: number) => void;
+  isGenerating?: boolean;
+  loadingText?: string;
+  lastUsage?: {
+    input_tokens: number;
+    output_tokens: number;
+    total_cost: number;
+  } | null;
 }
 
 const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({ 
@@ -26,7 +33,10 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
   position,
   contexts = [],
   onAddContext,
-  onRemoveContext
+  onRemoveContext,
+  isGenerating = false,
+  loadingText = '正在生成...',
+  lastUsage = null
 }) => {
   const [selectedModel, setSelectedModel] = useState('deepseek');
   const [prompt, setPrompt] = useState('');
@@ -71,9 +81,8 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || isGenerating) return;
     onSubmit(selectedModel, prompt);
-    setPrompt('');
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -190,21 +199,34 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="w-full h-32 p-3 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 resize-none outline-none transition-all placeholder-gray-400 bg-gray-50/30"
-            placeholder="描述你的需求，AI将为你生成子节点..."
+            disabled={isGenerating}
+            className="w-full h-32 p-3 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 resize-none outline-none transition-all placeholder-gray-400 bg-gray-50/30 disabled:opacity-50"
+            placeholder="描述你的需求，AI将为你生成子节点/正文情节..."
             autoFocus
           />
           <button 
             onClick={handleSubmit}
-            disabled={!prompt.trim()}
-            className="absolute bottom-3 right-3 p-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg shadow-lg hover:shadow-purple-500/30 disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-105 active:scale-95 transition-all"
+            disabled={!prompt.trim() || isGenerating}
+            className="absolute bottom-3 right-3 px-3 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg shadow-lg hover:shadow-purple-500/30 disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-105 active:scale-95 transition-all flex items-center justify-center"
           >
-            <Send className="w-4 h-4" />
+            {isGenerating ? (
+               <div className="flex items-center text-xs whitespace-nowrap">
+                   <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin mr-1.5"></div>
+                   {loadingText}
+               </div>
+            ) : (
+               <Send className="w-4 h-4" />
+            )}
           </button>
         </div>
         
-        <div className="mt-3 flex items-center justify-between text-xs text-gray-400">
-           <span>按 Enter 发送，Shift + Enter 换行</span>
+        <div className="mt-3 flex items-center justify-between text-xs">
+           <span className="text-gray-400">按 Enter 发送，Shift + Enter 换行</span>
+           {lastUsage && (
+             <span className="text-purple-600/80 bg-purple-50 px-2 py-0.5 rounded border border-purple-100/50">
+               💎 -{lastUsage.total_cost} (In: {lastUsage.input_tokens}, Out: {lastUsage.output_tokens})
+             </span>
+           )}
         </div>
       </div>
     </div>

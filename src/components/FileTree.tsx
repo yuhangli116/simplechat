@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   ChevronRight, 
   ChevronDown, 
@@ -28,6 +28,7 @@ import CreateWorkDialog, { CreateWorkData } from './CreateWorkDialog';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore, FileNode, initialFileStructure } from '@/store/useFileStore';
 import { useTrashStore } from '@/store/useTrashStore';
+import { createTrashSnapshot, deleteWorkspaceNode, findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
 
 export type { FileNode };
 
@@ -261,6 +262,20 @@ const FileTree = () => {
   const { files, setFiles, removeNode } = useFileStore();
   const { addToTrash } = useTrashStore();
 
+  const refreshWorkspace = async () => {
+    if (!user) return;
+    try {
+      const nextFiles = await loadWorkspaceTree(user.id);
+      setFiles(nextFiles as FileNode[]);
+    } catch (error) {
+      console.error('Failed to refresh workspace:', error);
+    }
+  };
+
+  useEffect(() => {
+    refreshWorkspace();
+  }, [user?.id]);
+
   const handleSelect = (node: FileNode) => {
     if (node.path) {
       // Pass the node name in the state so the target component can use it
@@ -268,7 +283,7 @@ const FileTree = () => {
     }
   };
 
-  const handleAddChapter = (parentId: string) => {
+  const handleAddChapter = async (parentId: string) => {
     // Dev Mode: Allow adding chapter without login
     // if (!user) {
     //   if (confirm('请先登录以创建章节')) {
@@ -321,11 +336,21 @@ const FileTree = () => {
       });
     };
 
-    setFiles(addNodeRecursive(files));
+    const nextFiles = addNodeRecursive(files);
+    setFiles(nextFiles);
+
+    if (user) {
+      const workNode = findWorkNodeForTarget(nextFiles as any, parentId);
+      if (workNode) {
+        await persistWorkTree(user.id, workNode as any);
+        await refreshWorkspace();
+      }
+    }
+
     navigate(newChapter.path!, { state: { fileName: newChapter.name } });
   };
 
-  const handleAddMindMap = (parentId: string) => {
+  const handleAddMindMap = async (parentId: string) => {
     const parentNode = findNode(files, parentId);
     const childCount = parentNode?.children?.length || 0;
     const name = `新建大纲${childCount + 1}`;
@@ -364,7 +389,16 @@ const FileTree = () => {
       });
     };
 
-    setFiles(addNodeRecursive(files));
+    const nextFiles = addNodeRecursive(files);
+    setFiles(nextFiles);
+
+    if (user) {
+      const workNode = findWorkNodeForTarget(nextFiles as any, parentId);
+      if (workNode) {
+        await persistWorkTree(user.id, workNode as any);
+        await refreshWorkspace();
+      }
+    }
   };
 
   // Helper to find a node by ID (for getting workId)
@@ -390,7 +424,7 @@ const FileTree = () => {
     setShowCreateDialog(true);
   };
 
-  const handleCreateWorkSubmit = (data: CreateWorkData) => {
+  const handleCreateWorkSubmit = async (data: CreateWorkData) => {
     const newWorkId = uuidv4();
     
     // 1. Create Mind Map Nodes
@@ -452,9 +486,14 @@ const FileTree = () => {
       newFiles[0].children = [newWork];
     }
     setFiles(newFiles);
+
+    if (user) {
+      await persistWorkTree(user.id, newWork as any);
+      await refreshWorkspace();
+    }
   };
 
-  const handleRename = (id: string, newName: string) => {
+  const handleRename = async (id: string, newName: string) => {
     const updateNodeRecursive = (nodes: FileNode[]): FileNode[] => {
       return nodes.map(node => {
         if (node.id === id) {
@@ -467,10 +506,19 @@ const FileTree = () => {
       });
     };
 
-    setFiles(updateNodeRecursive(files));
+    const nextFiles = updateNodeRecursive(files);
+    setFiles(nextFiles);
+
+    if (user) {
+      const workNode = findWorkNodeForTarget(nextFiles as any, id);
+      if (workNode) {
+        await persistWorkTree(user.id, workNode as any);
+        await refreshWorkspace();
+      }
+    }
   };
 
-  const handleDelete = (targetNode: FileNode) => {
+  const handleDelete = async (targetNode: FileNode) => {
     if (!window.confirm(`确定要将 "${targetNode.name}" 移至回收站吗？`)) return;
 
     // Find parent and work context before deleting
@@ -502,11 +550,13 @@ const FileTree = () => {
       workName = targetNode.name;
     }
 
+    const trashSnapshot = await createTrashSnapshot(targetNode as any);
+
     addToTrash({
       originalId: targetNode.id,
       type: targetNode.type === 'file' ? 'chapter' : targetNode.type === 'mindmap' ? 'mindmap' : targetNode.id === parentId ? 'work' : 'folder', // Approximate type mapping
       title: targetNode.name,
-      content: targetNode, // Store the entire subtree
+      content: trashSnapshot,
       originalPath: targetNode.path,
       parentId,
       workName,
@@ -524,7 +574,13 @@ const FileTree = () => {
       });
     };
 
-    setFiles(deleteNodeRecursive(files));
+    const nextFiles = deleteNodeRecursive(files);
+    setFiles(nextFiles);
+
+    if (user) {
+      await deleteWorkspaceNode(targetNode as any);
+      await refreshWorkspace();
+    }
   };
 
   return (

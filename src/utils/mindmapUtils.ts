@@ -34,8 +34,8 @@ export const getNodeContext = (nodes: Node[], edges: Edge[], rootId: string): st
     
     // If node has detailed content (e.g. story chapter), include it
     if (node.data.content) {
-        const contentLines = node.data.content.split('\n');
-        contentLines.forEach(line => {
+        const contentLines = String(node.data.content).split('\n');
+        contentLines.forEach((line: string) => {
             if (line.trim()) {
                 context += `${indent}  ${line.trim()}\n`;
             }

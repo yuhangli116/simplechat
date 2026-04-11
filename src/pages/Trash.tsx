@@ -16,10 +16,11 @@ import { useFileStore, FileNode } from '@/store/useFileStore';
 import { usePromptStore, Prompt } from '@/store/usePromptStore';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
+import { findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
 
 const Trash = () => {
   const { items, restoreItem, permanentlyDelete, clearTrash, syncFromSupabase } = useTrashStore();
-  const { addNode } = useFileStore();
+  const { addNode, setFiles } = useFileStore();
   const { addPrompt } = usePromptStore();
   const { user } = useAuthStore();
   const navigate = useNavigate();
@@ -90,6 +91,31 @@ const Trash = () => {
     setSelectedIds(newSet);
   };
 
+  const syncWorkspace = async () => {
+    if (!user) return;
+    try {
+      const nextFiles = await loadWorkspaceTree(user.id);
+      setFiles(nextFiles as FileNode[]);
+    } catch (error) {
+      console.error('Failed to refresh workspace after restore:', error);
+    }
+  };
+
+  const restoreWorkspaceItem = async (item: TrashItem) => {
+    addNode(item.content as FileNode, item.parentId);
+
+    if (!user) return;
+
+    const nextFiles = useFileStore.getState().files as FileNode[];
+    const targetId = (item.content as FileNode).id;
+    const workNode = findWorkNodeForTarget(nextFiles as any, targetId);
+
+    if (workNode) {
+      await persistWorkTree(user.id, workNode as any);
+      await syncWorkspace();
+    }
+  };
+
   // Actions
   const handleRestore = async (id: string) => {
     const item = await restoreItem(id);
@@ -98,8 +124,7 @@ const Trash = () => {
     if (item.type === 'prompt') {
       addPrompt(item.content as Prompt);
     } else {
-      // Restore to original parent if available, otherwise root
-      addNode(item.content as FileNode, item.parentId); 
+      await restoreWorkspaceItem(item);
     }
     
     // Clear selection if restored
@@ -128,7 +153,7 @@ const Trash = () => {
           if (item.type === 'prompt') {
             addPrompt(item.content as Prompt);
           } else {
-            addNode(item.content as FileNode, item.parentId);
+            await restoreWorkspaceItem(item);
           }
         }
       }

@@ -80,12 +80,12 @@ const Download = () => {
   return (
     <div className="flex-1 h-full bg-white flex flex-col overflow-y-auto">
       {/* Hero Section */}
-      <div className="bg-gradient-to-br from-gray-900 to-black text-white py-20 px-8 text-center relative overflow-hidden">
+      <div className="bg-gradient-to-br from-indigo-900 to-purple-900 text-white py-20 px-8 text-center relative overflow-hidden">
         <div className="relative z-10 max-w-4xl mx-auto">
           <h1 className="text-4xl md:text-5xl font-bold mb-6 tracking-tight">
             随时随地，捕捉灵感
           </h1>
-          <p className="text-lg text-gray-400 mb-10 max-w-2xl mx-auto">
+          <p className="text-lg text-indigo-200 mb-10 max-w-2xl mx-auto">
             下载简单写作客户端，体验更流畅的本地创作环境。支持 Windows, macOS, Linux 以及 iOS, Android 全平台覆盖。
           </p>
           

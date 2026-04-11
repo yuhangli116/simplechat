@@ -22,17 +22,23 @@ import {
 import { aiService, MODEL_PRICING } from '@/services/ai';
 import ModelSelector from '@/components/ModelSelector';
 import { useAuthStore } from '@/store/useAuthStore';
+import { useFileStore } from '@/store/useFileStore';
 import { useNavigate, useParams } from 'react-router-dom';
 import ContextSelectorDialog from '@/components/ContextSelectorDialog';
 import { FileText } from 'lucide-react';
+import { loadChapterContent, saveChapterContent } from '@/lib/workspacePersistence';
 
 const StoryEditor = () => {
   const navigate = useNavigate();
   const { workId, chapterId } = useParams();
   const { user, diamondBalance, fetchBalance } = useAuthStore();
+  const { files } = useFileStore();
   const [isAiGenerating, setIsAiGenerating] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string>('deepseek');
   const [showModelSelector, setShowModelSelector] = useState(false);
+  const [lastUsage, setLastUsage] = useState<{input_tokens: number, output_tokens: number, total_cost: number} | null>(null);
+  const [aiPhase, setAiPhase] = useState('等待开始');
+  const [aiElapsed, setAiElapsed] = useState(0);
   
   // AI Context
   const [showContextSelector, setShowContextSelector] = useState(false);
@@ -46,7 +52,38 @@ const StoryEditor = () => {
     }
   }, [user]);
 
+  useEffect(() => {
+    if (!isAiGenerating) {
+      setAiElapsed(0);
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setAiElapsed((prev) => prev + 1);
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [isAiGenerating]);
+
   const PLACEHOLDER_TEXT = "请先参考大纲，再写自己的提示词prompt...";
+
+  const currentChapterName = React.useMemo(() => {
+    const findByPath = (nodes: typeof files): string | null => {
+      for (const node of nodes) {
+        if (node.path === `/workspace/p/${workId}/story/${chapterId}`) {
+          return node.name;
+        }
+        if (node.children?.length) {
+          const found = findByPath(node.children as typeof files);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    if (!workId || !chapterId) return '未命名章节';
+    return findByPath(files) || '未命名章节';
+  }, [files, workId, chapterId]);
 
   const editor = useEditor({
     extensions: [
@@ -74,45 +111,55 @@ const StoryEditor = () => {
 
   // Load content
   useEffect(() => {
-    if (editor && workId && chapterId) {
-        const key = `story-${workId}-${chapterId}`;
-        const saved = localStorage.getItem(key);
-        if (saved) {
-            editor.commands.setContent(saved);
-        } else {
-            // Default content for new chapter
-            // Check if it's a "new" chapter (e.g. not chapter 1, or just empty)
-            // User said: "新建的未命名章节" (New unnamed chapter)
-            // We can just check if saved is null.
-            // If chapterId is '1', maybe keep the demo text? 
-            // User said "New unnamed chapter". Chapter 1 is usually named or started.
-            // But let's apply this logic to all "new" chapters (where no content exists).
-            
-            if (chapterId === '1' && !saved) {
-                 // Keep demo for chapter 1 if user hasn't edited it? 
-                 // Or just use placeholder? 
-                 // Let's use placeholder for consistency if it's "new".
-                 // But previously I had demo text.
-                 // I'll check if it's "newly created".
-                 // For now, I'll use placeholder for all empty chapters.
-                 editor.commands.setContent(`<p>${PLACEHOLDER_TEXT}</p>`);
-            } else {
-                 editor.commands.setContent(`<p>${PLACEHOLDER_TEXT}</p>`);
-            }
-        }
-    }
-  }, [editor, workId, chapterId]);
+    if (!editor || !workId || !chapterId) return;
 
-  const handleSave = () => {
+    const key = `story-${workId}-${chapterId}`;
+
+    const applyContent = (content: string | null) => {
+      if (content) {
+        editor.commands.setContent(content);
+        return;
+      }
+      editor.commands.setContent(`<p>${PLACEHOLDER_TEXT}</p>`);
+    };
+
+    const loadContent = async () => {
+      if (user) {
+        try {
+          const remoteContent = await loadChapterContent(chapterId);
+          if (remoteContent) {
+            localStorage.setItem(key, remoteContent);
+            applyContent(remoteContent);
+            return;
+          }
+        } catch (error) {
+          console.error('Failed to load chapter from Supabase:', error);
+        }
+      }
+
+      applyContent(localStorage.getItem(key));
+    };
+
+    loadContent();
+  }, [editor, workId, chapterId, user]);
+
+  const handleSave = async () => {
       if (editor && workId && chapterId) {
           const key = `story-${workId}-${chapterId}`;
           const content = editor.getHTML();
-          // Don't save if it's just placeholder
           if (editor.getText().trim() === PLACEHOLDER_TEXT) {
               return; 
           }
           localStorage.setItem(key, content);
-          // Show toast or feedback?
+          if (user) {
+            try {
+              await saveChapterContent(workId, chapterId, currentChapterName, content);
+            } catch (error) {
+              console.error('Failed to save chapter to Supabase:', error);
+              alert('已保存到本地，但同步到数据库失败');
+              return;
+            }
+          }
           alert('保存成功');
       }
   };
@@ -156,6 +203,21 @@ const StoryEditor = () => {
       setAiContexts(prev => prev.filter(c => c.nodeId !== nodeId));
   };
 
+  const insertContentGradually = async (content: string) => {
+    if (!editor) return;
+
+    const normalizedContent = content.trim();
+    if (!normalizedContent) return;
+
+    const chunkSize = normalizedContent.length > 1200 ? 80 : 40;
+
+    for (let index = 0; index < normalizedContent.length; index += chunkSize) {
+      const chunk = normalizedContent.slice(index, index + chunkSize);
+      editor.commands.insertContent(chunk);
+      await new Promise((resolve) => window.setTimeout(resolve, 18));
+    }
+  };
+
   const handleAiContinue = async () => {
     if (!editor) return;
     
@@ -168,16 +230,35 @@ const StoryEditor = () => {
     // }
 
     setIsAiGenerating(true);
+    setAiPhase('正在准备上下文');
     
     try {
-      // Get last 1000 characters as context
-      const textContext = editor.getText().slice(-1000);
+      const textContext = editor.getText().slice(-2000);
       
       let finalContext = textContext;
+      let summarizationUsage = null;
+      
       if (aiContexts.length > 0) {
           const references = aiContexts.map(c => `来源: ${c.sourceName}\n内容:\n${c.content}`).join('\n\n');
-          finalContext = `【参考大纲/设定】\n${references}\n\n【当前章节内容】\n${textContext}`;
+          
+          if (references.length > 3000) {
+              setAiPhase('正在总结参考大纲');
+              const summaryRes = await aiService.summarizeContext(references, user?.id);
+              if (summaryRes.error) {
+                  alert(`总结大纲/设定失败: ${summaryRes.error}`);
+                  setIsAiGenerating(false);
+                  return;
+              }
+              finalContext = `【经过精简的参考大纲/设定】\n${summaryRes.content}\n\n【当前章节前文内容】\n${textContext}`;
+              if (summaryRes.usage) summarizationUsage = summaryRes.usage;
+          } else {
+              finalContext = `【参考大纲/设定】\n${references}\n\n【当前章节前文内容】\n${textContext}`;
+          }
+      } else {
+          finalContext = `【当前章节前文内容】\n${textContext}`;
       }
+
+      setAiPhase('正在创作正文');
       
       const response = await aiService.generateText({
         prompt: "请续写这段小说情节，保持风格一致，情节紧凑。",
@@ -187,12 +268,33 @@ const StoryEditor = () => {
       });
 
       if (response.content) {
-        editor.commands.insertContent(response.content);
-        // Refresh balance after generation
+        setAiPhase('正在写入正文');
+        await insertContentGradually(response.content);
+        
+        if (workId && chapterId) {
+            const content = editor.getHTML();
+            localStorage.setItem(`story-${workId}-${chapterId}`, content);
+            if (user) {
+                try {
+                    await saveChapterContent(workId, chapterId, currentChapterName, content);
+                } catch (e) {
+                    console.error('Auto-save failed:', e);
+                }
+            }
+        }
+        
         if (user) fetchBalance();
         
         if (response.usage) {
-           console.log(`Cost: ${response.usage.total_cost} diamonds`);
+           const totalCost = response.usage.total_cost + (summarizationUsage ? summarizationUsage.total_cost : 0);
+           const inputTokens = response.usage.input_tokens + (summarizationUsage ? summarizationUsage.input_tokens : 0);
+           const outputTokens = response.usage.output_tokens + (summarizationUsage ? summarizationUsage.output_tokens : 0);
+           setLastUsage({
+               input_tokens: inputTokens,
+               output_tokens: outputTokens,
+               total_cost: totalCost
+           });
+           setTimeout(() => setLastUsage(null), 5000);
         }
       } else if (response.error) {
         alert(`AI生成失败: ${response.error}`);
@@ -202,6 +304,7 @@ const StoryEditor = () => {
       alert('AI生成发生错误，请重试');
     } finally {
       setIsAiGenerating(false);
+      setAiPhase('等待开始');
     }
   };
 
@@ -273,7 +376,7 @@ const StoryEditor = () => {
             className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 text-white rounded-md text-sm hover:bg-purple-700 transition-colors disabled:opacity-70 shadow-sm"
           >
             <Sparkles className="w-4 h-4" />
-            {isAiGenerating ? 'AI 续写中...' : 'AI 续写'}
+            {isAiGenerating ? aiPhase : 'AI 续写'}
           </button>
           
           <button 
@@ -287,6 +390,29 @@ const StoryEditor = () => {
 
         {/* Editor Content */}
         <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-[#f9f9fb] flex justify-center relative">
+          {isAiGenerating && (
+            <div className="absolute inset-0 z-10 bg-white/70 backdrop-blur-sm flex items-center justify-center">
+              <div className="w-full max-w-md mx-4 rounded-2xl border border-purple-100 bg-white/95 shadow-xl px-6 py-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-purple-100 text-purple-600">
+                    <Sparkles className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">AI 正在帮你续写这一章</div>
+                    <div className="text-xs text-gray-500">{aiPhase} · 已等待 {aiElapsed}s</div>
+                  </div>
+                </div>
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-purple-100">
+                  <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-500 animate-[pulse_1.6s_ease-in-out_infinite]" />
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-2 text-xs text-gray-500">
+                  <div className={`rounded-lg border px-3 py-2 ${aiPhase === '正在准备上下文' ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 bg-gray-50'}`}>整理上下文</div>
+                  <div className={`rounded-lg border px-3 py-2 ${aiPhase === '正在总结参考大纲' || aiPhase === '正在创作正文' ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 bg-gray-50'}`}>模型创作</div>
+                  <div className={`rounded-lg border px-3 py-2 ${aiPhase === '正在写入正文' ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 bg-gray-50'}`}>写入章节</div>
+                </div>
+              </div>
+            </div>
+          )}
           
           {/* Left Sidebar for Contexts */}
           {aiContexts.length > 0 && (
@@ -340,6 +466,19 @@ const StoryEditor = () => {
         onSelect={handleContextSelect}
         workId={workId}
       />
+
+      {/* AI Usage Toast */}
+      {lastUsage && (
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
+              <div className="bg-purple-50 border border-purple-200 text-purple-700 px-4 py-2 rounded-full shadow-lg flex items-center gap-2 text-sm font-medium">
+                  <Sparkles className="w-4 h-4 text-purple-500" />
+                  <span>AI 续写成功</span>
+                  <span className="text-purple-600/80 bg-purple-100/50 px-2 py-0.5 rounded-full text-xs border border-purple-200/50 ml-2">
+                      消耗: {lastUsage.total_cost} 钻石 (In: {lastUsage.input_tokens}, Out: {lastUsage.output_tokens})
+                  </span>
+              </div>
+          </div>
+      )}
     </div>
   );
 };

@@ -18,11 +18,13 @@ import '@/styles/reactflow.css';
 import { v4 as uuidv4 } from 'uuid';
 import { aiService } from '@/services/ai';
 import { useAuthStore } from '@/store/useAuthStore';
+import { useFileStore } from '@/store/useFileStore';
 import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Share2, Sparkles, Layout, Palette, Maximize, Check } from 'lucide-react';
 import MindMapNode from './MindMapNode';
 import { getLayoutedElements } from '@/utils/layout';
 import AIGenerationDialog from './AIGenerationDialog';
 import ContextSelectorDialog from './ContextSelectorDialog';
+import { getMindMapTitleFromRoute, loadMindMapContent, saveMindMapContent } from '@/lib/workspacePersistence';
 
 interface MindMapEditorProps {
   type?: 'outline' | 'world' | 'character' | 'event';
@@ -60,13 +62,84 @@ const getDefaultData = (type: string) => {
   };
 };
 
+type AIGeneratedTreeNode = {
+  label: string;
+  content?: string;
+  children: AIGeneratedTreeNode[];
+};
+
+const extractJsonBlock = (content: string) => {
+  const cleaned = content.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+  if (!cleaned) return '';
+
+  const candidates = [
+    cleaned,
+    cleaned.match(/\{[\s\S]*\}/)?.[0] || '',
+    cleaned.match(/\[[\s\S]*\]/)?.[0] || '',
+  ].filter(Boolean);
+
+  return candidates[0] || '';
+};
+
+const normalizeGeneratedChildren = (value: unknown): AIGeneratedTreeNode[] => {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const candidate = item as Record<string, unknown>;
+      const labelSource = candidate.label || candidate.title || candidate.name || candidate.node || candidate.text;
+      const label = typeof labelSource === 'string' ? labelSource.trim() : '';
+
+      if (!label) {
+        return null;
+      }
+
+      const contentSource = candidate.content || candidate.description || candidate.summary;
+
+      return {
+        label,
+        content: typeof contentSource === 'string' ? contentSource.trim() : undefined,
+        children: normalizeGeneratedChildren(candidate.children || candidate.nodes || candidate.items),
+      };
+    })
+    .filter((item): item is AIGeneratedTreeNode => Boolean(item));
+};
+
+const parseMindMapAIResult = (content: string) => {
+  const jsonBlock = extractJsonBlock(content);
+  if (!jsonBlock) {
+    throw new Error('AI 未返回可解析的 JSON');
+  }
+
+  const parsed = JSON.parse(jsonBlock);
+  const container = Array.isArray(parsed) ? { children: parsed } : parsed;
+
+  return {
+    newLabel: typeof container.newLabel === 'string' ? container.newLabel.trim() : '',
+    content:
+      typeof container.content === 'string'
+        ? container.content.trim()
+        : typeof container.description === 'string'
+          ? container.description.trim()
+          : '',
+    children: normalizeGeneratedChildren(container.children || container.nodes || container.items || []),
+  };
+};
+
 const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId, id, initialData }) => {
   const { user, fetchBalance, diamondBalance } = useAuthStore();
+  const { files } = useFileStore();
   const navigate = useNavigate();
   const location = useLocation();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showAIDialog, setShowAIDialog] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [lastUsage, setLastUsage] = useState<{input_tokens: number, output_tokens: number, total_cost: number} | null>(null);
   
   // AI Context
   const [showContextSelector, setShowContextSelector] = useState(false);
@@ -76,6 +149,31 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const themeKey = useMemo(() => {
     return id ? `mindmap-theme-${id}` : `mindmap-theme-${workId}-${type}`;
   }, [workId, type, id]);
+
+  const storageKey = useMemo(() => {
+    return id ? `mindmap-${id}` : `mindmap-${workId}-${type}`;
+  }, [workId, type, id]);
+
+  const currentPagePath = useMemo(() => {
+    return id ? `/workspace/p/${workId}/mindmap/${id}` : `/workspace/p/${workId}/${type === 'character' ? 'characters' : type === 'event' ? 'events' : type}`;
+  }, [id, workId, type]);
+
+  const mindMapTitle = useMemo(() => {
+    const findByPath = (nodes: typeof files): string | null => {
+      for (const node of nodes) {
+        if (node.path === currentPagePath) {
+          return node.name;
+        }
+        if (node.children?.length) {
+          const found = findByPath(node.children as typeof files);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    return findByPath(files) || (location.state as any)?.fileName || getMindMapTitleFromRoute(type);
+  }, [files, currentPagePath, location.state, type]);
 
   // Initialize theme from localStorage or default
   const [theme, setTheme] = useState<ThemeType>(() => {
@@ -171,6 +269,10 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   const [nodes, setNodes, onNodesChange] = useNodesState(startNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(startEdges);
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) || null,
+    [nodes, selectedNodeId]
+  );
 
   // Load Theme when page changes
   React.useEffect(() => {
@@ -234,7 +336,6 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   const handleCloseAiDialog = () => {
     setShowAIDialog(false);
-    setSelectedNodeId(null);
   };
 
   const handleNodeLabelChange = useCallback((nodeId: string, newLabel: string) => {
@@ -285,91 +386,98 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   const nodeTypes = useMemo(() => ({
     mindMap: (props: any) => {
-      // ... (existing AI mode check)
-      const isAiMode = props.id === selectedNodeId && showAIDialog;
-
-      if (isAiMode) {
-        return (
-            <div className="relative z-50">
-                 <AIGenerationDialog
-                    isOpen={true}
-                    onClose={handleCloseAiDialog}
-                    onSubmit={handleAiSubmit}
-                    nodeLabel={props.data.label}
-                    nodeId={props.id}
-                    balance={diamondBalance}
-                    contexts={aiContexts}
-                    onAddContext={() => setShowContextSelector(true)}
-                    onRemoveContext={(index) => {
-                        setAiContexts(prev => prev.filter((_, i) => i !== index));
-                    }}
-                 />
-            </div>
-        );
-      }
-
       return (
         <MindMapNode 
             {...props} 
             data={{
             ...props.data,
-            onAiClick: handleAiClick,
-            onChange: (newLabel: string) => handleNodeLabelChange(props.id, newLabel), // Pass change handler
+            onAiClick: () => handleAiClick(props.id),
+            onChange: (newLabel: string) => handleNodeLabelChange(props.id, newLabel),
+            aiActive: props.id === selectedNodeId && showAIDialog,
             theme: theme
             }} 
         />
       );
     },
-  }), [handleAiClick, selectedNodeId, showAIDialog, diamondBalance, theme, aiContexts, handleNodeLabelChange]);
+  }), [handleAiClick, selectedNodeId, showAIDialog, theme, handleNodeLabelChange]);
   
   // Load from localStorage or reset when type/workId/id changes
 
   // Load from localStorage or reset when type/workId/id changes
   React.useEffect(() => {
     if (!workId && !id) {
-      // If no workId/id, just use default (for demo/standalone)
       const newData = getDefaultData(type);
       setNodes(newData.nodes);
       setEdges(newData.edges);
       return;
     }
 
-    const key = id ? `mindmap-${id}` : `mindmap-${workId}-${type}`;
-    const saved = localStorage.getItem(key);
-    if (saved) {
-      try {
-        const { nodes: savedNodes, edges: savedEdges } = JSON.parse(saved);
-        setNodes(savedNodes || []);
-        setEdges(savedEdges || []);
-      } catch (e) {
-        console.error('Failed to parse saved mindmap', e);
-        const newData = getDefaultData(type);
-        setNodes(newData.nodes);
-        setEdges(newData.edges);
-      }
-    } else {
+    const applyMindMapData = (content: { nodes?: Node[]; edges?: Edge[] } | null) => {
       const newData = getDefaultData(type);
-      
-      // Override root label if name is passed via location state (e.g. "新建大纲5")
       if (location.state && (location.state as any).fileName) {
           const fileName = (location.state as any).fileName;
           newData.nodes[0].data.label = fileName;
       }
-      
+      if (content?.nodes?.length) {
+        setNodes(content.nodes);
+        setEdges(content.edges || []);
+        return;
+      }
       setNodes(newData.nodes);
       setEdges(newData.edges);
-    }
-  }, [type, workId, id, setNodes, setEdges, location.state]);
+    };
 
-  // Auto-save to localStorage
+    const loadData = async () => {
+      if (user && workId) {
+        try {
+          const remoteContent = await loadMindMapContent({ workId, id, type: id ? undefined : type });
+          if (remoteContent) {
+            localStorage.setItem(storageKey, JSON.stringify(remoteContent));
+            applyMindMapData(remoteContent as { nodes?: Node[]; edges?: Edge[] } | null);
+            return;
+          }
+        } catch (error) {
+          console.error('Failed to load mind map from Supabase:', error);
+        }
+      }
+
+      const saved = localStorage.getItem(storageKey);
+      if (!saved) {
+        applyMindMapData(null);
+        return;
+      }
+
+      try {
+        applyMindMapData(JSON.parse(saved));
+      } catch (e) {
+        console.error('Failed to parse saved mindmap', e);
+        applyMindMapData(null);
+      }
+    };
+
+    loadData();
+  }, [type, workId, id, setNodes, setEdges, location.state, user, storageKey]);
+
   React.useEffect(() => {
     if (!workId && !id) return;
-    const key = id ? `mindmap-${id}` : `mindmap-${workId}-${type}`;
     const timeout = setTimeout(() => {
-      localStorage.setItem(key, JSON.stringify({ nodes, edges }));
-    }, 1000); // Debounce 1s
+      const payload = { nodes, edges };
+      localStorage.setItem(storageKey, JSON.stringify(payload));
+      if (user && workId) {
+        saveMindMapContent({
+          workId,
+          nodeId: id || `mm-${type}-${workId}`,
+          title: mindMapTitle,
+          type,
+          isDefault: !id,
+          content: payload,
+        }).catch((error) => {
+          console.error('Failed to save mind map to Supabase:', error);
+        });
+      }
+    }, 1000);
     return () => clearTimeout(timeout);
-  }, [nodes, edges, workId, type, id]);
+  }, [nodes, edges, workId, type, id, user, storageKey, mindMapTitle]);
 
   // Center view on mount or data change
   React.useEffect(() => {
@@ -380,6 +488,21 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return () => clearTimeout(timeout);
     }
   }, [reactFlowInstance, type, workId, id, nodes.length]);
+
+  React.useEffect(() => {
+    if (!showAIDialog || !selectedNode || !reactFlowInstance) return;
+
+    const width = typeof (selectedNode as Node & { width?: number }).width === 'number' ? (selectedNode as Node & { width?: number }).width || 0 : 0;
+    const height = typeof (selectedNode as Node & { height?: number }).height === 'number' ? (selectedNode as Node & { height?: number }).height || 0 : 0;
+    const centerX = selectedNode.position.x + width / 2;
+    const centerY = selectedNode.position.y + height / 2;
+    const currentZoom = typeof reactFlowInstance.getZoom === 'function' ? reactFlowInstance.getZoom() : 1;
+
+    reactFlowInstance.setCenter(centerX, centerY, {
+      zoom: Math.max(currentZoom, 1.1),
+      duration: 400,
+    });
+  }, [showAIDialog, selectedNode, reactFlowInstance]);
 
   const onConnect = useCallback((params: Connection) => setEdges((eds) => addEdge(params, eds)), [setEdges]);
 
@@ -411,7 +534,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     // After undoing, we are at newIndex. Future steps are from newIndex + 1 to end.
     // If length - 1 - newIndex > 1, we should truncate history from the end.
     setHistory(prev => {
-        let newHistory = [...prev];
+        const newHistory = [...prev];
         while (newHistory.length - 1 - newIndex > 1) {
             newHistory.pop();
         }
@@ -601,44 +724,57 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     //   alert('请先登录后使用AI功能');
     //   return;
     // }
-    setShowAIDialog(false);
     
-    // Reset selected node ID to exit "AI Mode"
-    // Note: We need to keep the ID temporarily to know which node to update
     const targetNodeId = selectedNodeId;
-    setSelectedNodeId(null); 
+    if (!targetNodeId) return;
 
     const selectedNode = nodes.find(n => n.id === targetNodeId);
-    if (!selectedNode || !targetNodeId) return;
+    if (!selectedNode) return;
 
     setIsGenerating(true);
 
     try {
-        // Construct Prompt
-        let prompt = `你是一个专业的小说大纲生成助手。
-当前选中节点是：${selectedNode.data.label}
-根节点是：${nodes.find(n => n.data.isRoot)?.data.label || '未知小说'}
-`;
-
+        let finalContext = '';
+        let summarizationUsage = null;
+        
         if (aiContexts.length > 0) {
-            prompt += '\n【参考上下文】\n';
+            let combinedContext = '';
             aiContexts.forEach(ctx => {
-                prompt += `来源: ${ctx.sourceName}\n内容:\n${ctx.content}\n\n`;
+                combinedContext += `来源: ${ctx.sourceName}\n内容:\n${ctx.content}\n\n`;
             });
-            prompt += '请根据上述上下文，结合用户的提示词进行创作，确保内容与上下文保持一致。\n';
+            
+            if (combinedContext.length > 3000) {
+                const summaryRes = await aiService.summarizeContext(combinedContext, user?.id);
+                if (summaryRes.error) {
+                    alert(`总结上下文失败: ${summaryRes.error}`);
+                    setIsGenerating(false);
+                    return;
+                }
+                finalContext = `【经过精简的参考上下文摘要】\n${summaryRes.content}`;
+                if (summaryRes.usage) summarizationUsage = summaryRes.usage;
+            } else {
+                finalContext = `【参考上下文】\n${combinedContext}`;
+            }
         }
 
-        prompt += `
+        // Construct Prompt
+        const prompt = `你是一个专业的小说大纲生成助手。
+当前选中节点是：${selectedNode.data.label}
+根节点是：${nodes.find(n => n.data.isRoot)?.data.label || '未知小说'}
+
 用户需求：${userPrompt}
 
-请根据用户需求和上下文，为当前节点生成子节点。
+请根据用户需求和上下文，为当前节点补全内容，并在需要时生成子节点。
 请直接返回一个纯 JSON 对象，结构如下：
 {
+  "newLabel": "可选，新标题",
+  "content": "可选，当前节点的正文描述",
   "children": [
     {
       "label": "子节点标题",
+      "content": "可选，子节点描述",
       "children": [
-         { "label": "孙子节点（可选）" }
+         { "label": "孙子节点（可选）", "content": "可选" }
       ]
     }
   ]
@@ -646,84 +782,137 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 注意：
 1. 返回必须是合法的 JSON。
 2. 不要包含 Markdown 格式（如 \`\`\`json）。
-3. 如果用户只是想修改当前节点，children 可以为空，你可以返回 "newLabel": "新标题" 来重命名当前节点。
-`;
+3. 如果用户只想补全当前节点，可以让 children 为空，但要返回 content。
+4. children 中每个节点都必须包含 label 字段。`;
 
         const response = await aiService.generateText({
             prompt,
+            context: finalContext,
             model: model as any, 
             userId: user?.id || 'guest-user' // Guest fallback
         });
 
         if (response.content) {
             try {
-                // Try to clean up markdown if AI adds it
-                const jsonStr = response.content.replace(/```json/g, '').replace(/```/g, '').trim();
-                const result = JSON.parse(jsonStr);
+                const result = parseMindMapAIResult(response.content);
                 
                 let currentNodes = [...nodes];
                 let currentEdges = [...edges];
                 let stateChanged = false;
 
-                // 1. Rename current node if needed
                 if (result.newLabel) {
-                    currentNodes = currentNodes.map(n => n.id === targetNodeId ? { ...n, data: { ...n.data, label: result.newLabel } } : n);
+                    currentNodes = currentNodes.map((node) =>
+                      node.id === targetNodeId
+                        ? { ...node, data: { ...node.data, label: result.newLabel } }
+                        : node
+                    );
                     stateChanged = true;
                 }
 
-                // 2. Add children recursively
-                if (result.children && Array.isArray(result.children)) {
-                    let newNodesToAdd: Node[] = [];
-                    let newEdgesToAdd: Edge[] = [];
+                if (result.content) {
+                    currentNodes = currentNodes.map((node) =>
+                      node.id === targetNodeId
+                        ? { ...node, data: { ...node.data, content: result.content } }
+                        : node
+                    );
+                    stateChanged = true;
+                }
 
-                    const processChildren = (parentId: string, children: any[], parentX: number, parentY: number, level: number) => {
-                        children.forEach((child: any, index: number) => {
-                            const childId = uuidv4();
-                            // Position logic is rudimentary here, layout engine will fix it
-                            const posX = parentX + 250;
-                            const posY = parentY + (index * 60);
+                if (result.children.length > 0) {
+                    const existingChildIds = new Set<string>();
+                    const queue = currentEdges.filter((edge) => edge.source === targetNodeId).map((edge) => edge.target);
 
-                            newNodesToAdd.push({
-                                id: childId,
-                                type: 'mindMap',
-                                data: { label: child.label, theme },
-                                position: { x: posX, y: posY },
-                            });
+                    while (queue.length > 0) {
+                      const currentId = queue.shift()!;
+                      if (existingChildIds.has(currentId)) {
+                        continue;
+                      }
+                      existingChildIds.add(currentId);
+                      currentEdges
+                        .filter((edge) => edge.source === currentId)
+                        .forEach((edge) => queue.push(edge.target));
+                    }
 
-                            newEdgesToAdd.push({
-                                id: `e-${parentId}-${childId}`,
-                                source: parentId,
-                                target: childId,
-                                type: 'smoothstep',
-                                style: { stroke: THEMES[theme].edgeColor }
-                            });
+                    currentNodes = currentNodes.filter((node) => !existingChildIds.has(node.id));
+                    currentEdges = currentEdges.filter(
+                      (edge) => edge.source !== targetNodeId && !existingChildIds.has(edge.source) && !existingChildIds.has(edge.target)
+                    );
 
-                            if (child.children && Array.isArray(child.children)) {
-                                processChildren(childId, child.children, posX, posY, level + 1);
-                            }
+                    const newNodesToAdd: Node[] = [];
+                    const newEdgesToAdd: Edge[] = [];
+
+                    const processChildren = (
+                      parentId: string,
+                      children: AIGeneratedTreeNode[],
+                      parentX: number,
+                      parentY: number,
+                      level: number
+                    ) => {
+                      children.forEach((child, index) => {
+                        const childId = uuidv4();
+                        const posX = parentX + 250;
+                        const posY = parentY + index * 110 + level * 10;
+
+                        newNodesToAdd.push({
+                          id: childId,
+                          type: 'mindMap',
+                          data: {
+                            label: child.label,
+                            content: child.content,
+                            theme,
+                          },
+                          position: { x: posX, y: posY },
                         });
+
+                        newEdgesToAdd.push({
+                          id: `e-${parentId}-${childId}`,
+                          source: parentId,
+                          target: childId,
+                          type: 'smoothstep',
+                          style: { stroke: THEMES[theme].edgeColor }
+                        });
+
+                        if (child.children.length > 0) {
+                          processChildren(childId, child.children, posX, posY, level + 1);
+                        }
+                      });
                     };
 
-                    const parentNode = currentNodes.find(n => n.id === targetNodeId);
+                    const parentNode = currentNodes.find((node) => node.id === targetNodeId);
                     if (parentNode) {
-                        processChildren(targetNodeId, result.children, parentNode.position.x, parentNode.position.y, 0);
-                        
-                        currentNodes = [...currentNodes, ...newNodesToAdd];
-                        currentEdges = [...currentEdges, ...newEdgesToAdd];
-                        stateChanged = true;
+                      processChildren(targetNodeId, result.children, parentNode.position.x, parentNode.position.y, 0);
+                      currentNodes = [...currentNodes, ...newNodesToAdd];
+                      currentEdges = [...currentEdges, ...newEdgesToAdd];
+                      stateChanged = true;
                     }
                 }
                 
                 if (stateChanged) {
-                    setNodes(currentNodes);
-                    setEdges(currentEdges);
-                    recordState(currentNodes, currentEdges);
-                    
-                    // Auto Layout after a short delay
-                    setTimeout(() => onLayout('LR'), 100);
+                    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+                      currentNodes,
+                      currentEdges,
+                      'LR'
+                    );
+
+                    setNodes(layoutedNodes);
+                    setEdges(layoutedEdges);
+                    recordState(layoutedNodes, layoutedEdges);
                 }
 
-                // Refresh Balance
+                setShowAIDialog(false);
+                
+                if (response.usage) {
+                    const totalCost = response.usage.total_cost + (summarizationUsage ? summarizationUsage.total_cost : 0);
+                    const inputTokens = response.usage.input_tokens + (summarizationUsage ? summarizationUsage.input_tokens : 0);
+                    const outputTokens = response.usage.output_tokens + (summarizationUsage ? summarizationUsage.output_tokens : 0);
+                    setLastUsage({
+                        input_tokens: inputTokens,
+                        output_tokens: outputTokens,
+                        total_cost: totalCost
+                    });
+                    setTimeout(() => setLastUsage(null), 5000);
+                }
+
                 fetchBalance();
 
             } catch (e) {
@@ -864,11 +1053,62 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
               </div>
             </Panel>
 
+            {/* AI Usage Toast */}
+            {lastUsage && (
+                <Panel position="bottom-center">
+                    <div className="mb-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                        <div className="bg-purple-50 border border-purple-200 text-purple-700 px-4 py-2 rounded-full shadow-lg flex items-center gap-2 text-sm font-medium">
+                            <Sparkles className="w-4 h-4 text-purple-500" />
+                            <span>AI 生成成功</span>
+                            <span className="text-purple-600/80 bg-purple-100/50 px-2 py-0.5 rounded-full text-xs border border-purple-200/50 ml-2">
+                                消耗: {lastUsage.total_cost} 钻石 (In: {lastUsage.input_tokens}, Out: {lastUsage.output_tokens})
+                            </span>
+                        </div>
+                    </div>
+                </Panel>
+            )}
+
           </ReactFlow>
           
 
         </div>
       </ReactFlowProvider>
+
+      {showAIDialog && selectedNode && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/20 backdrop-blur-[2px] px-4" onClick={handleCloseAiDialog}>
+          <div className="flex w-full max-w-5xl items-start justify-center gap-4" onClick={(event) => event.stopPropagation()}>
+            <div className={`hidden xl:block mt-10 w-72 rounded-2xl border p-4 shadow-2xl ${theme === 'dark' ? 'bg-gray-900/95 border-gray-700 text-white' : 'bg-white/95 border-gray-200 text-gray-900'}`}>
+              <div className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-500">当前编辑节点</div>
+              <div className="mt-3 rounded-xl border border-purple-200/60 bg-purple-50/80 p-4 text-gray-900">
+                <div className="text-sm font-semibold">{selectedNode.data.label}</div>
+                <div className="mt-2 text-xs leading-5 text-gray-600">
+                  {typeof selectedNode.data.content === 'string' && selectedNode.data.content.trim()
+                    ? selectedNode.data.content
+                    : '这个节点会保持在画布中心，你现在输入的提示词会直接作用于它，并在需要时自动创建子节点。'}
+                </div>
+              </div>
+            </div>
+            <div className="pointer-events-auto">
+              <AIGenerationDialog
+                isOpen={true}
+                onClose={handleCloseAiDialog}
+                onSubmit={handleAiSubmit}
+                nodeLabel={selectedNode.data.label}
+                nodeId={selectedNode.id}
+                balance={diamondBalance}
+                contexts={aiContexts}
+                onAddContext={() => setShowContextSelector(true)}
+                onRemoveContext={(index) => {
+                  setAiContexts((prev) => prev.filter((_, i) => i !== index));
+                }}
+                isGenerating={isGenerating}
+                loadingText="AI生成中..."
+                lastUsage={lastUsage}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Context Selector Dialog */}
       <ContextSelectorDialog 
@@ -896,7 +1136,7 @@ interface ToolbarButtonProps {
 
 const ToolbarButton: React.FC<ToolbarButtonProps> = ({ onClick, icon, tooltip, highlight, danger, ai, theme = 'dark' }) => {
   const isDark = theme === 'dark';
-  let baseClass = "p-2 rounded-md transition-all duration-200 group relative";
+  const baseClass = "p-2 rounded-md transition-all duration-200 group relative";
   
   // Default colors based on theme
   let colorClass = isDark 

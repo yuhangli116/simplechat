@@ -1,10 +1,21 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { FileNode } from '@/components/FileTree';
 import { v4 as uuidv4 } from 'uuid';
 
-// Re-export FileNode so it's available here
-export type { FileNode };
+export interface FileNode {
+  id: string;
+  name: string;
+  type: 'folder' | 'file' | 'mindmap';
+  path?: string;
+  children?: FileNode[];
+  mindMapType?: 'outline' | 'world' | 'character' | 'event';
+  customIcon?: string;
+  savedContent?: string | null;
+  savedMindMap?: {
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+  } | null;
+}
 
 // Initial Structure (Copied from FileTree.tsx)
 export const initialFileStructure: FileNode[] = [

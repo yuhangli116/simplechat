@@ -5,13 +5,14 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { supabase } from '@/lib/supabase';
+import { loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
 import { Database } from '@/types/supabase';
 
 type Template = Database['public']['Tables']['community_templates']['Row'];
 
 const Community = () => {
   const [activeTab, setActiveTab] = useState('webnovel');
-  const { addNode } = useFileStore();
+  const { addNode, setFiles } = useFileStore();
   const { user } = useAuthStore();
   const navigate = useNavigate();
   const [resources, setResources] = useState<Template[]>([]);
@@ -50,10 +51,10 @@ const Community = () => {
   }, []);
 
   // Mock Data fallback if DB is empty (optional, but good for demo if DB is empty)
-  const mockResources = [
+  const mockResources: Template[] = [
     {
       id: 'mock-1',
-      title: '小说通用模板 (50章节版)',
+      title: '小说通用模板 (10章节版)',
       author_name: '僵尸道士',
       category: '古风言情',
       content: {
@@ -85,6 +86,7 @@ const Community = () => {
       },
       likes: 89,
       downloads: 1278,
+      description: '适用于长篇网文创作的基础模板',
       cover_color: 'bg-gradient-to-br from-orange-400 to-red-500',
       is_official: true,
       tags: [],
@@ -98,7 +100,11 @@ const Community = () => {
       content: { type: 'folder', name: 'Empty', children: [] },
       likes: 0,
       downloads: 0,
-      cover_color: 'bg-gray-200'
+      description: '模板库正在扩充中',
+      cover_color: 'bg-gray-200',
+      is_official: true,
+      tags: [],
+      created_at: new Date().toISOString()
     }
   ];
 
@@ -204,6 +210,11 @@ const Community = () => {
                 newNode.name = `${newNode.name}${Math.floor(Math.random() * 1000)}`;
             }
             addNode(newNode);
+            if (user && newNode.type === 'folder') {
+                await persistWorkTree(user.id, newNode as any);
+                const nextFiles = await loadWorkspaceTree(user.id);
+                setFiles(nextFiles as FileNode[]);
+            }
             alert('模板已应用到工作区！');
             
             // Update download count in DB

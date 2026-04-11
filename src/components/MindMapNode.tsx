@@ -39,7 +39,7 @@ const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
   const handleAiClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent node selection/drag
     if (data.onAiClick) {
-      data.onAiClick(data.id);
+      data.onAiClick();
     }
   };
 
@@ -58,12 +58,14 @@ const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
   const isRoot = data.isRoot;
   const bgColor = isRoot ? currentStyle.rootBg : currentStyle.nodeBg;
   const textColor = isRoot ? 'text-white' : currentStyle.text;
-  const borderColor = selected ? 'ring-2 ring-purple-500 border-purple-500' : (isRoot ? 'border-transparent' : currentStyle.border);
-  const shadow = selected ? 'shadow-lg shadow-purple-500/20' : 'shadow-sm';
+  const isAiActive = Boolean(data.aiActive);
+  const borderColor = selected || isAiActive ? 'ring-2 ring-purple-500 border-purple-500' : (isRoot ? 'border-transparent' : currentStyle.border);
+  const shadow = selected || isAiActive ? 'shadow-lg shadow-purple-500/20' : 'shadow-sm';
+  const contentPreview = typeof data.content === 'string' ? data.content.trim() : '';
 
   return (
     <div 
-      className={`relative px-6 py-3 rounded-xl min-w-[120px] text-center transition-all duration-300 group border ${bgColor} ${borderColor} ${shadow}`}
+      className={`relative px-6 py-3 rounded-xl min-w-[140px] max-w-[260px] text-center transition-all duration-300 group border ${bgColor} ${borderColor} ${shadow}`}
       onDoubleClick={handleDoubleClick}
     >
       <Handle type="target" position={Position.Left} isConnectable={isConnectable} className="!bg-gray-400 !w-2 !h-2 !border-2 !border-white" />
@@ -78,8 +80,21 @@ const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
           className={`w-full bg-transparent outline-none text-center ${textColor}`}
         />
       ) : (
-        <div className={`font-medium select-none flex items-center justify-center gap-2 ${textColor}`}>
-          {label}
+        <div className="space-y-1.5">
+          <div className={`font-medium select-none flex items-center justify-center gap-2 ${textColor}`}>
+            {label}
+          </div>
+          {contentPreview && (
+            <div className={`text-[11px] leading-4 opacity-75 line-clamp-3 whitespace-pre-wrap ${textColor}`}>
+              {contentPreview}
+            </div>
+          )}
+          {isAiActive && (
+            <div className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700">
+              <Sparkles className="w-3 h-3" />
+              正在编辑该节点
+            </div>
+          )}
         </div>
       )}
 

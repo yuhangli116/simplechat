@@ -156,7 +156,7 @@ export const useTrashStore = create<TrashState>()(
               .order('deleted_at', { ascending: false });
               
             if (!error && data) {
-              const items: TrashItem[] = data.map(d => ({
+              const items: TrashItem[] = data.map((d: any) => ({
                 id: d.id,
                 originalId: d.original_id,
                 type: d.type,
