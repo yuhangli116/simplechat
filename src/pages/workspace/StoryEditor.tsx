@@ -106,6 +106,14 @@ const StoryEditor = () => {
         if (text === PLACEHOLDER_TEXT) {
             editor.commands.clearContent();
         }
+    },
+    onUpdate: ({ editor }) => {
+      // Auto-save to localStorage when content changes
+      if (workId && chapterId) {
+        const key = `story-${workId}-${chapterId}`;
+        const content = editor.getHTML();
+        localStorage.setItem(key, content);
+      }
     }
   });
 

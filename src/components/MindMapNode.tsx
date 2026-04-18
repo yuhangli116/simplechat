@@ -19,6 +19,12 @@ const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
   }, [isEditing]);
 
   const handleDoubleClick = () => {
+    if (data.isLocked) {
+      if (data.onLockedAction) {
+        data.onLockedAction();
+      }
+      return;
+    }
     setIsEditing(true);
   };
 
@@ -65,7 +71,7 @@ const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
 
   return (
     <div 
-      className={`relative px-6 py-3 rounded-xl min-w-[140px] max-w-[260px] text-center transition-all duration-300 group border ${bgColor} ${borderColor} ${shadow}`}
+      className={`relative px-4 py-2 rounded-xl min-w-[120px] max-w-[220px] text-center transition-all duration-300 group border ${bgColor} ${borderColor} ${shadow}`}
       onDoubleClick={handleDoubleClick}
     >
       <Handle type="target" position={Position.Left} isConnectable={isConnectable} className="!bg-gray-400 !w-2 !h-2 !border-2 !border-white" />

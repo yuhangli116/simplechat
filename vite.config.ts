@@ -8,6 +8,15 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   Object.assign(process.env, env)
 
+  // Also expose VITE_ prefixed vars without the prefix for server-side access
+  Object.keys(env).forEach(key => {
+    if (key.startsWith('VITE_')) {
+      const withoutPrefix = key.replace('VITE_', '')
+      // Always assign from VITE_ prefixed vars to ensure they're available server-side
+      process.env[withoutPrefix] = env[key]
+    }
+  })
+
   return {
     plugins: [
       react(),

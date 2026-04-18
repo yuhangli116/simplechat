@@ -1,11 +1,10 @@
 import React, { useState, useCallback, useRef, useMemo } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import ReactFlow, {
   ReactFlowProvider,
   addEdge,
   useNodesState,
   useEdgesState,
-  Controls,
   Background,
   MiniMap,
   Connection,
@@ -19,7 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { aiService } from '@/services/ai';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
-import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Share2, Sparkles, Layout, Palette, Maximize, Check } from 'lucide-react';
+import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Sparkles, Palette, Maximize, Check, AlignLeft, AlignRight, ZoomIn, ZoomOut, Lock, Unlock } from 'lucide-react';
 import MindMapNode from './MindMapNode';
 import { getLayoutedElements } from '@/utils/layout';
 import AIGenerationDialog from './AIGenerationDialog';
@@ -134,7 +133,6 @@ const parseMindMapAIResult = (content: string) => {
 const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId, id, initialData }) => {
   const { user, fetchBalance, diamondBalance } = useAuthStore();
   const { files } = useFileStore();
-  const navigate = useNavigate();
   const location = useLocation();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showAIDialog, setShowAIDialog] = useState(false);
@@ -145,6 +143,9 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const [showContextSelector, setShowContextSelector] = useState(false);
   const [aiContexts, setAiContexts] = useState<Array<{ nodeId: string, content: string, sourceName: string }>>([]);
 
+  // Lock state for the whole page (default: unlocked)
+  const [isLocked, setIsLocked] = useState(false);
+
   // Theme Key based on page identity
   const themeKey = useMemo(() => {
     return id ? `mindmap-theme-${id}` : `mindmap-theme-${workId}-${type}`;
@@ -152,6 +153,10 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   const storageKey = useMemo(() => {
     return id ? `mindmap-${id}` : `mindmap-${workId}-${type}`;
+  }, [workId, type, id]);
+
+  const mapViewKey = useMemo(() => {
+    return id ? `view-${id}` : `view-${workId}-${type}`;
   }, [workId, type, id]);
 
   const currentPagePath = useMemo(() => {
@@ -208,6 +213,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   // Undo/Redo history
   const [history, setHistory] = useState<{nodes: Node[], edges: Edge[]}[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const initialFitKeyRef = useRef<string | null>(null);
 
   // Add state to history
   const recordState = useCallback((newNodes: Node[], newEdges: Edge[]) => {
@@ -269,9 +275,13 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   const [nodes, setNodes, onNodesChange] = useNodesState(startNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(startEdges);
+  const activeNodeId = useMemo(
+    () => selectedNodeId || nodes.find((node) => Boolean((node as Node & { selected?: boolean }).selected))?.id || null,
+    [selectedNodeId, nodes]
+  );
   const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === selectedNodeId) || null,
-    [nodes, selectedNodeId]
+    () => nodes.find((node) => node.id === activeNodeId) || null,
+    [nodes, activeNodeId]
   );
 
   // Load Theme when page changes
@@ -309,80 +319,55 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   
   // (Removed Load Theme on Mount effect as it is now handled by useState lazy initialization)
 
+  const showLockedHint = useCallback(() => {
+    alert('当前页面已锁住，点击节点不会选中。请先点击右上角“解锁编辑”，再继续编辑。');
+  }, []);
+
   const handleAiClick = useCallback((nodeId: string) => {
-    // DEV MODE: Allow without login
-    // if (!user) {
-    //   alert('请先登录后使用AI功能');
-    //   navigate('/login');
-    //   return;
-    // }
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
     setSelectedNodeId(nodeId);
     setShowAIDialog(true);
-  }, [user, navigate]);
+  }, [isLocked, showLockedHint]);
 
   const handleToolbarAiClick = useCallback(() => {
-    // DEV MODE: Allow without login
-    // if (!user) {
-    //   alert('请先登录后使用AI功能');
-    //   navigate('/login');
-    //   return;
-    // }
-    if (!selectedNodeId) {
-        alert('请先选择一个节点');
-        return;
+    if (isLocked) {
+      showLockedHint();
+      return;
     }
+    if (!activeNodeId) {
+      alert('请先选择一个节点');
+      return;
+    }
+    setSelectedNodeId(activeNodeId);
     setShowAIDialog(true);
-  }, [user, selectedNodeId, navigate]);
+  }, [isLocked, showLockedHint, activeNodeId]);
 
   const handleCloseAiDialog = () => {
     setShowAIDialog(false);
   };
 
   const handleNodeLabelChange = useCallback((nodeId: string, newLabel: string) => {
-    setNodes((nds) =>
-      nds.map((node) => {
-        if (node.id === nodeId) {
-          return {
-            ...node,
-            data: { ...node.data, label: newLabel },
-          };
-        }
-        return node;
-      })
-    );
-    // We don't explicitly record history here because history is manual in this component
-    // and we want to avoid too many history states for typing.
-    // However, since this is called on blur/enter (committed change), we SHOULD record it.
-    // We need the NEW state to record.
-    // Since setNodes is async-ish in React batching, we can't get the new nodes immediately.
-    // But we can construct them.
-    
-    // Better approach: Calculate new nodes, set them, AND record history.
-    setNodes((currentNodes) => {
-        const newNodes = currentNodes.map((node) => {
-            if (node.id === nodeId) {
-                return {
-                    ...node,
-                    data: { ...node.data, label: newLabel },
-                };
-            }
-            return node;
-        });
-        
-        // Record state with current edges (assuming edges didn't change)
-        // Accessing edges state inside setNodes callback is tricky if not using functional update for recordState.
-        // But recordState uses setHistory which is fine.
-        // However, we need the *current* edges.
-        // We can't easily access 'edges' state inside 'setNodes' callback without it being a dependency.
-        // Let's just trigger a side effect or use a separate effect? 
-        // No, let's just do it in the render cycle or use a ref for edges?
-        
-        // Simpler: Just update state. 
-        // User didn't strictly ask for Undo on text edit, but "saving" is the priority.
-        // The main issue is "content reverts".
-        return newNodes;
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
+
+    const newNodes = nodes.map((node) => {
+      if (node.id === nodeId) {
+        return {
+          ...node,
+          data: { ...node.data, label: newLabel },
+        };
+      }
+      return node;
     });
-  }, [setNodes]);
+
+    setNodes(newNodes);
+    recordState(newNodes, edges);
+  }, [isLocked, showLockedHint, nodes, edges, setNodes, recordState]);
 
   const nodeTypes = useMemo(() => ({
     mindMap: (props: any) => {
@@ -393,13 +378,15 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             ...props.data,
             onAiClick: () => handleAiClick(props.id),
             onChange: (newLabel: string) => handleNodeLabelChange(props.id, newLabel),
-            aiActive: props.id === selectedNodeId && showAIDialog,
+            onLockedAction: showLockedHint,
+            isLocked,
+            aiActive: props.id === activeNodeId && showAIDialog,
             theme: theme
             }} 
         />
       );
     },
-  }), [handleAiClick, selectedNodeId, showAIDialog, theme, handleNodeLabelChange]);
+  }), [handleAiClick, activeNodeId, showAIDialog, theme, handleNodeLabelChange, showLockedHint, isLocked]);
   
   // Load from localStorage or reset when type/workId/id changes
 
@@ -479,15 +466,19 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     return () => clearTimeout(timeout);
   }, [nodes, edges, workId, type, id, user, storageKey, mindMapTitle]);
 
-  // Center view on mount or data change
+  // Center view once after each mind map page is loaded.
+  // Keep viewport unchanged for regular edits like add/delete node.
   React.useEffect(() => {
-    if (reactFlowInstance && nodes.length > 0) {
-      const timeout = setTimeout(() => {
-        reactFlowInstance.fitView({ padding: 0.2 });
-      }, 100);
-      return () => clearTimeout(timeout);
-    }
-  }, [reactFlowInstance, type, workId, id, nodes.length]);
+    if (!reactFlowInstance || nodes.length === 0) return;
+    if (initialFitKeyRef.current === mapViewKey) return;
+
+    const timeout = setTimeout(() => {
+      reactFlowInstance.fitView({ padding: 0.2 });
+      initialFitKeyRef.current = mapViewKey;
+    }, 100);
+
+    return () => clearTimeout(timeout);
+  }, [reactFlowInstance, nodes.length, mapViewKey]);
 
   React.useEffect(() => {
     if (!showAIDialog || !selectedNode || !reactFlowInstance) return;
@@ -507,8 +498,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const onConnect = useCallback((params: Connection) => setEdges((eds) => addEdge(params, eds)), [setEdges]);
 
   const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
     setSelectedNodeId(node.id);
-  }, []);
+  }, [isLocked, showLockedHint]);
 
   const onPaneClick = useCallback(() => {
     setSelectedNodeId(null);
@@ -517,30 +512,46 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   // --- Operations ---
   const handleUndo = useCallback(() => {
-    if (historyIndex <= 0) return;
-    
-    const newIndex = historyIndex - 1;
-    const state = history[newIndex];
-    
-    if (state) {
-        setNodes(JSON.parse(JSON.stringify(state.nodes)));
-        setEdges(JSON.parse(JSON.stringify(state.edges)));
+    const previousIndex = historyIndex - 1;
+    const hasRecordedPreviousState = previousIndex >= 0 && Boolean(history[previousIndex]);
+
+    // As long as the previous user operation is no longer recorded, ask before clearing.
+    if (!hasRecordedPreviousState) {
+      const shouldClear = window.confirm(
+        '前一步没有再记录用户操作（超出可撤销记录范围）。\n继续执行向左撤销会清空当前思维导图的所有节点，是否继续？'
+      );
+
+      if (!shouldClear) return;
+
+      const snapshotBeforeClear = {
+        nodes: JSON.parse(JSON.stringify(nodes)),
+        edges: JSON.parse(JSON.stringify(edges)),
+      };
+
+      setNodes([]);
+      setEdges([]);
+      setSelectedNodeId(null);
+
+      // Keep one-step redo available so users can recover after accidental clear.
+      setHistory([{ nodes: [], edges: [] }, snapshotBeforeClear]);
+      setHistoryIndex(0);
+      return;
     }
-    
-    // We update historyIndex first.
-    setHistoryIndex(newIndex);
-    
-    // Enforce "Max 1 redo step"
-    // After undoing, we are at newIndex. Future steps are from newIndex + 1 to end.
-    // If length - 1 - newIndex > 1, we should truncate history from the end.
-    setHistory(prev => {
-        const newHistory = [...prev];
-        while (newHistory.length - 1 - newIndex > 1) {
-            newHistory.pop();
-        }
-        return newHistory;
+
+    const state = history[previousIndex];
+    setNodes(JSON.parse(JSON.stringify(state.nodes)));
+    setEdges(JSON.parse(JSON.stringify(state.edges)));
+    setHistoryIndex(previousIndex);
+
+    // Keep at most one redo step.
+    setHistory((prev) => {
+      const newHistory = [...prev];
+      while (newHistory.length - 1 - previousIndex > 1) {
+        newHistory.pop();
+      }
+      return newHistory;
     });
-  }, [historyIndex, history, setNodes, setEdges]);
+  }, [historyIndex, history, nodes, edges, setNodes, setEdges]);
 
   const handleRedo = useCallback(() => {
     if (historyIndex >= history.length - 1) return;
@@ -558,20 +569,92 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     setShowThemeSelector((v) => !v);
   }, []);
 
+  const persistMindMapNow = useCallback((payload: { nodes: Node[]; edges: Edge[] }) => {
+    localStorage.setItem(storageKey, JSON.stringify(payload));
+
+    if (user && workId) {
+      saveMindMapContent({
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        title: mindMapTitle,
+        type,
+        isDefault: !id,
+        content: payload,
+      }).catch((error) => {
+        console.error('Failed to save mind map to Supabase:', error);
+      });
+    }
+  }, [storageKey, user, workId, id, type, mindMapTitle]);
+
+  const applyStructuredLayoutAndFit = useCallback((sourceNodes: Node[], sourceEdges: Edge[]) => {
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(sourceNodes, sourceEdges, 'LR');
+
+    setNodes(layoutedNodes);
+    setEdges(layoutedEdges);
+    recordState(layoutedNodes, layoutedEdges);
+    persistMindMapNow({ nodes: layoutedNodes, edges: layoutedEdges });
+
+    setTimeout(() => {
+      reactFlowInstance?.fitView({ padding: 0.2, duration: 320 });
+    }, 60);
+
+    return { layoutedNodes, layoutedEdges };
+  }, [setNodes, setEdges, recordState, persistMindMapNow, reactFlowInstance]);
+
+  const hasNodeOutOfView = useCallback((candidateNodes: Node[]) => {
+    if (!reactFlowInstance || !reactFlowWrapper.current || candidateNodes.length === 0) return false;
+
+    const { width, height } = reactFlowWrapper.current.getBoundingClientRect();
+    if (width <= 0 || height <= 0) return false;
+
+    const { x, y, zoom } = reactFlowInstance.getViewport();
+    const margin = 24;
+
+    return candidateNodes.some((node) => {
+      const nodeWidth = typeof (node as Node & { width?: number }).width === 'number' ? ((node as Node & { width?: number }).width || 180) : 180;
+      const nodeHeight = typeof (node as Node & { height?: number }).height === 'number' ? ((node as Node & { height?: number }).height || 60) : 60;
+
+      const left = node.position.x * zoom + x;
+      const top = node.position.y * zoom + y;
+      const right = (node.position.x + nodeWidth) * zoom + x;
+      const bottom = (node.position.y + nodeHeight) * zoom + y;
+
+      return left < margin || top < margin || right > width - margin || bottom > height - margin;
+    });
+  }, [reactFlowInstance]);
+
+  // Left align: move the entire mind map to the left visually
+  const handleAlignLeft = useCallback(() => {
+    if (!reactFlowInstance) return;
+    const { x, y } = reactFlowInstance.getViewport();
+    reactFlowInstance.setViewport({ x: x - 150, y, zoom: reactFlowInstance.getZoom() }, { duration: 300 });
+  }, [reactFlowInstance]);
+
+  // Right align: move the entire mind map to the right visually
+  const handleAlignRight = useCallback(() => {
+    if (!reactFlowInstance) return;
+    const { x, y } = reactFlowInstance.getViewport();
+    reactFlowInstance.setViewport({ x: x + 150, y, zoom: reactFlowInstance.getZoom() }, { duration: 300 });
+  }, [reactFlowInstance]);
+
+  // Fit view + auto layout to keep all nodes structured and centered.
+  const handleFitView = useCallback(() => {
+    if (nodes.length === 0) return;
+    applyStructuredLayoutAndFit(nodes, edges);
+  }, [nodes, edges, applyStructuredLayoutAndFit]);
+
   const addNode = (type: 'child' | 'sibling') => {
-    // DEV MODE: Allow adding nodes without login
-    // if (!user) {
-    //   if (confirm('新建节点功能需要登录，是否立即登录？')) {
-    //     navigate('/login');
-    //   }
-    //   return;
-    // }
-    if (!selectedNodeId) {
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
+
+    if (!activeNodeId) {
       alert('请先选择一个节点');
       return;
     }
 
-    const selectedNode = nodes.find(n => n.id === selectedNodeId);
+    const selectedNode = nodes.find(n => n.id === activeNodeId);
     if (!selectedNode) return;
 
     const SIBLING_Y_OFFSET = 100;
@@ -613,7 +696,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     };
 
     if (type === 'sibling') {
-       const parentEdge = edges.find(e => e.target === selectedNodeId);
+       const parentEdge = edges.find(e => e.target === activeNodeId);
        if (!parentEdge) {
          alert('根节点无法添加兄弟节点');
          return;
@@ -633,7 +716,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
        }
        
     } else {
-       parentId = selectedNodeId;
+       parentId = activeNodeId;
        const requiredChildX = selectedNode.position.x + getNodeWidth(selectedNode) + 50;
        const childEdges = edges.filter(e => e.source === parentId);
        let childNodes = workingNodes.filter(n => childEdges.some(e => e.target === n.id));
@@ -679,53 +762,47 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     const nextNodes = [...workingNodes, newNode];
     const nextEdges = [...edges, newEdge];
 
+    if (hasNodeOutOfView(nextNodes)) {
+      applyStructuredLayoutAndFit(nextNodes, nextEdges);
+      return;
+    }
+
     setNodes(nextNodes);
     setEdges(nextEdges);
     recordState(nextNodes, nextEdges);
   };
 
   const deleteNode = () => {
-    if (!selectedNodeId) return;
-    const nextNodes = nodes.filter((n) => n.id !== selectedNodeId);
-    const nextEdges = edges.filter((e) => e.source !== selectedNodeId && e.target !== selectedNodeId);
-    
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
+
+    if (!activeNodeId) {
+      alert('请先选择一个节点');
+      return;
+    }
+
+    const nextNodes = nodes.filter((n) => n.id !== activeNodeId);
+    const nextEdges = edges.filter((e) => e.source !== activeNodeId && e.target !== activeNodeId);
+
     setNodes(nextNodes);
     setEdges(nextEdges);
     recordState(nextNodes, nextEdges);
     setSelectedNodeId(null);
   };
 
-  const onLayout = useCallback(
-    (direction: string) => {
-      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-        nodes,
-        edges,
-        direction
-      );
-
-      setNodes([...layoutedNodes]);
-      setEdges([...layoutedEdges]);
-      recordState(layoutedNodes, layoutedEdges);
-      
-      setTimeout(() => {
-          reactFlowInstance?.fitView();
-      }, 50);
-    },
-    [nodes, edges, setNodes, setEdges, reactFlowInstance, recordState]
-  );
-
   // --- AI Generation Logic ---
   
   // (Old handleAiClick removed to avoid duplicate declaration)
 
   const handleAiSubmit = async (model: string, userPrompt: string) => {
-    // Dev Mode: Allow without login
-    // if (!user) {
-    //   alert('请先登录后使用AI功能');
-    //   return;
-    // }
-    
-    const targetNodeId = selectedNodeId;
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
+
+    const targetNodeId = activeNodeId;
     if (!targetNodeId) return;
 
     const selectedNode = nodes.find(n => n.id === targetNodeId);
@@ -888,15 +965,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                 }
                 
                 if (stateChanged) {
-                    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-                      currentNodes,
-                      currentEdges,
-                      'LR'
-                    );
-
-                    setNodes(layoutedNodes);
-                    setEdges(layoutedEdges);
-                    recordState(layoutedNodes, layoutedEdges);
+                    applyStructuredLayoutAndFit(currentNodes, currentEdges);
                 }
 
                 setShowAIDialog(false);
@@ -933,7 +1002,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   return (
     <div className={`w-full h-full min-h-[600px] relative rounded-lg overflow-hidden border transition-colors ${THEMES[theme].bgClass} ${THEMES[theme].borderClass}`} ref={reactFlowWrapper}>
       <ReactFlowProvider>
-        <div className="w-full h-full" style={{ height: '600px' }}>
+        <div className="w-full h-full min-h-[600px]">
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -946,9 +1015,9 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             nodeTypes={nodeTypes} // Register custom node types
             fitView
             attributionPosition="bottom-right"
+            nodesDraggable={!isLocked}
           >
             <Background color={THEMES[theme].flowBg} gap={16} />
-            <Controls className={THEMES[theme].panelClass} />
             <MiniMap 
                 style={{ height: 100 }} 
                 zoomable 
@@ -975,23 +1044,36 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                 />
                 <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
                 <ToolbarButton 
-                  onClick={deleteNode} 
-                  icon={<Trash2 className="w-4 h-4" />} 
-                  tooltip="删除节点" 
-                  danger
+                  onClick={() => reactFlowInstance?.zoomIn({ duration: 300 })}
+                  icon={<ZoomIn className="w-4 h-4" />} 
+                  tooltip="放大" 
+                  theme={theme}
+                />
+                <ToolbarButton 
+                  onClick={() => reactFlowInstance?.zoomOut({ duration: 300 })}
+                  icon={<ZoomOut className="w-4 h-4" />} 
+                  tooltip="缩小" 
                   theme={theme}
                 />
                 <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
                 <ToolbarButton 
-                  onClick={handleUndo} 
-                  icon={<RotateCcw className="w-4 h-4" />} 
-                  tooltip="向左撤销" 
+                  onClick={handleAlignLeft} 
+                  icon={<AlignLeft className="w-4 h-4" />} 
+                  tooltip="左对齐" 
                   theme={theme}
                 />
                 <ToolbarButton 
-                  onClick={handleRedo} 
-                  icon={<RotateCw className="w-4 h-4" />} 
-                  tooltip="向右恢复" 
+                  onClick={handleAlignRight} 
+                  icon={<AlignRight className="w-4 h-4" />} 
+                  tooltip="右对齐" 
+                  theme={theme}
+                />
+                <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
+                <ToolbarButton 
+                  onClick={deleteNode} 
+                  icon={<Trash2 className="w-4 h-4" />} 
+                  tooltip="删除节点" 
+                  danger
                   theme={theme}
                 />
               </div>
@@ -1009,17 +1091,33 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
               />
                 <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
                 <ToolbarButton 
-                  onClick={() => reactFlowInstance?.fitView()} 
+                  onClick={handleUndo} 
+                  icon={<RotateCcw className="w-4 h-4" />} 
+                  tooltip="向左撤销" 
+                  theme={theme}
+                />
+                <ToolbarButton 
+                  onClick={handleRedo} 
+                  icon={<RotateCw className="w-4 h-4" />} 
+                  tooltip="向右恢复" 
+                  theme={theme}
+                />
+                <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
+                <ToolbarButton 
+                  onClick={handleFitView} 
                   icon={<Maximize className="w-4 h-4" />} 
                   tooltip="适应画布" 
                   theme={theme}
                 />
+                <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
                 <ToolbarButton 
-                onClick={() => onLayout('LR')} 
-                icon={<Layout className="w-4 h-4" />} 
-                tooltip="自动布局" 
-                theme={theme}
-              />
+                  onClick={() => setIsLocked(!isLocked)}
+                  icon={isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />} 
+                  tooltip={isLocked ? "解锁编辑" : "锁住页面"} 
+                  theme={theme}
+                  highlight={isLocked}
+                />
+                <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
                 <div className="relative">
                     <ToolbarButton 
                       onClick={toggleThemeSelector} 
@@ -1148,8 +1246,12 @@ const ToolbarButton: React.FC<ToolbarButtonProps> = ({ onClick, icon, tooltip, h
   if (ai) colorClass = "text-purple-500 hover:bg-purple-500/20";
 
   return (
-    <button className={`${baseClass} ${colorClass}`} onClick={onClick} title={tooltip}>
+    <button className={`${baseClass} ${colorClass}`} onClick={onClick}>
       {icon}
+      {/* Custom tooltip with instant display */}
+      <span className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-xs font-medium rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-800 text-white'}`}>
+        {tooltip}
+      </span>
     </button>
   );
 };

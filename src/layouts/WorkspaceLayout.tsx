@@ -1,20 +1,23 @@
 import React from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { 
-  Folder, 
-  Trash2, 
-  Home, 
-  Gift, 
-  BookOpen, 
-  Database, 
-  CreditCard, 
-  Calendar, 
-  Monitor, 
-  Settings, 
+import {
+  Folder,
+  Trash2,
+  Home,
+  Gift,
+  BookOpen,
+  Database,
+  CreditCard,
+  Calendar,
+  Monitor,
+  Settings,
   Sun,
   Moon,
   LogOut,
-  ChevronRight
+  ChevronRight,
+  ChevronLeft,
+  PanelLeft,
+  PanelLeftClose
 } from 'lucide-react';
 import { useThemeStore } from '@/store/useThemeStore';
 import FileTree from '@/components/FileTree';
@@ -25,6 +28,7 @@ const WorkspaceLayout = () => {
   const location = useLocation();
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
+  const [isFileTreeCollapsed, setIsFileTreeCollapsed] = React.useState(false);
 
   // Determine if we should show the FileTree (secondary sidebar)
   // Only show FileTree when in /workspace path
@@ -115,8 +119,34 @@ const WorkspaceLayout = () => {
 
       {/* 2. Secondary Sidebar (File Tree) */}
       {showFileTree && (
-        <aside className="flex-shrink-0 z-10 h-full">
-          <FileTree />
+        <aside className={`flex-shrink-0 z-10 h-full flex ${isFileTreeCollapsed ? 'w-10' : 'w-64'} transition-all duration-300 border-r border-gray-200 bg-white`}>
+          {/* Collapsed state: show only expand button */}
+          {isFileTreeCollapsed ? (
+            <div className="w-full flex items-center justify-center">
+              <button
+                onClick={() => setIsFileTreeCollapsed(false)}
+                className="p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 rounded-lg transition-colors"
+                title="展开作品栏"
+              >
+                <PanelLeft className="w-5 h-5" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col h-full w-full">
+              {/* FileTree - now wrapped, with its own header */}
+              <FileTree />
+              {/* Collapse button at bottom */}
+              <div className="border-t border-gray-200 p-2 flex justify-center">
+                <button
+                  onClick={() => setIsFileTreeCollapsed(true)}
+                  className="p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 rounded-lg transition-colors"
+                  title="收起作品栏"
+                >
+                  <PanelLeftClose className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          )}
         </aside>
       )}
 
