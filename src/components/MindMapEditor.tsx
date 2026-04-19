@@ -11,6 +11,7 @@ import ReactFlow, {
   Edge,
   Node,
   Panel,
+  PanOnScrollMode,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import '@/styles/reactflow.css';
@@ -84,29 +85,38 @@ const extractJsonBlock = (content: string) => {
 const normalizeGeneratedChildren = (value: unknown): AIGeneratedTreeNode[] => {
   if (!Array.isArray(value)) return [];
 
-  return value
-    .map((item) => {
-      if (!item || typeof item !== 'object') {
-        return null;
+  const nodes: AIGeneratedTreeNode[] = [];
+
+  value.forEach((item) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+
+    const candidate = item as Record<string, unknown>;
+    const labelSource = candidate.label || candidate.title || candidate.name || candidate.node || candidate.text;
+    const label = typeof labelSource === 'string' ? labelSource.trim() : '';
+
+    if (!label) {
+      return;
+    }
+
+    const contentSource = candidate.content || candidate.description || candidate.summary;
+    const normalizedNode: AIGeneratedTreeNode = {
+      label,
+      children: normalizeGeneratedChildren(candidate.children || candidate.nodes || candidate.items),
+    };
+
+    if (typeof contentSource === 'string') {
+      const trimmed = contentSource.trim();
+      if (trimmed) {
+        normalizedNode.content = trimmed;
       }
+    }
 
-      const candidate = item as Record<string, unknown>;
-      const labelSource = candidate.label || candidate.title || candidate.name || candidate.node || candidate.text;
-      const label = typeof labelSource === 'string' ? labelSource.trim() : '';
+    nodes.push(normalizedNode);
+  });
 
-      if (!label) {
-        return null;
-      }
-
-      const contentSource = candidate.content || candidate.description || candidate.summary;
-
-      return {
-        label,
-        content: typeof contentSource === 'string' ? contentSource.trim() : undefined,
-        children: normalizeGeneratedChildren(candidate.children || candidate.nodes || candidate.items),
-      };
-    })
-    .filter((item): item is AIGeneratedTreeNode => Boolean(item));
+  return nodes;
 };
 
 const parseMindMapAIResult = (content: string) => {
@@ -135,6 +145,10 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const { files } = useFileStore();
   const location = useLocation();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [multiSelectedNodeIds, setMultiSelectedNodeIds] = useState<string[]>([]);
+  const [isRightDraggingSelection, setIsRightDraggingSelection] = useState(false);
+  const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [showAIDialog, setShowAIDialog] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [lastUsage, setLastUsage] = useState<{input_tokens: number, output_tokens: number, total_cost: number} | null>(null);
@@ -208,6 +222,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   // Ref to ReactFlow instance for coordinate projection
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const selectionDragStartRef = useRef<{ x: number; y: number } | null>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
 
   // Undo/Redo history
@@ -279,10 +294,6 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     () => selectedNodeId || nodes.find((node) => Boolean((node as Node & { selected?: boolean }).selected))?.id || null,
     [selectedNodeId, nodes]
   );
-  const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === activeNodeId) || null,
-    [nodes, activeNodeId]
-  );
 
   // Load Theme when page changes
   React.useEffect(() => {
@@ -303,7 +314,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     
     setEdges(eds => eds.map(e => ({
         ...e,
-        style: { ...e.style, stroke: THEMES[theme].edgeColor }
+        style: { ...e.style, stroke: THEMES[theme].edgeColor },
+        ...(e.type === 'smoothstep' ? { pathOptions: { borderRadius: 6, offset: 4 } } : {})
     })));
   }, [theme, setNodes, setEdges]);
 
@@ -329,8 +341,13 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return;
     }
     setSelectedNodeId(nodeId);
+    setMultiSelectedNodeIds([]);
     setShowAIDialog(true);
-  }, [isLocked, showLockedHint]);
+    // Auto fit view after dialog opens to ensure everything is visible
+    setTimeout(() => {
+      reactFlowInstance?.fitView({ padding: 0.24, duration: 300 });
+    }, 50);
+  }, [isLocked, showLockedHint, reactFlowInstance]);
 
   const handleToolbarAiClick = useCallback(() => {
     if (isLocked) {
@@ -342,12 +359,21 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return;
     }
     setSelectedNodeId(activeNodeId);
+    setMultiSelectedNodeIds([]);
     setShowAIDialog(true);
-  }, [isLocked, showLockedHint, activeNodeId]);
+    // Auto fit view after dialog opens to ensure everything is visible
+    setTimeout(() => {
+      reactFlowInstance?.fitView({ padding: 0.24, duration: 300 });
+    }, 50);
+  }, [isLocked, showLockedHint, activeNodeId, reactFlowInstance]);
 
-  const handleCloseAiDialog = () => {
+  const handleCloseAiDialog = useCallback(() => {
     setShowAIDialog(false);
-  };
+    // Restore view after dialog closes
+    setTimeout(() => {
+      reactFlowInstance?.fitView({ padding: 0.2, duration: 300 });
+    }, 50);
+  }, [reactFlowInstance]);
 
   const handleNodeLabelChange = useCallback((nodeId: string, newLabel: string) => {
     if (isLocked) {
@@ -365,28 +391,72 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return node;
     });
 
-    setNodes(newNodes);
-    recordState(newNodes, edges);
-  }, [isLocked, showLockedHint, nodes, edges, setNodes, recordState]);
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(newNodes, edges, 'LR');
+    setNodes(layoutedNodes);
+    setEdges(layoutedEdges);
+    recordState(layoutedNodes, layoutedEdges);
+  }, [isLocked, showLockedHint, nodes, edges, setNodes, setEdges, recordState]);
+
+  const handleNodeContentChange = useCallback((nodeId: string, newContent: string) => {
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
+
+    const newNodes = nodes.map((node) => {
+      if (node.id === nodeId) {
+        return {
+          ...node,
+          data: { ...node.data, content: newContent },
+        };
+      }
+      return node;
+    });
+
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(newNodes, edges, 'LR');
+    setNodes(layoutedNodes);
+    setEdges(layoutedEdges);
+    recordState(layoutedNodes, layoutedEdges);
+  }, [isLocked, showLockedHint, nodes, edges, setNodes, setEdges, recordState]);
+
+  const startNodeContentEdit = useCallback((nodeId: string) => {
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
+
+    setSelectedNodeId(nodeId);
+    setMultiSelectedNodeIds([]);
+    setEditingNodeId(nodeId);
+  }, [isLocked, showLockedHint]);
+
+  const stopNodeContentEdit = useCallback((nodeId: string) => {
+    setEditingNodeId((current) => (current === nodeId ? null : current));
+  }, []);
 
   const nodeTypes = useMemo(() => ({
     mindMap: (props: any) => {
       return (
-        <MindMapNode 
-            {...props} 
-            data={{
+        <MindMapNode
+          {...props}
+          data={{
             ...props.data,
             onAiClick: () => handleAiClick(props.id),
             onChange: (newLabel: string) => handleNodeLabelChange(props.id, newLabel),
+            onContentChange: (newContent: string) => handleNodeContentChange(props.id, newContent),
+            onStartContentEdit: () => startNodeContentEdit(props.id),
+            onEndContentEdit: () => stopNodeContentEdit(props.id),
             onLockedAction: showLockedHint,
             isLocked,
-            aiActive: props.id === activeNodeId && showAIDialog,
-            theme: theme
-            }} 
+            isEditing: editingNodeId === props.id,
+            aiActive: props.id === selectedNodeId && showAIDialog,
+            multiSelected: multiSelectedNodeIds.includes(props.id),
+            theme,
+          }}
         />
       );
     },
-  }), [handleAiClick, activeNodeId, showAIDialog, theme, handleNodeLabelChange, showLockedHint, isLocked]);
+  }), [handleAiClick, selectedNodeId, showAIDialog, theme, handleNodeLabelChange, handleNodeContentChange, startNodeContentEdit, stopNodeContentEdit, showLockedHint, isLocked, editingNodeId, multiSelectedNodeIds]);
   
   // Load from localStorage or reset when type/workId/id changes
 
@@ -480,22 +550,21 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     return () => clearTimeout(timeout);
   }, [reactFlowInstance, nodes.length, mapViewKey]);
 
-  React.useEffect(() => {
-    if (!showAIDialog || !selectedNode || !reactFlowInstance) return;
-
-    const width = typeof (selectedNode as Node & { width?: number }).width === 'number' ? (selectedNode as Node & { width?: number }).width || 0 : 0;
-    const height = typeof (selectedNode as Node & { height?: number }).height === 'number' ? (selectedNode as Node & { height?: number }).height || 0 : 0;
-    const centerX = selectedNode.position.x + width / 2;
-    const centerY = selectedNode.position.y + height / 2;
-    const currentZoom = typeof reactFlowInstance.getZoom === 'function' ? reactFlowInstance.getZoom() : 1;
-
-    reactFlowInstance.setCenter(centerX, centerY, {
-      zoom: Math.max(currentZoom, 1.1),
-      duration: 400,
-    });
-  }, [showAIDialog, selectedNode, reactFlowInstance]);
-
-  const onConnect = useCallback((params: Connection) => setEdges((eds) => addEdge(params, eds)), [setEdges]);
+  const onConnect = useCallback(
+    (params: Connection) =>
+      setEdges((eds) =>
+        addEdge(
+          {
+            ...params,
+            type: 'smoothstep',
+      pathOptions: { borderRadius: 6, offset: 4 },
+            style: { stroke: THEMES[theme].edgeColor },
+          },
+          eds
+        )
+      ),
+    [setEdges, theme]
+  );
 
   const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
     if (isLocked) {
@@ -503,12 +572,111 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return;
     }
     setSelectedNodeId(node.id);
+    setMultiSelectedNodeIds([]);
+    setEditingNodeId((current) => (current === node.id ? current : null));
   }, [isLocked, showLockedHint]);
+
+  const onNodeDoubleClick = useCallback((event: React.MouseEvent, node: Node) => {
+    if (event.button !== 0) return;
+    startNodeContentEdit(node.id);
+  }, [startNodeContentEdit]);
+
+  const onNodeContextMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+  }, []);
 
   const onPaneClick = useCallback(() => {
     setSelectedNodeId(null);
+    setEditingNodeId(null);
+    setMultiSelectedNodeIds([]);
     setShowAIDialog(false);
   }, []);
+
+  const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+  }, []);
+
+  const handleCanvasMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 2) return;
+
+    event.preventDefault();
+
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
+
+    if (!reactFlowWrapper.current) return;
+
+    const bounds = reactFlowWrapper.current.getBoundingClientRect();
+    const startX = event.clientX - bounds.left;
+    const startY = event.clientY - bounds.top;
+
+    selectionDragStartRef.current = { x: startX, y: startY };
+    setIsRightDraggingSelection(true);
+    setSelectionBox({ left: startX, top: startY, width: 0, height: 0 });
+    setShowAIDialog(false);
+    setSelectedNodeId(null);
+    setMultiSelectedNodeIds([]);
+  }, [isLocked, showLockedHint]);
+
+  React.useEffect(() => {
+    if (!isRightDraggingSelection) return;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!selectionDragStartRef.current || !reactFlowWrapper.current) return;
+
+      const bounds = reactFlowWrapper.current.getBoundingClientRect();
+      const currentX = event.clientX - bounds.left;
+      const currentY = event.clientY - bounds.top;
+      const startX = selectionDragStartRef.current.x;
+      const startY = selectionDragStartRef.current.y;
+
+      const left = Math.min(startX, currentX);
+      const top = Math.min(startY, currentY);
+      const width = Math.abs(currentX - startX);
+      const height = Math.abs(currentY - startY);
+
+      setSelectionBox({ left, top, width, height });
+
+      if (!reactFlowInstance) return;
+
+      const { x, y, zoom } = reactFlowInstance.getViewport();
+      const selectedIds = nodes
+        .filter((node) => {
+          const nodeWidth = typeof (node as Node & { width?: number }).width === 'number'
+            ? (node as Node & { width?: number }).width || 180
+            : 180;
+          const nodeHeight = typeof (node as Node & { height?: number }).height === 'number'
+            ? (node as Node & { height?: number }).height || 60
+            : 60;
+
+          const nodeLeft = node.position.x * zoom + x;
+          const nodeTop = node.position.y * zoom + y;
+          const nodeRight = nodeLeft + nodeWidth * zoom;
+          const nodeBottom = nodeTop + nodeHeight * zoom;
+
+          return nodeRight >= left && nodeLeft <= left + width && nodeBottom >= top && nodeTop <= top + height;
+        })
+        .map((node) => node.id);
+
+      setMultiSelectedNodeIds(selectedIds);
+    };
+
+    const handleMouseUp = () => {
+      setIsRightDraggingSelection(false);
+      setSelectionBox(null);
+      selectionDragStartRef.current = null;
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isRightDraggingSelection, nodes, reactFlowInstance]);
 
   // --- Operations ---
   const handleUndo = useCallback(() => {
@@ -601,28 +769,6 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     return { layoutedNodes, layoutedEdges };
   }, [setNodes, setEdges, recordState, persistMindMapNow, reactFlowInstance]);
 
-  const hasNodeOutOfView = useCallback((candidateNodes: Node[]) => {
-    if (!reactFlowInstance || !reactFlowWrapper.current || candidateNodes.length === 0) return false;
-
-    const { width, height } = reactFlowWrapper.current.getBoundingClientRect();
-    if (width <= 0 || height <= 0) return false;
-
-    const { x, y, zoom } = reactFlowInstance.getViewport();
-    const margin = 24;
-
-    return candidateNodes.some((node) => {
-      const nodeWidth = typeof (node as Node & { width?: number }).width === 'number' ? ((node as Node & { width?: number }).width || 180) : 180;
-      const nodeHeight = typeof (node as Node & { height?: number }).height === 'number' ? ((node as Node & { height?: number }).height || 60) : 60;
-
-      const left = node.position.x * zoom + x;
-      const top = node.position.y * zoom + y;
-      const right = (node.position.x + nodeWidth) * zoom + x;
-      const bottom = (node.position.y + nodeHeight) * zoom + y;
-
-      return left < margin || top < margin || right > width - margin || bottom > height - margin;
-    });
-  }, [reactFlowInstance]);
-
   // Left align: move the entire mind map to the left visually
   const handleAlignLeft = useCallback(() => {
     if (!reactFlowInstance) return;
@@ -657,26 +803,55 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     const selectedNode = nodes.find(n => n.id === activeNodeId);
     if (!selectedNode) return;
 
-    const SIBLING_Y_OFFSET = 100;
+    const SIBLING_VERTICAL_GAP = 52;
+    const CONTENT_WRAP_CHARS = 18;
 
     let newPos = { x: 0, y: 0 };
     let parentId = '';
     let workingNodes = [...nodes];
 
-    const getNodeWidth = (node: Node) => {
-      const renderedWidth = (node as any).width;
-      if (typeof renderedWidth === 'number' && renderedWidth > 0) return renderedWidth;
-      return Math.max(150, ((node.data?.label as string)?.length || 5) * 14 + 40);
+    const countWrappedLines = (text: string, charsPerLine: number) => {
+      if (!text) return 0;
+      return text
+        .split('\n')
+        .reduce((total, line) => total + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
     };
 
-    const getMaxY = (nodeId: string, sourceNodes: Node[]): number => {
-      const childEdges = edges.filter(e => e.source === nodeId);
-      const childNodes = sourceNodes.filter(n => childEdges.some(e => e.target === n.id));
+    const getNodeWidth = (node: Node) => {
+      const renderedWidth = (node as Node & { width?: number }).width;
+      if (typeof renderedWidth === 'number' && renderedWidth > 0) return renderedWidth;
+
+      const label = typeof node.data?.label === 'string' ? node.data.label : '';
+      const content = typeof node.data?.content === 'string' ? node.data.content : '';
+      const roughCharCount = Math.max(label.length, Math.min(content.length, CONTENT_WRAP_CHARS * 2));
+      return Math.min(260, Math.max(90, roughCharCount * 9 + 28));
+    };
+
+    const getNodeHeight = (node: Node) => {
+      const renderedHeight = (node as Node & { height?: number }).height;
+      if (typeof renderedHeight === 'number' && renderedHeight > 0) return renderedHeight;
+
+      const label = typeof node.data?.label === 'string' ? node.data.label : '';
+      const content = typeof node.data?.content === 'string' ? node.data.content : '';
+      const labelLines = Math.max(1, countWrappedLines(label, 12));
+      const contentLines = content ? countWrappedLines(content, CONTENT_WRAP_CHARS) : 0;
+
+      return 28 + labelLines * 15 + contentLines * 14;
+    };
+
+    const getNodeBottom = (node: Node) => node.position.y + getNodeHeight(node);
+
+    const getSubtreeMaxBottom = (nodeId: string, sourceNodes: Node[]): number => {
+      const node = sourceNodes.find((candidate) => candidate.id === nodeId);
+      if (!node) return 0;
+
+      const childEdges = edges.filter((edge) => edge.source === nodeId);
+      const childNodes = sourceNodes.filter((candidate) => childEdges.some((edge) => edge.target === candidate.id));
       if (childNodes.length === 0) {
-        const node = sourceNodes.find(n => n.id === nodeId);
-        return node ? node.position.y : 0;
+        return getNodeBottom(node);
       }
-      return Math.max(...childNodes.map(child => getMaxY(child.id, sourceNodes)));
+
+      return Math.max(getNodeBottom(node), ...childNodes.map((child) => getSubtreeMaxBottom(child.id, sourceNodes)));
     };
 
     const getDescendantIds = (startIds: string[]) => {
@@ -708,16 +883,17 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
        const sortedSiblings = [...siblingNodes].sort((a, b) => a.position.y - b.position.y);
        const lastSibling = sortedSiblings[sortedSiblings.length - 1];
 
-       if (lastSibling) {
-           const maxY = getMaxY(lastSibling.id, workingNodes);
-           newPos = { x: lastSibling.position.x, y: maxY + SIBLING_Y_OFFSET };
-       } else {
-           newPos = { x: selectedNode.position.x, y: selectedNode.position.y + SIBLING_Y_OFFSET };
-       }
+      if (lastSibling) {
+          const maxBottom = getSubtreeMaxBottom(lastSibling.id, workingNodes);
+          newPos = { x: lastSibling.position.x, y: maxBottom + SIBLING_VERTICAL_GAP };
+      } else {
+          newPos = { x: selectedNode.position.x, y: selectedNode.position.y + getNodeHeight(selectedNode) + SIBLING_VERTICAL_GAP };
+      }
+
        
     } else {
        parentId = activeNodeId;
-       const requiredChildX = selectedNode.position.x + getNodeWidth(selectedNode) + 50;
+       const requiredChildX = selectedNode.position.x + getNodeWidth(selectedNode) + 48;
        const childEdges = edges.filter(e => e.source === parentId);
        let childNodes = workingNodes.filter(n => childEdges.some(e => e.target === n.id));
 
@@ -735,8 +911,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             }
             const sortedChildren = [...childNodes].sort((a, b) => a.position.y - b.position.y);
             const lastChild = sortedChildren[sortedChildren.length - 1];
-            const maxY = getMaxY(lastChild.id, workingNodes);
-            newPos = { x: Math.max(requiredChildX, lastChild.position.x), y: maxY + SIBLING_Y_OFFSET };
+            const maxBottom = getSubtreeMaxBottom(lastChild.id, workingNodes);
+            newPos = { x: Math.max(requiredChildX, lastChild.position.x), y: maxBottom + SIBLING_VERTICAL_GAP };
        } else {
             newPos = { x: requiredChildX, y: selectedNode.position.y };
        }
@@ -756,16 +932,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       source: parentId,
       target: newNodeId,
       type: 'smoothstep',
+                          pathOptions: { borderRadius: 6, offset: 4 },
       style: { stroke: THEMES[theme].edgeColor }
     };
 
     const nextNodes = [...workingNodes, newNode];
     const nextEdges = [...edges, newEdge];
-
-    if (hasNodeOutOfView(nextNodes)) {
-      applyStructuredLayoutAndFit(nextNodes, nextEdges);
-      return;
-    }
 
     setNodes(nextNodes);
     setEdges(nextEdges);
@@ -778,18 +950,53 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return;
     }
 
-    if (!activeNodeId) {
+    const baseSelection = multiSelectedNodeIds.length > 0
+      ? multiSelectedNodeIds
+      : activeNodeId
+        ? [activeNodeId]
+        : [];
+
+    if (baseSelection.length === 0) {
       alert('请先选择一个节点');
       return;
     }
 
-    const nextNodes = nodes.filter((n) => n.id !== activeNodeId);
-    const nextEdges = edges.filter((e) => e.source !== activeNodeId && e.target !== activeNodeId);
+    const idsToDelete = new Set<string>(baseSelection);
+    const queue = [...baseSelection];
+
+    while (queue.length > 0) {
+      const nodeId = queue.shift();
+      if (!nodeId) continue;
+
+      edges
+        .filter((edge) => edge.source === nodeId)
+        .forEach((edge) => {
+          if (idsToDelete.has(edge.target)) return;
+          idsToDelete.add(edge.target);
+          queue.push(edge.target);
+        });
+    }
+
+    const hasDescendant = idsToDelete.size > baseSelection.length;
+    const shouldDelete = window.confirm(
+      hasDescendant
+        ? `将删除 ${baseSelection.length} 个已选节点及其子节点，共 ${idsToDelete.size} 个节点，是否继续？`
+        : `将删除 ${baseSelection.length} 个已选节点，是否继续？`
+    );
+
+    if (!shouldDelete) return;
+
+    const nextNodes = nodes.filter((node) => !idsToDelete.has(node.id));
+    const nextEdges = edges.filter(
+      (edge) => !idsToDelete.has(edge.source) && !idsToDelete.has(edge.target)
+    );
 
     setNodes(nextNodes);
     setEdges(nextEdges);
     recordState(nextNodes, nextEdges);
     setSelectedNodeId(null);
+    setMultiSelectedNodeIds([]);
+    setShowAIDialog(false);
   };
 
   // --- AI Generation Logic ---
@@ -802,7 +1009,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return;
     }
 
-    const targetNodeId = activeNodeId;
+    const targetNodeId = selectedNodeId;
     if (!targetNodeId) return;
 
     const selectedNode = nodes.find(n => n.id === targetNodeId);
@@ -841,7 +1048,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
 用户需求：${userPrompt}
 
-请根据用户需求和上下文，为当前节点补全内容，并在需要时生成子节点。
+请根据用户需求和上下文，为当前节点补全内容，并在需要时生成多级子节点。
 请直接返回一个纯 JSON 对象，结构如下：
 {
   "newLabel": "可选，新标题",
@@ -860,7 +1067,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 1. 返回必须是合法的 JSON。
 2. 不要包含 Markdown 格式（如 \`\`\`json）。
 3. 如果用户只想补全当前节点，可以让 children 为空，但要返回 content。
-4. children 中每个节点都必须包含 label 字段。`;
+4. children 中每个节点都必须包含 label 字段。
+5. 如果内容复杂，请优先拆分成多级 children（子节点/孙子节点/曾孙节点），不要把所有信息塞在一个节点里。`;
 
         const response = await aiService.generateText({
             prompt,
@@ -927,8 +1135,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                     ) => {
                       children.forEach((child, index) => {
                         const childId = uuidv4();
-                        const posX = parentX + 250;
-                        const posY = parentY + index * 110 + level * 10;
+                        const posX = parentX + 296;
+                        const posY = parentY + index * 52 + level * 3;
 
                         newNodesToAdd.push({
                           id: childId,
@@ -946,6 +1154,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                           source: parentId,
                           target: childId,
                           type: 'smoothstep',
+            pathOptions: { borderRadius: 6, offset: 4 },
                           style: { stroke: THEMES[theme].edgeColor }
                         });
 
@@ -998,9 +1207,19 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         setIsGenerating(false);
     }
   };
+
+  const dialogTargetNode = useMemo(() => {
+    if (!showAIDialog || !selectedNodeId) return null;
+    return nodes.find((node) => node.id === selectedNodeId) || null;
+  }, [showAIDialog, selectedNodeId, nodes]);
   
   return (
-    <div className={`w-full h-full min-h-[600px] relative rounded-lg overflow-hidden border transition-colors ${THEMES[theme].bgClass} ${THEMES[theme].borderClass}`} ref={reactFlowWrapper}>
+    <div
+      className={`w-full h-full min-h-[600px] relative rounded-lg overflow-hidden border transition-colors ${THEMES[theme].bgClass} ${THEMES[theme].borderClass}`}
+      ref={reactFlowWrapper}
+      onMouseDown={handleCanvasMouseDown}
+      onContextMenu={(event) => event.preventDefault()}
+    >
       <ReactFlowProvider>
         <div className="w-full h-full min-h-[600px]">
           <ReactFlow
@@ -1010,12 +1229,19 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
+            onNodeDoubleClick={onNodeDoubleClick}
+            onNodeContextMenu={onNodeContextMenu}
             onPaneClick={onPaneClick}
+            onPaneContextMenu={onPaneContextMenu}
             onInit={setReactFlowInstance}
             nodeTypes={nodeTypes} // Register custom node types
             fitView
             attributionPosition="bottom-right"
             nodesDraggable={!isLocked}
+            panOnScroll
+            panOnScrollMode={PanOnScrollMode.Vertical}
+            zoomOnScroll={false}
+            zoomOnDoubleClick={false}
           >
             <Background color={THEMES[theme].flowBg} gap={16} />
             <MiniMap 
@@ -1072,7 +1298,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                 <ToolbarButton 
                   onClick={deleteNode} 
                   icon={<Trash2 className="w-4 h-4" />} 
-                  tooltip="删除节点" 
+                  tooltip={multiSelectedNodeIds.length > 0 ? `批量删除 (${multiSelectedNodeIds.length})` : '删除节点'} 
                   danger
                   theme={theme}
                 />
@@ -1151,6 +1377,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
               </div>
             </Panel>
 
+            <Panel position="bottom-left" className="m-4">
+              <div className={`px-3 py-2 rounded-lg border shadow-lg text-xs font-medium backdrop-blur ${THEMES[theme].panelClass}`}>
+                左键拖拽画布/节点，按住右键拖拽可框选多个节点
+              </div>
+            </Panel>
+
             {/* AI Usage Toast */}
             {lastUsage && (
                 <Panel position="bottom-center">
@@ -1172,41 +1404,34 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         </div>
       </ReactFlowProvider>
 
-      {showAIDialog && selectedNode && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/20 backdrop-blur-[2px] px-4" onClick={handleCloseAiDialog}>
-          <div className="flex w-full max-w-5xl items-start justify-center gap-4" onClick={(event) => event.stopPropagation()}>
-            <div className={`hidden xl:block mt-10 w-72 rounded-2xl border p-4 shadow-2xl ${theme === 'dark' ? 'bg-gray-900/95 border-gray-700 text-white' : 'bg-white/95 border-gray-200 text-gray-900'}`}>
-              <div className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-500">当前编辑节点</div>
-              <div className="mt-3 rounded-xl border border-purple-200/60 bg-purple-50/80 p-4 text-gray-900">
-                <div className="text-sm font-semibold">{selectedNode.data.label}</div>
-                <div className="mt-2 text-xs leading-5 text-gray-600">
-                  {typeof selectedNode.data.content === 'string' && selectedNode.data.content.trim()
-                    ? selectedNode.data.content
-                    : '这个节点会保持在画布中心，你现在输入的提示词会直接作用于它，并在需要时自动创建子节点。'}
-                </div>
-              </div>
-            </div>
-            <div className="pointer-events-auto">
-              <AIGenerationDialog
-                isOpen={true}
-                onClose={handleCloseAiDialog}
-                onSubmit={handleAiSubmit}
-                nodeLabel={selectedNode.data.label}
-                nodeId={selectedNode.id}
-                balance={diamondBalance}
-                contexts={aiContexts}
-                onAddContext={() => setShowContextSelector(true)}
-                onRemoveContext={(index) => {
-                  setAiContexts((prev) => prev.filter((_, i) => i !== index));
-                }}
-                isGenerating={isGenerating}
-                loadingText="AI生成中..."
-                lastUsage={lastUsage}
-              />
-            </div>
-          </div>
-        </div>
+      {selectionBox && (
+        <div
+          className="pointer-events-none absolute z-50 border border-cyan-400 bg-cyan-400/15"
+          style={{
+            left: selectionBox.left,
+            top: selectionBox.top,
+            width: selectionBox.width,
+            height: selectionBox.height,
+          }}
+        />
       )}
+
+      <AIGenerationDialog
+        isOpen={showAIDialog && Boolean(dialogTargetNode)}
+        onClose={handleCloseAiDialog}
+        onSubmit={handleAiSubmit}
+        nodeLabel={String(dialogTargetNode?.data?.label || '')}
+        nodeId={dialogTargetNode?.id || ''}
+        balance={diamondBalance}
+        contexts={aiContexts}
+        onAddContext={() => setShowContextSelector(true)}
+        onRemoveContext={(index: number) => {
+          setAiContexts((prev) => prev.filter((_, i) => i !== index));
+        }}
+        isGenerating={isGenerating}
+        loadingText="AI生成中..."
+        lastUsage={lastUsage}
+      />
 
       {/* Context Selector Dialog */}
       <ContextSelectorDialog 
@@ -1249,7 +1474,7 @@ const ToolbarButton: React.FC<ToolbarButtonProps> = ({ onClick, icon, tooltip, h
     <button className={`${baseClass} ${colorClass}`} onClick={onClick}>
       {icon}
       {/* Custom tooltip with instant display */}
-      <span className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-xs font-medium rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-800 text-white'}`}>
+      <span className={`absolute top-full left-1/2 -translate-x-1/2 mt-2 px-2 py-1 text-xs font-medium rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-800 text-white'}`}>
         {tooltip}
       </span>
     </button>

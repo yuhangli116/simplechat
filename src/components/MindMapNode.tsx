@@ -1,121 +1,169 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { Sparkles } from 'lucide-react';
+
+const CONTENT_WRAP_CHARS = 18;
+
+const wrapTextByChars = (text: string, charsPerLine: number) => {
+  if (!text) return '';
+
+  return text
+    .split('\n')
+    .map((line) => {
+      if (line.length <= charsPerLine) return line;
+      const chunks = line.match(new RegExp(`.{1,${charsPerLine}}`, 'g'));
+      return chunks ? chunks.join('\n') : line;
+    })
+    .join('\n');
+};
 
 const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
-  const [isEditing, setIsEditing] = useState(false);
-  const [label, setLabel] = useState(data.label);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [isEditingContent, setIsEditingContent] = useState(false);
+  const [draftContent, setDraftContent] = useState(typeof data.content === 'string' ? data.content : '');
+  const contentRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    setLabel(data.label);
-  }, [data.label]);
-
-  useEffect(() => {
-    if (isEditing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
+    if (!isEditingContent) {
+      setDraftContent(typeof data.content === 'string' ? data.content : '');
     }
-  }, [isEditing]);
+  }, [data.content, isEditingContent]);
 
-  const handleDoubleClick = () => {
+  useEffect(() => {
+    if (!isEditingContent || !contentRef.current) return;
+    contentRef.current.focus();
+    const valueLength = contentRef.current.value.length;
+    contentRef.current.setSelectionRange(valueLength, valueLength);
+  }, [isEditingContent]);
+
+  const handleDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
     if (data.isLocked) {
       if (data.onLockedAction) {
         data.onLockedAction();
       }
       return;
     }
-    setIsEditing(true);
+
+    if (data.onStartContentEdit) {
+      data.onStartContentEdit();
+    }
+
+    setIsEditingContent(true);
   };
 
-  const handleBlur = () => {
-    setIsEditing(false);
-    data.label = label; // Update data directly (or use a callback if provided)
-    if (data.onChange) {
-        data.onChange(label);
+  const commitContent = () => {
+    const nextContent = draftContent.trim();
+    setIsEditingContent(false);
+
+    if (data.onContentChange) {
+      data.onContentChange(nextContent);
+    } else {
+      data.content = nextContent;
+    }
+
+    if (data.onEndContentEdit) {
+      data.onEndContentEdit();
     }
   };
 
-  const handleKeyDown = (evt: React.KeyboardEvent) => {
-    if (evt.key === 'Enter') {
-      handleBlur();
+  const cancelContentEdit = () => {
+    setDraftContent(typeof data.content === 'string' ? data.content : '');
+    setIsEditingContent(false);
+    if (data.onEndContentEdit) {
+      data.onEndContentEdit();
     }
   };
 
-  const handleAiClick = (e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent node selection/drag
-    if (data.onAiClick) {
-      data.onAiClick();
+  const handleContentKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelContentEdit();
+      return;
+    }
+
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+      event.preventDefault();
+      commitContent();
     }
   };
 
   const theme = data.theme || 'dark';
-  
-  const themeStyles: Record<string, { rootBg: string, nodeBg: string, text: string, border: string }> = {
-    dark: { rootBg: 'bg-gradient-to-r from-blue-600 to-indigo-600', nodeBg: 'bg-white', text: 'text-gray-900', border: 'border-transparent' },
-    light: { rootBg: 'bg-gradient-to-r from-blue-500 to-cyan-500', nodeBg: 'bg-white', text: 'text-gray-900', border: 'border-gray-200 shadow-sm' },
-    beige: { rootBg: 'bg-gradient-to-r from-orange-400 to-amber-500', nodeBg: 'bg-[#fffbeb]', text: 'text-amber-900', border: 'border-orange-200' },
-    green: { rootBg: 'bg-gradient-to-r from-green-500 to-emerald-600', nodeBg: 'bg-[#f0fdf4]', text: 'text-green-900', border: 'border-green-200' },
-  };
-  
-  const currentStyle = themeStyles[theme] || themeStyles.dark;
 
-  // Determine styles based on level (root vs child)
+  const themeStyles: Record<string, { rootBg: string; nodeBg: string; text: string; border: string }> = {
+    dark: { rootBg: 'bg-gradient-to-r from-blue-600 to-indigo-600', nodeBg: 'bg-white', text: 'text-gray-900', border: 'border-slate-200/90' },
+    light: { rootBg: 'bg-gradient-to-r from-blue-500 to-cyan-500', nodeBg: 'bg-white', text: 'text-gray-900', border: 'border-slate-200/90' },
+    beige: { rootBg: 'bg-gradient-to-r from-orange-400 to-amber-500', nodeBg: 'bg-[#fffbeb]', text: 'text-amber-900', border: 'border-orange-200/90' },
+    green: { rootBg: 'bg-gradient-to-r from-green-500 to-emerald-600', nodeBg: 'bg-[#f0fdf4]', text: 'text-green-900', border: 'border-green-200/90' },
+  };
+
+  const currentStyle = themeStyles[theme] || themeStyles.dark;
   const isRoot = data.isRoot;
   const bgColor = isRoot ? currentStyle.rootBg : currentStyle.nodeBg;
   const textColor = isRoot ? 'text-white' : currentStyle.text;
   const isAiActive = Boolean(data.aiActive);
-  const borderColor = selected || isAiActive ? 'ring-2 ring-purple-500 border-purple-500' : (isRoot ? 'border-transparent' : currentStyle.border);
-  const shadow = selected || isAiActive ? 'shadow-lg shadow-purple-500/20' : 'shadow-sm';
+  const isMultiSelected = Boolean(data.multiSelected);
+  const borderColor = selected || isAiActive
+    ? 'ring-1 ring-purple-500 border-purple-500'
+    : isMultiSelected
+      ? 'ring-1 ring-purple-500 border-purple-500'
+      : (isRoot ? 'border-transparent' : currentStyle.border);
+  const shadow = selected || isAiActive
+    ? 'shadow-md shadow-purple-500/20'
+    : isMultiSelected
+      ? 'shadow-md shadow-purple-500/20'
+      : 'shadow-[0_3px_10px_rgba(15,23,42,0.12)]';
+
   const contentPreview = typeof data.content === 'string' ? data.content.trim() : '';
+  const wrappedPreview = wrapTextByChars(contentPreview, CONTENT_WRAP_CHARS);
+  const previewLines = wrappedPreview ? wrappedPreview.split('\n').length : 0;
+  const shouldExpandWidth = wrappedPreview.length > CONTENT_WRAP_CHARS;
+  const shouldExpandHeight = previewLines >= 3;
+  const shapeClass = isRoot || (!isEditingContent && !shouldExpandHeight)
+    ? 'rounded-[9999px]'
+    : 'rounded-xl';
+  const sizeClass = isRoot
+    ? 'min-w-[72px] max-w-[160px] px-2 py-0.5'
+    : shouldExpandWidth
+      ? `min-w-[84px] max-w-[240px] px-2 ${shouldExpandHeight ? 'py-1.5' : 'py-1'}`
+      : 'min-w-[64px] max-w-[128px] px-1.5 py-0.5';
 
   return (
-    <div 
-      className={`relative px-4 py-2 rounded-xl min-w-[120px] max-w-[220px] text-center transition-all duration-300 group border ${bgColor} ${borderColor} ${shadow}`}
-      onDoubleClick={handleDoubleClick}
+    <div
+      className={`relative ${shapeClass} text-center transition-all duration-300 group border ${sizeClass} ${bgColor} ${borderColor} ${shadow}`}
+      onDoubleClickCapture={handleDoubleClick}
+      title="双击可编辑节点内容"
     >
-      <Handle type="target" position={Position.Left} isConnectable={isConnectable} className="!bg-gray-400 !w-2 !h-2 !border-2 !border-white" />
-      
-      {isEditing ? (
-        <input
-          ref={inputRef}
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          onBlur={handleBlur}
-          onKeyDown={handleKeyDown}
-          className={`w-full bg-transparent outline-none text-center ${textColor}`}
-        />
-      ) : (
-        <div className="space-y-1.5">
-          <div className={`font-medium select-none flex items-center justify-center gap-2 ${textColor}`}>
-            {label}
-          </div>
-          {contentPreview && (
-            <div className={`text-[11px] leading-4 opacity-75 line-clamp-3 whitespace-pre-wrap ${textColor}`}>
-              {contentPreview}
-            </div>
-          )}
-          {isAiActive && (
-            <div className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700">
-              <Sparkles className="w-3 h-3" />
-              正在编辑该节点
-            </div>
-          )}
+      <Handle type="target" position={Position.Left} isConnectable={isConnectable} className="!bg-slate-400 !w-[5px] !h-[5px] !border !border-white/90" />
+
+      <div className="space-y-0.5">
+        <div className={`font-semibold text-[11px] select-none break-words leading-[14px] tracking-normal ${textColor}`}>
+          {data.label}
         </div>
-      )}
 
-      {/* AI Button - Visible on Hover or Selected */}
-      {!isEditing && (selected || false) && (
-        <button
-          onClick={handleAiClick}
-          className="absolute -top-3 -right-3 p-1.5 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-full shadow-lg hover:scale-110 transition-transform z-50 opacity-0 group-hover:opacity-100 animate-in fade-in zoom-in duration-200"
-          title="AI智能生成"
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-        </button>
-      )}
+        {isEditingContent ? (
+          <textarea
+            ref={contentRef}
+            value={draftContent}
+            onChange={(event) => setDraftContent(event.target.value)}
+            onBlur={commitContent}
+            onKeyDown={handleContentKeyDown}
+            rows={3}
+            className={`nodrag nopan w-full min-h-[64px] max-h-[200px] resize-y rounded-md border border-slate-200 bg-white/90 p-2 text-[11px] leading-4 outline-none focus:ring-2 focus:ring-purple-400/60 ${isRoot ? 'text-gray-900' : textColor}`}
+            placeholder="输入节点内容，Ctrl/Cmd + Enter 保存"
+          />
+        ) : (
+          wrappedPreview && (
+            <div className={`text-[10px] leading-[13px] opacity-75 whitespace-pre-wrap break-words text-left ${textColor}`}>
+              {wrappedPreview}
+            </div>
+          )
+        )}
+      </div>
 
-      <Handle type="source" position={Position.Right} isConnectable={isConnectable} className="!bg-gray-400 !w-2 !h-2 !border-2 !border-white" />
+      <Handle type="source" position={Position.Right} isConnectable={isConnectable} className="!bg-slate-400 !w-[5px] !h-[5px] !border !border-white/90" />
     </div>
   );
 };

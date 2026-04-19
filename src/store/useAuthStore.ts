@@ -2,6 +2,16 @@ import { create } from 'zustand'
 import { User, Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 
+const GUEST_BALANCE_KEY = 'guest-diamond-balance'
+const GUEST_DEFAULT_BALANCE = 9999
+
+const getGuestBalance = (): number => {
+  if (typeof window === 'undefined') return GUEST_DEFAULT_BALANCE
+  const raw = localStorage.getItem(GUEST_BALANCE_KEY)
+  const parsed = raw ? Number(raw) : NaN
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : GUEST_DEFAULT_BALANCE
+}
+
 interface Profile {
   id: string;
   username: string | null;
@@ -49,17 +59,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
   fetchProfile: async () => {
     const { user } = get();
-    // GUEST MODE: If no user, mock a guest profile
+    // GUEST MODE: If no user, read/write local guest balance for dev.
     if (!user) {
+        const guestBalance = getGuestBalance()
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(GUEST_BALANCE_KEY, String(guestBalance))
+        }
         set({
             profile: {
                 id: 'guest',
                 username: '访客体验',
                 avatar_url: '',
                 membership_type: 'free',
-                diamond_balance: 9999
+                diamond_balance: guestBalance
             },
-            diamondBalance: 9999
+            diamondBalance: guestBalance
         });
         return;
     }
