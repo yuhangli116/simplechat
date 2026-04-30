@@ -38,6 +38,8 @@ const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
   // 双击进入编辑模式
   const handleDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+    // Also prevent ReactFlow from intercepting and handling
+    e.preventDefault();
     console.log('[MindMapNode] handleDoubleClick triggered, isLocked:', data.isLocked);
     
     if (data.isLocked) {

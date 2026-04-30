@@ -118,8 +118,8 @@ const StoryEditor = () => {
         editor.commands.setContent(content);
         return;
       }
-      // Set chapter title as heading
-      editor.commands.setContent(`<h1>${currentChapterName}</h1><p></p>`);
+      // 新建章节时保持空白，不预设任何内容
+      editor.commands.clearContent();
     };
 
     const loadContent = async () => {

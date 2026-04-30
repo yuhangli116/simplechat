@@ -457,7 +457,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
           newData.nodes[0].data.label = fileName;
       }
       if (content?.nodes?.length) {
-        setNodes(content.nodes);
+        // Backward compatibility: old saved data may miss `type`, which breaks custom node events (double click edit).
+        const normalizedNodes = content.nodes.map((node) => ({
+          ...node,
+          type: node.type || 'mindMap',
+        }));
+        setNodes(normalizedNodes);
         setEdges(content.edges || []);
         return;
       }
@@ -1203,6 +1208,11 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
+            onNodeDoubleClick={(event, node) => {
+              // Ignore ReactFlow's double click and let the node component handle it
+              // ReactFlow sometimes prevents the underlying node from getting the double click.
+              event.stopPropagation();
+            }}
             onNodeContextMenu={onNodeContextMenu}
             onPaneClick={onPaneClick}
             onPaneContextMenu={onPaneContextMenu}
