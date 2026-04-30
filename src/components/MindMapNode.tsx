@@ -17,76 +17,62 @@ const wrapTextByChars = (text: string, charsPerLine: number) => {
 };
 
 const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
-  const [isEditingContent, setIsEditingContent] = useState(false);
-  const [draftContent, setDraftContent] = useState(typeof data.content === 'string' ? data.content : '');
-  const contentRef = useRef<HTMLTextAreaElement>(null);
+  // 编辑状态 - 完全由组件内部管理（参考 v0.1/v2.0 的工作方式）
+  const [isEditing, setIsEditing] = useState(false);
+  const [label, setLabel] = useState(data.label);
+  const inputRef = useRef<HTMLInputElement>(null);
 
+  // 当 data.label 变化时同步到本地状态
   useEffect(() => {
-    if (!isEditingContent) {
-      setDraftContent(typeof data.content === 'string' ? data.content : '');
+    setLabel(data.label);
+  }, [data.label]);
+
+  // 编辑模式开启时自动聚焦并选中文字
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
     }
-  }, [data.content, isEditingContent]);
+  }, [isEditing]);
 
-  useEffect(() => {
-    if (!isEditingContent || !contentRef.current) return;
-    contentRef.current.focus();
-    const valueLength = contentRef.current.value.length;
-    contentRef.current.setSelectionRange(valueLength, valueLength);
-  }, [isEditingContent]);
-
-  const handleDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-
+  // 双击进入编辑模式
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    console.log('[MindMapNode] handleDoubleClick triggered, isLocked:', data.isLocked);
+    
     if (data.isLocked) {
       if (data.onLockedAction) {
         data.onLockedAction();
       }
       return;
     }
-
-    if (data.onStartContentEdit) {
-      data.onStartContentEdit();
-    }
-
-    setIsEditingContent(true);
+    console.log('[MindMapNode] Setting isEditing to true');
+    setIsEditing(true);
   };
 
-  const commitContent = () => {
-    const nextContent = draftContent.trim();
-    setIsEditingContent(false);
-
-    if (data.onContentChange) {
-      data.onContentChange(nextContent);
+  // 提交标签修改
+  const handleBlur = () => {
+    setIsEditing(false);
+    const newLabel = label.trim();
+    
+    // 更新数据
+    if (data.onChange) {
+      data.onChange(newLabel);
     } else {
-      data.content = nextContent;
-    }
-
-    if (data.onEndContentEdit) {
-      data.onEndContentEdit();
+      data.label = newLabel;
     }
   };
 
-  const cancelContentEdit = () => {
-    setDraftContent(typeof data.content === 'string' ? data.content : '');
-    setIsEditingContent(false);
-    if (data.onEndContentEdit) {
-      data.onEndContentEdit();
+  // 键盘事件处理
+  const handleKeyDown = (evt: React.KeyboardEvent<HTMLInputElement>) => {
+    if (evt.key === 'Enter') {
+      evt.preventDefault();
+      handleBlur();
     }
-  };
-
-  const handleContentKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelContentEdit();
-      return;
-    }
-
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-      event.preventDefault();
-      commitContent();
+    if (evt.key === 'Escape') {
+      evt.preventDefault();
+      setLabel(data.label);
+      setIsEditing(false);
     }
   };
 
@@ -121,49 +107,48 @@ const MindMapNode = ({ data, isConnectable, selected }: NodeProps) => {
   const previewLines = wrappedPreview ? wrappedPreview.split('\n').length : 0;
   const shouldExpandWidth = wrappedPreview.length > CONTENT_WRAP_CHARS;
   const shouldExpandHeight = previewLines >= 3;
-  const shapeClass = isRoot || (!isEditingContent && !shouldExpandHeight)
-    ? 'rounded-[9999px]'
+  const shapeClass = isRoot || (!isEditing && !shouldExpandHeight)
+    ? 'rounded-2xl'
     : 'rounded-xl';
   const sizeClass = isRoot
-    ? 'min-w-[72px] max-w-[160px] px-2 py-0.5'
+    ? 'min-w-[72px] max-w-[160px] px-2 py-[3px]'
     : shouldExpandWidth
-      ? `min-w-[84px] max-w-[240px] px-2 ${shouldExpandHeight ? 'py-1.5' : 'py-1'}`
-      : 'min-w-[64px] max-w-[128px] px-1.5 py-0.5';
+      ? `min-w-[84px] max-w-[240px] px-2 ${shouldExpandHeight ? 'py-1.5' : 'py-[5px]'}`
+      : 'min-w-[64px] max-w-[128px] px-1.5 py-[3px]';
 
   return (
     <div
       className={`relative ${shapeClass} text-center transition-all duration-300 group border ${sizeClass} ${bgColor} ${borderColor} ${shadow}`}
       onDoubleClickCapture={handleDoubleClick}
-      title="双击可编辑节点内容"
+      title="双击可编辑节点标题"
     >
-      <Handle type="target" position={Position.Left} isConnectable={isConnectable} className="!bg-slate-400 !w-[5px] !h-[5px] !border !border-white/90" />
+      <Handle type="target" position={Position.Left} isConnectable={isConnectable} className="!bg-slate-400 !w-[2px] !h-[2px] !border !border-white/90" />
 
       <div className="space-y-0.5">
-        <div className={`font-semibold text-[11px] select-none break-words leading-[14px] tracking-normal ${textColor}`}>
-          {data.label}
-        </div>
-
-        {isEditingContent ? (
-          <textarea
-            ref={contentRef}
-            value={draftContent}
-            onChange={(event) => setDraftContent(event.target.value)}
-            onBlur={commitContent}
-            onKeyDown={handleContentKeyDown}
-            rows={3}
-            className={`nodrag nopan w-full min-h-[64px] max-h-[200px] resize-y rounded-md border border-slate-200 bg-white/90 p-2 text-[11px] leading-4 outline-none focus:ring-2 focus:ring-purple-400/60 ${isRoot ? 'text-gray-900' : textColor}`}
-            placeholder="输入节点内容，Ctrl/Cmd + Enter 保存"
+        {isEditing ? (
+          <input
+            ref={inputRef}
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            onBlur={handleBlur}
+            onKeyDown={handleKeyDown}
+            className={`w-full bg-transparent outline-none text-center font-semibold text-[11px] leading-[14px] ${textColor}`}
           />
         ) : (
-          wrappedPreview && (
-            <div className={`text-[10px] leading-[13px] opacity-75 whitespace-pre-wrap break-words text-left ${textColor}`}>
-              {wrappedPreview}
+          <>
+            <div className={`font-semibold text-[11px] select-none break-words leading-[14px] tracking-normal ${textColor}`}>
+              {data.label}
             </div>
-          )
+            {wrappedPreview && (
+              <div className={`text-[10px] leading-[13px] opacity-75 whitespace-pre-wrap break-words text-left ${textColor}`}>
+                {wrappedPreview}
+              </div>
+            )}
+          </>
         )}
       </div>
 
-      <Handle type="source" position={Position.Right} isConnectable={isConnectable} className="!bg-slate-400 !w-[5px] !h-[5px] !border !border-white/90" />
+      <Handle type="source" position={Position.Right} isConnectable={isConnectable} className="!bg-slate-400 !w-[2px] !h-[2px] !border !border-white/90" />
     </div>
   );
 };

@@ -74,3 +74,63 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Story Editor - Tiptap Styles */
+.story-editor-content {
+  line-height: 1.8;
+  font-size: 16px;
+}
+
+.story-editor-content h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #111827;
+  margin-top: 1rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.story-editor-content h2 {
+  font-size: 1.375rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin-top: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.story-editor-content h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #374151;
+  margin-top: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.story-editor-content p {
+  margin-bottom: 1rem;
+  text-indent: 2em;
+  color: #374151;
+}
+
+.story-editor-content p:first-child {
+  text-indent: 0;
+}
+
+.story-editor-content ul,
+.story-editor-content ol {
+  margin-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.story-editor-content li {
+  margin-bottom: 0.25rem;
+}
+
+.story-editor-content blockquote {
+  border-left: 3px solid #d1d5db;
+  padding-left: 1rem;
+  margin: 1rem 0;
+  color: #6b7280;
+  font-style: italic;
+}

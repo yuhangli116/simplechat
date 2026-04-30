@@ -145,7 +145,6 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const { files } = useFileStore();
   const location = useLocation();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [multiSelectedNodeIds, setMultiSelectedNodeIds] = useState<string[]>([]);
   const [isRightDraggingSelection, setIsRightDraggingSelection] = useState(false);
   const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
@@ -419,21 +418,6 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     recordState(layoutedNodes, layoutedEdges);
   }, [isLocked, showLockedHint, nodes, edges, setNodes, setEdges, recordState]);
 
-  const startNodeContentEdit = useCallback((nodeId: string) => {
-    if (isLocked) {
-      showLockedHint();
-      return;
-    }
-
-    setSelectedNodeId(nodeId);
-    setMultiSelectedNodeIds([]);
-    setEditingNodeId(nodeId);
-  }, [isLocked, showLockedHint]);
-
-  const stopNodeContentEdit = useCallback((nodeId: string) => {
-    setEditingNodeId((current) => (current === nodeId ? null : current));
-  }, []);
-
   const nodeTypes = useMemo(() => ({
     mindMap: (props: any) => {
       return (
@@ -444,11 +428,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             onAiClick: () => handleAiClick(props.id),
             onChange: (newLabel: string) => handleNodeLabelChange(props.id, newLabel),
             onContentChange: (newContent: string) => handleNodeContentChange(props.id, newContent),
-            onStartContentEdit: () => startNodeContentEdit(props.id),
-            onEndContentEdit: () => stopNodeContentEdit(props.id),
             onLockedAction: showLockedHint,
             isLocked,
-            isEditing: editingNodeId === props.id,
             aiActive: props.id === selectedNodeId && showAIDialog,
             multiSelected: multiSelectedNodeIds.includes(props.id),
             theme,
@@ -456,7 +437,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         />
       );
     },
-  }), [handleAiClick, selectedNodeId, showAIDialog, theme, handleNodeLabelChange, handleNodeContentChange, startNodeContentEdit, stopNodeContentEdit, showLockedHint, isLocked, editingNodeId, multiSelectedNodeIds]);
+  }), [handleAiClick, selectedNodeId, showAIDialog, theme, handleNodeLabelChange, handleNodeContentChange, showLockedHint, isLocked, multiSelectedNodeIds]);
   
   // Load from localStorage or reset when type/workId/id changes
 
@@ -573,13 +554,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     }
     setSelectedNodeId(node.id);
     setMultiSelectedNodeIds([]);
-    setEditingNodeId((current) => (current === node.id ? current : null));
   }, [isLocked, showLockedHint]);
-
-  const onNodeDoubleClick = useCallback((event: React.MouseEvent, node: Node) => {
-    if (event.button !== 0) return;
-    startNodeContentEdit(node.id);
-  }, [startNodeContentEdit]);
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -587,7 +562,6 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   const onPaneClick = useCallback(() => {
     setSelectedNodeId(null);
-    setEditingNodeId(null);
     setMultiSelectedNodeIds([]);
     setShowAIDialog(false);
   }, []);
@@ -1229,7 +1203,6 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
-            onNodeDoubleClick={onNodeDoubleClick}
             onNodeContextMenu={onNodeContextMenu}
             onPaneClick={onPaneClick}
             onPaneContextMenu={onPaneContextMenu}

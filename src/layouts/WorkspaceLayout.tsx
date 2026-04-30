@@ -151,7 +151,7 @@ const WorkspaceLayout = () => {
       )}
 
       {/* 3. Main Content Area */}
-      <main className="flex-1 flex flex-col min-w-0 bg-white relative">
+      <main className="flex-1 flex flex-col min-w-0 bg-white relative overflow-hidden">
         {/* Top User Bar */}
         <div className="w-full flex justify-end px-6 py-3 border-b border-gray-100 bg-white">
           <UserTopBar />
