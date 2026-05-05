@@ -19,12 +19,14 @@ import { v4 as uuidv4 } from 'uuid';
 import { aiService } from '@/services/ai';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
-import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Sparkles, Palette, Maximize, Check, AlignLeft, AlignRight, ZoomIn, ZoomOut, Lock, Unlock } from 'lucide-react';
+import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Sparkles, Palette, Maximize, Check, AlignLeft, AlignRight, ZoomIn, ZoomOut, Lock, Unlock, Edit3 } from 'lucide-react';
 import MindMapNode from './MindMapNode';
 import { getLayoutedElements } from '@/utils/layout';
 import AIGenerationDialog from './AIGenerationDialog';
 import ContextSelectorDialog from './ContextSelectorDialog';
 import { getMindMapTitleFromRoute, loadMindMapContent, saveMindMapContent } from '@/lib/workspacePersistence';
+
+export const MindMapContext = React.createContext<any>(null);
 
 interface MindMapEditorProps {
   type?: 'outline' | 'world' | 'character' | 'event';
@@ -151,6 +153,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const [showAIDialog, setShowAIDialog] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [lastUsage, setLastUsage] = useState<{input_tokens: number, output_tokens: number, total_cost: number} | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   
   // AI Context
   const [showContextSelector, setShowContextSelector] = useState(false);
@@ -287,8 +290,56 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const startNodes = initialData?.nodes || defaultData.nodes;
   const startEdges = initialData?.edges || defaultData.edges;
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(startNodes);
+  const [nodes, setNodes, originalOnNodesChange] = useNodesState(startNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(startEdges);
+
+  const onNodesChange = useCallback((changes: any[]) => {
+    originalOnNodesChange(changes);
+    const hasDimensionChange = changes.some(c => c.type === 'dimensions');
+    // Trigger layout recalculation on ANY dimension change, not just when editing.
+    // This ensures newly added nodes align perfectly once their true DOM dimensions are known.
+    if (hasDimensionChange) {
+      setTimeout(() => {
+         setNodes((currentNodes) => {
+            let newNodes = currentNodes;
+            setEdges((currentEdges) => {
+               // Update edge types during live resize
+               const updatedEdges = currentEdges.map(e => {
+                   const sourceEdges = currentEdges.filter(edge => edge.source === e.source);
+                   const isStraight = sourceEdges.length === 1;
+                   const newType = isStraight ? 'straight' : 'smoothstep';
+                   
+                   // If type is already correct, return the original edge object to maintain reference
+                   if (e.type === newType) return e;
+                   
+                   return {
+                       ...e,
+                       type: newType,
+                       ...(isStraight ? { pathOptions: undefined } : { pathOptions: { borderRadius: 6, offset: 4 } })
+                   };
+               });
+               
+               const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(currentNodes, updatedEdges, 'LR');
+               
+               // Check if positions actually changed to avoid infinite re-renders
+               const positionsChanged = layoutedNodes.some(n => {
+                   const oldNode = currentNodes.find(on => on.id === n.id);
+                   // We use Math.abs to ignore floating point inaccuracies
+                   return !oldNode || Math.abs(oldNode.position.x - n.position.x) > 0.1 || Math.abs(oldNode.position.y - n.position.y) > 0.1;
+               });
+               
+               if (positionsChanged) {
+                   newNodes = layoutedNodes;
+               }
+               
+               const edgesChanged = layoutedEdges.some((e, i) => e !== currentEdges[i]);
+               return edgesChanged ? layoutedEdges : currentEdges;
+            });
+            return newNodes;
+         });
+      }, 10);
+    }
+  }, [originalOnNodesChange, setEdges, setNodes]);
   const activeNodeId = useMemo(
     () => selectedNodeId || nodes.find((node) => Boolean((node as Node & { selected?: boolean }).selected))?.id || null,
     [selectedNodeId, nodes]
@@ -311,11 +362,21 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         data: { ...n.data, theme }
     })));
     
-    setEdges(eds => eds.map(e => ({
-        ...e,
-        style: { ...e.style, stroke: THEMES[theme].edgeColor },
-        ...(e.type === 'smoothstep' ? { pathOptions: { borderRadius: 6, offset: 4 } } : {})
-    })));
+    setEdges(eds => eds.map(e => {
+        // Determine edge type based on whether the source node has multiple children
+        let isStraight = false;
+        const sourceEdges = eds.filter(edge => edge.source === e.source);
+        if (sourceEdges.length === 1) {
+            isStraight = true;
+        }
+
+        return {
+            ...e,
+            style: { ...e.style, stroke: THEMES[theme].edgeColor },
+            type: isStraight ? 'straight' : 'smoothstep',
+            ...(isStraight ? { pathOptions: undefined } : { pathOptions: { borderRadius: 6, offset: 4 } })
+        };
+    }));
   }, [theme, setNodes, setEdges]);
 
   // Initialize history
@@ -390,11 +451,16 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return node;
     });
 
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(newNodes, edges, 'LR');
-    setNodes(layoutedNodes);
-    setEdges(layoutedEdges);
-    recordState(layoutedNodes, layoutedEdges);
-  }, [isLocked, showLockedHint, nodes, edges, setNodes, setEdges, recordState]);
+    setNodes(newNodes);
+    setEditingNodeId(null);
+    setTimeout(() => {
+      const currentNodes = reactFlowInstance ? reactFlowInstance.getNodes() : newNodes;
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(currentNodes, edges, 'LR');
+      setNodes(layoutedNodes);
+      setEdges(layoutedEdges);
+      recordState(layoutedNodes, layoutedEdges);
+    }, 50);
+  }, [isLocked, showLockedHint, nodes, edges, setNodes, setEdges, recordState, reactFlowInstance]);
 
   const handleNodeContentChange = useCallback((nodeId: string, newContent: string) => {
     if (isLocked) {
@@ -412,32 +478,65 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return node;
     });
 
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(newNodes, edges, 'LR');
-    setNodes(layoutedNodes);
-    setEdges(layoutedEdges);
-    recordState(layoutedNodes, layoutedEdges);
-  }, [isLocked, showLockedHint, nodes, edges, setNodes, setEdges, recordState]);
+    setNodes(newNodes);
+    setEditingNodeId(null);
+    setTimeout(() => {
+      const currentNodes = reactFlowInstance ? reactFlowInstance.getNodes() : newNodes;
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(currentNodes, edges, 'LR');
+      setNodes(layoutedNodes);
+      setEdges(layoutedEdges);
+      recordState(layoutedNodes, layoutedEdges);
+    }, 50);
+  }, [isLocked, showLockedHint, nodes, edges, setNodes, setEdges, recordState, reactFlowInstance]);
+
+  const handleNodeDataChange = useCallback((nodeId: string, newLabel: string, newContent: string) => {
+    if (isLocked) {
+      showLockedHint();
+      return;
+    }
+
+    const newNodes = nodes.map((node) => {
+      if (node.id === nodeId) {
+        return {
+          ...node,
+          data: { ...node.data, label: newLabel, content: newContent },
+        };
+      }
+      return node;
+    });
+
+    setNodes(newNodes);
+    setEditingNodeId(null);
+    setTimeout(() => {
+      const currentNodes = reactFlowInstance ? reactFlowInstance.getNodes() : newNodes;
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(currentNodes, edges, 'LR');
+      setNodes(layoutedNodes);
+      setEdges(layoutedEdges);
+      recordState(layoutedNodes, layoutedEdges);
+    }, 50);
+  }, [isLocked, showLockedHint, nodes, edges, setNodes, setEdges, recordState, reactFlowInstance]);
+
+  const contextValue = useMemo(() => ({
+    handleAiClick,
+    handleNodeLabelChange,
+    handleNodeContentChange,
+    handleNodeDataChange,
+    showLockedHint,
+    isLocked,
+    selectedNodeId,
+    showAIDialog,
+    multiSelectedNodeIds,
+    theme,
+    editingNodeId,
+    setEditingNodeId
+  }), [
+    handleAiClick, handleNodeLabelChange, handleNodeContentChange, handleNodeDataChange,
+    showLockedHint, isLocked, selectedNodeId, showAIDialog, multiSelectedNodeIds, theme, editingNodeId
+  ]);
 
   const nodeTypes = useMemo(() => ({
-    mindMap: (props: any) => {
-      return (
-        <MindMapNode
-          {...props}
-          data={{
-            ...props.data,
-            onAiClick: () => handleAiClick(props.id),
-            onChange: (newLabel: string) => handleNodeLabelChange(props.id, newLabel),
-            onContentChange: (newContent: string) => handleNodeContentChange(props.id, newContent),
-            onLockedAction: showLockedHint,
-            isLocked,
-            aiActive: props.id === selectedNodeId && showAIDialog,
-            multiSelected: multiSelectedNodeIds.includes(props.id),
-            theme,
-          }}
-        />
-      );
-    },
-  }), [handleAiClick, selectedNodeId, showAIDialog, theme, handleNodeLabelChange, handleNodeContentChange, showLockedHint, isLocked, multiSelectedNodeIds]);
+    mindMap: MindMapNode
+  }), []);
   
   // Load from localStorage or reset when type/workId/id changes
 
@@ -542,8 +641,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         addEdge(
           {
             ...params,
-            type: 'smoothstep',
-      pathOptions: { borderRadius: 6, offset: 4 },
+            type: 'straight',
             style: { stroke: THEMES[theme].edgeColor },
           },
           eds
@@ -557,6 +655,10 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       showLockedHint();
       return;
     }
+    
+    // Ignore single clicks if the user is right clicking
+    if (_event.button === 2) return;
+    
     setSelectedNodeId(node.id);
     setMultiSelectedNodeIds([]);
   }, [isLocked, showLockedHint]);
@@ -569,6 +671,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     setSelectedNodeId(null);
     setMultiSelectedNodeIds([]);
     setShowAIDialog(false);
+    setEditingNodeId(null);
   }, []);
 
   const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
@@ -646,6 +749,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       setIsRightDraggingSelection(false);
       setSelectionBox(null);
       selectionDragStartRef.current = null;
+      setEditingNodeId(null);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -734,7 +838,18 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   }, [storageKey, user, workId, id, type, mindMapTitle]);
 
   const applyStructuredLayoutAndFit = useCallback((sourceNodes: Node[], sourceEdges: Edge[]) => {
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(sourceNodes, sourceEdges, 'LR');
+    // Also enforce edge styling here for safety
+    const updatedEdges = sourceEdges.map(e => {
+        const outEdges = sourceEdges.filter(edge => edge.source === e.source);
+        const isStraight = outEdges.length === 1;
+        return {
+            ...e,
+            type: isStraight ? 'straight' : 'smoothstep',
+            ...(isStraight ? { pathOptions: undefined } : { pathOptions: { borderRadius: 6, offset: 4 } })
+        };
+    });
+
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(sourceNodes, updatedEdges, 'LR');
 
     setNodes(layoutedNodes);
     setEdges(layoutedEdges);
@@ -911,16 +1026,31 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       source: parentId,
       target: newNodeId,
       type: 'smoothstep',
-                          pathOptions: { borderRadius: 6, offset: 4 },
+      pathOptions: { borderRadius: 6, offset: 4 },
       style: { stroke: THEMES[theme].edgeColor }
     };
 
-    const nextNodes = [...workingNodes, newNode];
+    const nextNodes = [...nodes, newNode];
     const nextEdges = [...edges, newEdge];
 
+    // Update edge types: if a node only has 1 child, use straight edge, otherwise smoothstep
+    const updatedEdges = nextEdges.map(e => {
+        const sourceEdges = nextEdges.filter(edge => edge.source === e.source);
+        const isStraight = sourceEdges.length === 1;
+        return {
+            ...e,
+            type: isStraight ? 'straight' : 'smoothstep',
+            ...(isStraight ? { pathOptions: undefined } : { pathOptions: { borderRadius: 6, offset: 4 } })
+        };
+    });
+
+    // Instead of using getLayoutedElements immediately, we let the onNodesChange handler
+    // do the layouting once the real DOM dimensions of the new node are available.
     setNodes(nextNodes);
-    setEdges(nextEdges);
-    recordState(nextNodes, nextEdges);
+    setEdges(updatedEdges);
+    
+    // We only record state here. The exact layout position will be fine-tuned by onNodesChange.
+    recordState(nextNodes, updatedEdges);
   };
 
   const deleteNode = () => {
@@ -970,12 +1100,25 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       (edge) => !idsToDelete.has(edge.source) && !idsToDelete.has(edge.target)
     );
 
-    setNodes(nextNodes);
-    setEdges(nextEdges);
-    recordState(nextNodes, nextEdges);
-    setSelectedNodeId(null);
-    setMultiSelectedNodeIds([]);
-    setShowAIDialog(false);
+    // Update edge types: if a node only has 1 child, use straight edge, otherwise smoothstep
+    const updatedEdges = nextEdges.map(e => {
+        const sourceEdges = nextEdges.filter(edge => edge.source === e.source);
+        const isStraight = sourceEdges.length === 1;
+        return {
+            ...e,
+            type: isStraight ? 'straight' : 'smoothstep',
+            ...(isStraight ? { pathOptions: undefined } : { pathOptions: { borderRadius: 6, offset: 4 } })
+        };
+    });
+
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nextNodes, updatedEdges, 'LR');
+
+      setNodes(layoutedNodes);
+      setEdges(layoutedEdges);
+      recordState(layoutedNodes, layoutedEdges);
+      setSelectedNodeId(null);
+      setMultiSelectedNodeIds([]);
+      setShowAIDialog(false);
   };
 
   // --- AI Generation Logic ---
@@ -1153,7 +1296,17 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                 }
                 
                 if (stateChanged) {
-                    applyStructuredLayoutAndFit(currentNodes, currentEdges);
+                    // Update edge types for dynamically generated AI nodes
+                    const updatedEdges = currentEdges.map(e => {
+                        const sourceEdges = currentEdges.filter(edge => edge.source === e.source);
+                        const isStraight = sourceEdges.length === 1;
+                        return {
+                            ...e,
+                            type: isStraight ? 'straight' : 'smoothstep',
+                            ...(isStraight ? { pathOptions: undefined } : { pathOptions: { borderRadius: 6, offset: 4 } })
+                        };
+                    });
+                    applyStructuredLayoutAndFit(currentNodes, updatedEdges);
                 }
 
                 setShowAIDialog(false);
@@ -1199,32 +1352,66 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       onMouseDown={handleCanvasMouseDown}
       onContextMenu={(event) => event.preventDefault()}
     >
+      <MindMapContext.Provider value={contextValue}>
       <ReactFlowProvider>
         <div className="w-full h-full min-h-[600px]">
-          <ReactFlow
+            <ReactFlow
             nodes={nodes}
             edges={edges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
-            onNodeClick={onNodeClick}
+            onNodeClick={(event, node) => {
+              if (isLocked) {
+                showLockedHint();
+                return;
+              }
+              if (editingNodeId === node.id) {
+                return;
+              }
+              if (editingNodeId) {
+                setEditingNodeId(null);
+              }
+              if (event.button === 2) return;
+              setSelectedNodeId(node.id);
+              setMultiSelectedNodeIds([]);
+            }}
             onNodeDoubleClick={(event, node) => {
-              // Ignore ReactFlow's double click and let the node component handle it
-              // ReactFlow sometimes prevents the underlying node from getting the double click.
               event.stopPropagation();
+              event.preventDefault();
+              if (isLocked) {
+                showLockedHint();
+                return;
+              }
+              setMultiSelectedNodeIds([]);
+              setSelectedNodeId(node.id);
+              setTimeout(() => {
+                setEditingNodeId(node.id);
+              }, 100);
             }}
             onNodeContextMenu={onNodeContextMenu}
-            onPaneClick={onPaneClick}
+            onPaneClick={() => {
+              if (editingNodeId) {
+                setEditingNodeId(null);
+              }
+              setSelectedNodeId(null);
+              setMultiSelectedNodeIds([]);
+              setShowAIDialog(false);
+            }}
             onPaneContextMenu={onPaneContextMenu}
             onInit={setReactFlowInstance}
             nodeTypes={nodeTypes} // Register custom node types
             fitView
             attributionPosition="bottom-right"
-            nodesDraggable={!isLocked}
+            nodesDraggable={!isLocked && !editingNodeId}
+            elementsSelectable={!editingNodeId}
             panOnScroll
             panOnScrollMode={PanOnScrollMode.Vertical}
             zoomOnScroll={false}
             zoomOnDoubleClick={false}
+            // Prevent dragging from intercepting clicks and double clicks
+            selectNodesOnDrag={false}
+            preventScrolling={false}
           >
             <Background color={THEMES[theme].flowBg} gap={16} />
             <MiniMap 
@@ -1426,6 +1613,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         }}
         workId={workId}
       />
+      </MindMapContext.Provider>
     </div>
   );
 };
