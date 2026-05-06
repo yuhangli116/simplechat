@@ -111,7 +111,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           username: user.user_metadata?.name || user.email?.split('@')[0] || 'User',
           avatar_url: user.user_metadata?.avatar_url || '',
           membership_type: 'free',
-          word_balance: 0
+          diamond_balance: 1000000 // New default 1,000,000
       };
       
       const { data: insertedData, error: insertError } = await supabase
