@@ -11,31 +11,42 @@ const getEnvValue = (...names) => {
 };
 
 const getModelRegistry = () => ({
-  deepseek: {
+  'deepseek-v3': {
     type: 'openai-compatible',
     provider: 'deepseek',
     modelName: 'deepseek-chat',
     baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
     apiKey: getEnvValue('DEEPSEEK_API_KEY', 'VITE_DEEPSEEK_API_KEY'),
   },
-  'gpt-4': {
+  'deepseek-r1': {
     type: 'openai-compatible',
-    provider: 'openai',
-    modelName: 'gpt-4-turbo',
-    baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-    apiKey: getEnvValue('OPENAI_API_KEY', 'VITE_OPENAI_API_KEY'),
+    provider: 'deepseek',
+    modelName: 'deepseek-reasoner',
+    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
+    apiKey: getEnvValue('DEEPSEEK_API_KEY', 'VITE_DEEPSEEK_API_KEY'),
   },
-  qwen: {
-    type: 'openai-compatible',
-    provider: 'qwen',
-    modelName: 'qwen-turbo',
-    baseURL: process.env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    apiKey: getEnvValue('QWEN_API_KEY', 'VITE_QWEN_API_KEY'),
+  'claude-sonnet': {
+    type: 'anthropic',
+    provider: 'anthropic',
+    modelName: 'claude-3-5-sonnet-20240620',
+    apiKey: getEnvValue('ANTHROPIC_API_KEY', 'VITE_ANTHROPIC_API_KEY'),
   },
-  gemini: {
+  'claude-opus': {
+    type: 'anthropic',
+    provider: 'anthropic',
+    modelName: 'claude-3-opus-20240229',
+    apiKey: getEnvValue('ANTHROPIC_API_KEY', 'VITE_ANTHROPIC_API_KEY'),
+  },
+  'claude-haiku': {
+    type: 'anthropic',
+    provider: 'anthropic',
+    modelName: 'claude-3-haiku-20240307',
+    apiKey: getEnvValue('ANTHROPIC_API_KEY', 'VITE_ANTHROPIC_API_KEY'),
+  },
+  'gemini-2.5-pro': {
     type: 'openai-compatible',
     provider: 'openrouter',
-    modelName: 'google/gemini-pro',
+    modelName: 'google/gemini-1.5-flash',
     baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
     apiKey: getEnvValue('OPENROUTER_API_KEY', 'VITE_OPENROUTER_API_KEY'),
     extraHeaders: {
@@ -43,11 +54,30 @@ const getModelRegistry = () => ({
       'X-Title': process.env.APP_NAME || 'simplechat',
     },
   },
-  claude: {
-    type: 'anthropic',
-    provider: 'anthropic',
-    modelName: 'claude-3-opus-20240229',
-    apiKey: getEnvValue('ANTHROPIC_API_KEY', 'VITE_ANTHROPIC_API_KEY'),
+  'gemini-3.1-pro': {
+    type: 'openai-compatible',
+    provider: 'openrouter',
+    modelName: 'google/gemini-1.5-pro',
+    baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    apiKey: getEnvValue('OPENROUTER_API_KEY', 'VITE_OPENROUTER_API_KEY'),
+    extraHeaders: {
+      'HTTP-Referer': process.env.APP_URL || 'http://localhost:5173',
+      'X-Title': process.env.APP_NAME || 'simplechat',
+    },
+  },
+  'gpt-4.1': {
+    type: 'openai-compatible',
+    provider: 'openai',
+    modelName: 'gpt-4-turbo',
+    baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+    apiKey: getEnvValue('OPENAI_API_KEY', 'VITE_OPENAI_API_KEY'),
+  },
+  'gpt-5.4': {
+    type: 'openai-compatible',
+    provider: 'openai',
+    modelName: 'gpt-4o',
+    baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+    apiKey: getEnvValue('OPENAI_API_KEY', 'VITE_OPENAI_API_KEY'),
   },
 });
 
@@ -61,6 +91,13 @@ const normalizeUsage = (usage) => ({
     usage?.completion_tokens ??
     usage?.output_tokens ??
     usage?.completionTokens ??
+    0,
+  reasoning_tokens:
+    usage?.completion_tokens_details?.reasoning_tokens ?? 0,
+  cache_hit_tokens:
+    usage?.prompt_tokens_details?.cached_tokens ??
+    usage?.cache_creation_input_tokens ??
+    usage?.cache_read_input_tokens ??
     0,
 });
 

@@ -13,51 +13,101 @@ interface AIResponse {
 
 interface AIRequest {
   prompt: string;
-  model: 'deepseek' | 'gpt-4' | 'gemini' | 'qwen' | 'claude';
+  model: keyof typeof MODEL_PRICING;
   context?: string;
   userId?: string; // Required for billing
 }
 
 export const MODEL_PRICING = {
-  'deepseek': {
-    name: 'DeepSeek 标准版',
-    input: 1,  // 1 Diamond / Token
-    output: 1, // 1 Diamond / Token
+  'deepseek-v3': {
+    name: 'DeepSeek-V3',
+    input: 1,  
+    output: 4, 
+    reasoning: 0,
+    cache: 0.4,
     provider: 'deepseek',
     modelName: 'deepseek-chat',
-    tags: ['免费试用', '效果一般']
+    tags: ['推荐', '高性价比']
   },
-  'gpt-4': {
-    name: 'GPT-4 Turbo',
-    input: 30,  
-    output: 60,
-    provider: 'openai',
-    modelName: 'gpt-4-turbo', 
-    tags: ['推荐', '旗舰', '思考']
+  'deepseek-r1': {
+    name: 'DeepSeek-R1',
+    input: 2,  
+    output: 8, 
+    reasoning: 8,
+    cache: 0.8,
+    provider: 'deepseek',
+    modelName: 'deepseek-reasoner',
+    tags: ['思考', '深度推理']
   },
-  'claude': {
-    name: 'Claude 3 Opus',
-    input: 30,  
-    output: 60,
+  'claude-sonnet': {
+    name: 'Claude Sonnet 4.6',
+    input: 10.5,
+    output: 52.5,
+    reasoning: 0,
+    cache: 1.05,
+    provider: 'anthropic',
+    modelName: 'claude-3-5-sonnet-20240620',
+    tags: ['推荐', '进阶']
+  },
+  'claude-opus': {
+    name: 'Claude Opus 4.6',
+    input: 17.5,  
+    output: 87.5,
+    reasoning: 0,
+    cache: 1.75,
     provider: 'anthropic',
     modelName: 'claude-3-opus-20240229',
-    tags: ['推荐', '旗舰', '思考']
+    tags: ['旗舰']
   },
-  'qwen': {
-    name: '通义千问 Turbo',
-    input: 1,   
-    output: 1,
-    provider: 'qwen',
-    modelName: 'qwen-turbo',
-    tags: ['国产', '高性价比']
+  'claude-haiku': {
+    name: 'Claude Haiku 4.5',
+    input: 3.5,
+    output: 17.5,
+    reasoning: 0,
+    cache: 0.35,
+    provider: 'anthropic',
+    modelName: 'claude-3-haiku-20240307',
+    tags: ['快速']
   },
-  'gemini': {
-    name: 'Gemini Pro',
-    input: 1,
-    output: 1,
-    provider: 'openai',
-    modelName: 'google/gemini-pro',
+  'gemini-2.5-pro': {
+    name: 'Gemini 2.5 Pro',
+    input: 4.375,
+    output: 35,
+    reasoning: 0,
+    cache: 0,
+    provider: 'google',
+    modelName: 'google/gemini-1.5-flash',
     tags: ['Google']
+  },
+  'gemini-3.1-pro': {
+    name: 'Gemini 3.1 Pro',
+    input: 7,
+    output: 42,
+    reasoning: 0,
+    cache: 0.7,
+    provider: 'google',
+    modelName: 'google/gemini-1.5-pro',
+    tags: ['旗舰', 'Google']
+  },
+  'gpt-4.1': {
+    name: 'GPT-4.1',
+    input: 7,
+    output: 28,
+    reasoning: 0,
+    cache: 0,
+    provider: 'openai',
+    modelName: 'gpt-4-turbo',
+    tags: ['OpenAI']
+  },
+  'gpt-5.4': {
+    name: 'GPT-5.4',
+    input: 8.75,
+    output: 35,
+    reasoning: 0,
+    cache: 0,
+    provider: 'openai',
+    modelName: 'gpt-4o',
+    tags: ['旗舰', 'OpenAI']
   }
 };
 
@@ -159,7 +209,7 @@ export const aiService = {
   async summarizeContext(context: string, userId?: string): Promise<AIResponse> {
     if (!context || context.length < 10) return { content: context };
 
-    const modelKey: keyof typeof MODEL_PRICING = 'deepseek';
+    const modelKey: keyof typeof MODEL_PRICING = 'deepseek-v3';
     const config = MODEL_PRICING[modelKey];
 
     try {
@@ -169,23 +219,36 @@ export const aiService = {
       if (userId) {
         const promptTokens = response.usage?.input_tokens ?? estimateTokens(context);
         const completionTokens = response.usage?.output_tokens ?? estimateTokens(content);
-        const totalCost = Math.ceil(promptTokens * config.input + completionTokens * config.output);
+        const reasoningTokens = (response.usage as any)?.reasoning_tokens ?? 0;
+        const cacheHitTokens = (response.usage as any)?.cache_hit_tokens ?? 0;
+        
+        let totalCost = Math.ceil(
+          promptTokens * config.input + 
+          completionTokens * config.output +
+          reasoningTokens * config.reasoning +
+          cacheHitTokens * config.cache
+        );
+        
         const canUseServerBilling = isUuid(userId);
 
         if (canUseServerBilling) {
-          const { data: deductOk, error: deductError } = await supabase.rpc('deduct_diamonds', {
+          const { data: rpcResult, error: deductError } = await supabase.rpc('deduct_diamonds', {
             p_user_id: userId,
-            p_cost: totalCost,
-            p_model_name: config.name + ' (总结)',
+            p_model_name: config.name,
             p_input_tokens: promptTokens,
-            p_output_tokens: completionTokens
+            p_output_tokens: completionTokens,
+            p_reasoning_tokens: reasoningTokens,
+            p_cache_hit_tokens: cacheHitTokens,
+            p_multiplier_version: 'v3.2'
           });
 
           if (deductError) {
             console.error('Summarization Billing Error:', deductError);
-          } else if (deductOk === false) {
+          } else if (rpcResult?.success === false) {
             return { content: '', error: '您的星石余额不足，请充值后继续使用。' };
           }
+          
+          totalCost = rpcResult?.total_cost ?? totalCost;
         } else {
           const currentGuestBalance = getGuestBalance();
           if (currentGuestBalance < totalCost) {
@@ -218,17 +281,7 @@ export const aiService = {
     const canUseServerBilling = Boolean(request.userId && isUuid(request.userId));
 
     if (request.userId) {
-      if (canUseServerBilling) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('diamond_balance')
-          .eq('id', request.userId)
-          .single();
-
-        if (profile && profile.diamond_balance <= 0) {
-          return { content: '', error: '您的星石余额不足，请充值后继续使用。' };
-        }
-      } else {
+      if (!canUseServerBilling) {
         const guestBalance = getGuestBalance();
         if (guestBalance <= 0) {
           return { content: '', error: '访客体验余额不足，请减少生成内容后重试。' };
@@ -251,22 +304,34 @@ export const aiService = {
         const completionTokens =
           response.usage?.output_tokens ??
           estimateTokens(content);
-        const totalCost = Math.ceil(promptTokens * config.input + completionTokens * config.output);
+        const reasoningTokens = (response.usage as any)?.reasoning_tokens ?? 0;
+        const cacheHitTokens = (response.usage as any)?.cache_hit_tokens ?? 0;
+          
+        let totalCost = Math.ceil(
+          promptTokens * config.input + 
+          completionTokens * config.output +
+          reasoningTokens * config.reasoning +
+          cacheHitTokens * config.cache
+        );
 
         if (canUseServerBilling) {
-          const { data: deductOk, error: deductError } = await supabase.rpc('deduct_diamonds', {
+          const { data: rpcResult, error: deductError } = await supabase.rpc('deduct_diamonds', {
             p_user_id: request.userId,
-            p_cost: totalCost,
             p_model_name: config.name,
             p_input_tokens: promptTokens,
-            p_output_tokens: completionTokens
+            p_output_tokens: completionTokens,
+            p_reasoning_tokens: reasoningTokens,
+            p_cache_hit_tokens: cacheHitTokens,
+            p_multiplier_version: 'v3.2'
           });
 
           if (deductError) {
             console.error('Billing Error:', deductError);
-          } else if (deductOk === false) {
+          } else if (rpcResult?.success === false) {
             return { content: '', error: '您的星石余额不足，请充值后继续使用。' };
           }
+          
+          totalCost = rpcResult?.total_cost ?? totalCost;
         } else {
           const currentGuestBalance = getGuestBalance();
           if (currentGuestBalance < totalCost) {

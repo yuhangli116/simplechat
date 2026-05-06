@@ -39,7 +39,7 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
   loadingText = '正在生成...',
   lastUsage = null
 }) => {
-  const [selectedModel, setSelectedModel] = useState('deepseek');
+  const [selectedModel, setSelectedModel] = useState('deepseek-v3');
   const [prompt, setPrompt] = useState('');
 
   const [showModelDropdown, setShowModelDropdown] = useState(false);
@@ -163,26 +163,57 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
             >
               <span>{MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING]?.name}</span>
               <span className="text-gray-400 ml-1">
-                ({MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING]?.input}星石/token)
+                (输入 {MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING]?.input}x)
               </span>
               <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${showModelDropdown ? 'rotate-180' : ''}`} />
             </button>
 
             {showModelDropdown && (
-              <div className="absolute top-full right-0 mt-1 w-64 max-h-64 overflow-y-auto bg-white rounded-lg shadow-xl border border-gray-100 z-[1200] animate-in fade-in zoom-in-95 duration-100">
+              <div className="absolute top-full right-0 mt-1 w-80 max-h-80 overflow-y-auto bg-white rounded-lg shadow-xl border border-gray-100 z-[1200] animate-in fade-in zoom-in-95 duration-100 custom-scrollbar">
                 {Object.entries(MODEL_PRICING).map(([key, config]) => (
                   <button
                     key={key}
                     onClick={() => handleModelSelect(key)}
-                    className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-gray-50 transition-colors ${
-                      selectedModel === key ? 'bg-purple-50 text-purple-700 font-medium' : 'text-gray-600'
+                    className={`w-full text-left px-4 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors ${
+                      selectedModel === key ? 'bg-purple-50/50' : ''
                     }`}
                   >
-                    <div className="flex flex-col gap-0.5">
-                      <span>{config.name}</span>
-                      <span className="text-[10px] text-gray-400">消耗: {config.input}星石/token</span>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`font-semibold ${selectedModel === key ? 'text-purple-700' : 'text-gray-800'}`}>
+                          {config.name}
+                        </span>
+                        {config.tags?.map(tag => (
+                          <span key={tag} className="px-1.5 py-0.5 rounded-md bg-gray-100 text-gray-500 text-[10px]">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                      {selectedModel === key && <Check className="w-4 h-4 text-purple-600" />}
                     </div>
-                    {selectedModel === key && <Check className="w-3 h-3 text-purple-600" />}
+                    
+                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                      <div className="flex items-center gap-1 text-gray-500">
+                        <span>输入:</span>
+                        <span className="font-mono font-medium text-gray-700">{config.input}x</span>
+                      </div>
+                      <div className="flex items-center gap-1 text-gray-500">
+                        <span>输出:</span>
+                        <span className="font-mono font-medium text-gray-700">{config.output}x</span>
+                      </div>
+                      {(config.reasoning || 0) > 0 && (
+                        <div className="flex items-center gap-1 text-gray-500">
+                          <span>思考:</span>
+                          <span className="font-mono font-medium text-indigo-600">{config.reasoning}x</span>
+                        </div>
+                      )}
+                      {(config.cache || 0) > 0 && (
+                        <div className="flex items-center gap-1 text-gray-500">
+                          <span>缓存:</span>
+                          <span className="font-mono font-medium text-green-600">{config.cache}x</span>
+                        </div>
+                      )}
+                    </div>
                   </button>
                 ))}
               </div>

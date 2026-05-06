@@ -1,4 +1,5 @@
-import React from 'react';
+
+         import React from 'react';
 import { MODEL_PRICING } from '@/services/ai';
 import { X, Sparkles, Zap, Flame } from 'lucide-react';
 
@@ -56,25 +57,36 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ selectedModel, onSelect, 
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-6 text-sm">
+                  <div className="grid grid-cols-2 gap-3 text-sm">
                     <div className="flex items-center gap-1.5 text-gray-600">
                       <span className="text-gray-400">输入:</span>
-                      <span className="font-mono font-medium text-gray-900">{config.input}</span>
-                      <span className="text-xs text-gray-500">星石/token</span>
+                      <span className="font-mono font-medium text-gray-900">{config.input}x</span>
                     </div>
                     <div className="flex items-center gap-1.5 text-gray-600">
                       <span className="text-gray-400">输出:</span>
-                      <span className="font-mono font-medium text-gray-900">{config.output}</span>
-                      <span className="text-xs text-gray-500">星石/token</span>
+                      <span className="font-mono font-medium text-gray-900">{config.output}x</span>
                     </div>
+                    {(config.reasoning || 0) > 0 && (
+                      <div className="flex items-center gap-1.5 text-gray-600">
+                        <span className="text-gray-400">思考:</span>
+                        <span className="font-mono font-medium text-indigo-600">{config.reasoning}x</span>
+                      </div>
+                    )}
+                    {(config.cache || 0) > 0 && (
+                      <div className="flex items-center gap-1.5 text-gray-600">
+                        <span className="text-gray-400">缓存:</span>
+                        <span className="font-mono font-medium text-green-600">{config.cache}x</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
           
-          <div className="mt-6 flex justify-end text-xs text-gray-400">
-            * 一个 token 通常对应 1 到 1.8 个中文汉字
+          <div className="mt-6 flex flex-col gap-1 justify-end text-xs text-gray-400">
+            <p>* 计费基准：1 星石 = 1 个基础 Token（DeepSeek-V3 输入）</p>
+            <p>* 倍率说明：各模型按其成本相对于基准 Token 成本折算倍率，最终扣费 = 消耗 Tokens × 对应倍率</p>
           </div>
         </div>
       </div>
