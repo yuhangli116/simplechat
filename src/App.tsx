@@ -21,6 +21,7 @@ import Trash from '@/pages/Trash';
 import Welfare from '@/pages/Welfare';
 import Guide from '@/pages/Guide';
 import Download from '@/pages/Download';
+import { ToastContainer } from '@/components/ToastContainer';
 import { 
   Records
 } from '@/pages/placeholders';
@@ -60,8 +61,10 @@ function App() {
   }, [setUser, setSession, fetchProfile]);
 
   return (
-    <BrowserRouter>
-      <Routes>
+    <>
+      <ToastContainer />
+      <BrowserRouter>
+        <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -107,6 +110,7 @@ function App() {
         <Route path="*" element={<div>404 Not Found</div>} />
       </Routes>
     </BrowserRouter>
+    </>
   );
 }
 

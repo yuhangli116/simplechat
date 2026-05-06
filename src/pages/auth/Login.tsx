@@ -65,10 +65,19 @@ export default function Login() {
       console.error('Error logging in:', error);
       
       let msg = '登录失败，请检查账号密码';
-      if (error.message === 'Invalid login credentials') msg = '账号或密码错误';
-      if (error.message.includes('Network')) msg = '网络连接失败，请检查网络';
+      if (error.message === 'Invalid login credentials') {
+        msg = '账号或密码错误';
+      } else if (error.message === 'Email not confirmed') {
+        msg = '邮箱尚未验证，请前往邮箱点击验证链接（注意检查垃圾邮件）';
+      } else if (error.message.includes('Network')) {
+        msg = '网络连接失败，请检查网络';
+      } else if (error.message) {
+        msg = error.message;
+      }
       
-      if (confirm(`${msg}\n\n是否使用“访客体验模式”直接进入？`)) {
+      if (error.message === 'Email not confirmed') {
+        alert(msg);
+      } else if (confirm(`${msg}\n\n是否使用“访客体验模式”直接进入？`)) {
           handleGuestLogin();
       }
     } finally {

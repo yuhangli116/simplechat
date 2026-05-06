@@ -11,11 +11,17 @@ import {
   UserCircle
 } from 'lucide-react';
 import { getUserProfile, getRandomAvatar } from '@/utils/randomProfile';
+import { EditProfileModal } from '@/components/EditProfileModal';
+import { RechargeHistoryModal } from '@/components/RechargeHistoryModal';
+import { AboutUsModal } from '@/components/AboutUsModal';
 
 const UserTopBar = () => {
   const { user, signOut, diamondBalance, profile: storeProfile } = useAuthStore();
   const navigate = useNavigate();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isRechargeHistoryOpen, setIsRechargeHistoryOpen] = useState(false);
+  const [isAboutUsModalOpen, setIsAboutUsModalOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Generate random profile for current user or use store profile
@@ -47,12 +53,7 @@ const UserTopBar = () => {
   };
 
   const handleEditProfile = () => {
-    // Placeholder for profile editing
-    const newName = window.prompt("修改昵称", profile?.name);
-    if (newName) {
-      alert(`昵称已修改为: ${newName} (功能演示)`);
-      // In a real app, you would call an API to update the user profile
-    }
+    setIsProfileModalOpen(true);
     setIsDropdownOpen(false);
   };
 
@@ -163,7 +164,10 @@ const UserTopBar = () => {
               开通/续费会员
             </Link>
             <button 
-              onClick={() => alert("功能开发中")}
+              onClick={() => {
+                setIsRechargeHistoryOpen(true);
+                setIsDropdownOpen(false);
+              }}
               className="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-blue-50 hover:text-blue-700 rounded-xl transition-all duration-200 group"
             >
               <div className="p-1.5 rounded-lg bg-blue-100 group-hover:bg-blue-200 transition-colors">
@@ -172,13 +176,16 @@ const UserTopBar = () => {
               充值记录
             </button>
             <button 
-              onClick={() => alert("功能开发中")}
+              onClick={() => {
+                setIsAboutUsModalOpen(true);
+                setIsDropdownOpen(false);
+              }}
               className="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-900 rounded-xl transition-all duration-200 group"
             >
               <div className="p-1.5 rounded-lg bg-gray-100 group-hover:bg-gray-200 transition-colors">
                 <Settings className="w-4 h-4 text-gray-500 group-hover:text-gray-700" />
               </div>
-              账户设置
+              关于我们
             </button>
           </div>
 
@@ -197,6 +204,19 @@ const UserTopBar = () => {
           </div>
         </div>
       )}
+
+      <EditProfileModal 
+        isOpen={isProfileModalOpen} 
+        onClose={() => setIsProfileModalOpen(false)} 
+      />
+      <RechargeHistoryModal 
+        isOpen={isRechargeHistoryOpen} 
+        onClose={() => setIsRechargeHistoryOpen(false)} 
+      />
+      <AboutUsModal 
+        isOpen={isAboutUsModalOpen} 
+        onClose={() => setIsAboutUsModalOpen(false)} 
+      />
     </div>
   );
 };

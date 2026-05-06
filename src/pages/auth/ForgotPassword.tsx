@@ -24,9 +24,19 @@ export default function ForgotPassword() {
       });
       if (error) throw error;
       setSent(true);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error sending reset email:', error);
-      alert('发送失败，请检查邮箱地址');
+      let errorMsg = '发送失败，请检查邮箱地址';
+      if (error.message) {
+        if (error.message.includes('rate limit')) {
+          errorMsg = '发送邮件过于频繁，请稍后再试';
+        } else if (error.message.includes('Failed to fetch')) {
+          errorMsg = '网络连接失败，请检查您的网络设置或代理';
+        } else {
+          errorMsg = error.message;
+        }
+      }
+      alert(errorMsg);
     } finally {
       setLoading(false);
     }

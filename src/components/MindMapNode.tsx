@@ -17,16 +17,21 @@ const wrapTextByChars = (text: string, charsPerLine: number) => {
     .join('\n');
 };
 
-const MindMapNode = ({ data, isConnectable, selected, id }: NodeProps) => {
-  const ctx = useContext(MindMapContext);
-  
-  // Resolve properties from Context or default to data for fallback
-  const isLocked = ctx?.isLocked || data.isLocked;
-  const forceEdit = ctx?.editingNodeId === id || data.forceEdit;
-  const isAiActive = (ctx?.selectedNodeId === id && ctx?.showAIDialog) || data.aiActive;
-  const isMultiSelected = ctx?.multiSelectedNodeIds?.includes(id) || data.multiSelected;
-  const theme = ctx?.theme || data.theme || 'dark';
-
+const MindMapNodeInner = React.memo(({
+  data, isConnectable, selected, id,
+  isLocked, forceEdit, isAiActive, isMultiSelected, theme,
+  setEditingNodeId, handleNodeDataChange, handleNodeLabelChange, handleNodeContentChange
+}: NodeProps & {
+  isLocked: boolean;
+  forceEdit: boolean;
+  isAiActive: boolean;
+  isMultiSelected: boolean;
+  theme: string;
+  setEditingNodeId?: (id: string | null) => void;
+  handleNodeDataChange?: (id: string, label: string, content: string) => void;
+  handleNodeLabelChange?: (id: string, label: string) => void;
+  handleNodeContentChange?: (id: string, content: string) => void;
+}) => {
   // 编辑状态 - 完全由组件内部管理（参考 v0.1/v2.0 的工作方式）
   const [isEditing, setIsEditing] = useState(false);
   const [label, setLabel] = useState(data.label);
@@ -84,8 +89,8 @@ const MindMapNode = ({ data, isConnectable, selected, id }: NodeProps) => {
       }
       
       setIsEditing(false);
-      if (ctx?.setEditingNodeId) {
-        ctx.setEditingNodeId(null);
+      if (setEditingNodeId) {
+        setEditingNodeId(null);
       } else if (data.onEditEnd) {
         data.onEditEnd();
       }
@@ -96,15 +101,15 @@ const MindMapNode = ({ data, isConnectable, selected, id }: NodeProps) => {
       const labelChanged = newLabel !== data.label;
       const contentChanged = newContent !== (typeof data.content === 'string' ? data.content : '');
 
-      if (ctx?.handleNodeDataChange) {
-        ctx.handleNodeDataChange(id, newLabel, newContent);
+      if (handleNodeDataChange) {
+        handleNodeDataChange(id, newLabel, newContent);
       } else if (data.onNodeDataChange) {
         data.onNodeDataChange(newLabel, newContent);
       } else {
         // 更新数据
         if (labelChanged) {
-          if (ctx?.handleNodeLabelChange) {
-            ctx.handleNodeLabelChange(id, newLabel);
+          if (handleNodeLabelChange) {
+            handleNodeLabelChange(id, newLabel);
           } else if (data.onChange) {
             data.onChange(newLabel);
           } else {
@@ -113,8 +118,8 @@ const MindMapNode = ({ data, isConnectable, selected, id }: NodeProps) => {
         }
         
         if (contentChanged) {
-          if (ctx?.handleNodeContentChange) {
-            ctx.handleNodeContentChange(id, newContent);
+          if (handleNodeContentChange) {
+            handleNodeContentChange(id, newContent);
           } else if (data.onContentChange) {
             data.onContentChange(newContent);
           } else {
@@ -166,8 +171,8 @@ const MindMapNode = ({ data, isConnectable, selected, id }: NodeProps) => {
       setLabel(data.label);
       setContent(typeof data.content === 'string' ? data.content : '');
       setIsEditing(false);
-      if (ctx?.setEditingNodeId) {
-        ctx.setEditingNodeId(null);
+      if (setEditingNodeId) {
+        setEditingNodeId(null);
       } else if (data.onEditEnd) {
         data.onEditEnd();
       }
@@ -288,6 +293,33 @@ const MindMapNode = ({ data, isConnectable, selected, id }: NodeProps) => {
 
       <Handle type="source" position={Position.Right} isConnectable={isConnectable} className="!bg-slate-400 !w-[2px] !h-[2px] !border !border-white/90" />
     </div>
+  );
+});
+
+const MindMapNode = (props: NodeProps) => {
+  const ctx = useContext(MindMapContext);
+  const { data, id } = props;
+  
+  // Resolve properties from Context or default to data for fallback
+  const isLocked = ctx?.isLocked || data.isLocked;
+  const forceEdit = ctx?.editingNodeId === id || data.forceEdit;
+  const isAiActive = (ctx?.selectedNodeId === id && ctx?.showAIDialog) || data.aiActive;
+  const isMultiSelected = ctx?.multiSelectedNodeIds?.includes(id) || data.multiSelected;
+  const theme = ctx?.theme || data.theme || 'dark';
+
+  return (
+    <MindMapNodeInner
+      {...props}
+      isLocked={!!isLocked}
+      forceEdit={!!forceEdit}
+      isAiActive={!!isAiActive}
+      isMultiSelected={!!isMultiSelected}
+      theme={theme}
+      setEditingNodeId={ctx?.setEditingNodeId}
+      handleNodeDataChange={ctx?.handleNodeDataChange}
+      handleNodeLabelChange={ctx?.handleNodeLabelChange}
+      handleNodeContentChange={ctx?.handleNodeContentChange}
+    />
   );
 };
 

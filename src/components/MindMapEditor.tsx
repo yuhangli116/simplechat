@@ -1030,7 +1030,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       style: { stroke: THEMES[theme].edgeColor }
     };
 
-    const nextNodes = [...nodes, newNode];
+    const nextNodes = [...workingNodes, newNode];
     const nextEdges = [...edges, newEdge];
 
     // Update edge types: if a node only has 1 child, use straight edge, otherwise smoothstep

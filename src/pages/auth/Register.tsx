@@ -52,7 +52,7 @@ export default function Register() {
       // Use email + timestamp as seed for unique avatar
       const randomAvatar = getRandomAvatar(`${email}-${Date.now()}`);
       
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -63,11 +63,29 @@ export default function Register() {
         }
       });
       if (error) throw error;
+      
+      // Supabase v2 silent duplicate email check
+      if (data?.user && data.user.identities && data.user.identities.length === 0) {
+        throw new Error('该邮箱已被注册，请直接登录');
+      }
+
       alert('注册成功！请检查邮箱完成验证');
       navigate('/login');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error registering:', error);
-      alert('注册失败，请稍后重试');
+      let errorMsg = '注册失败，请稍后重试';
+      if (error.message) {
+        if (error.message.includes('rate limit')) {
+          errorMsg = '发送邮件过于频繁，请稍后再试';
+        } else if (error.message.includes('already registered')) {
+          errorMsg = '该邮箱已被注册';
+        } else if (error.message.includes('invalid') || error.message.includes('Invalid')) {
+          errorMsg = '无效的邮箱地址或密码格式不正确';
+        } else {
+          errorMsg = error.message;
+        }
+      }
+      alert(errorMsg);
     } finally {
       setLoading(false);
     }

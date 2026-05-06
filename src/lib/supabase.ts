@@ -1,4 +1,3 @@
-
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { Database } from '@/types/supabase'
 
@@ -7,15 +6,7 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 let supabaseInstance: SupabaseClient<Database> | any;
 
-const isValidUrl = (url: string) => {
-  try {
-    return !!new URL(url);
-  } catch {
-    return false;
-  }
-}
-
-if (!supabaseUrl || !supabaseAnonKey || !isValidUrl(supabaseUrl)) {
+if (!supabaseUrl || !supabaseAnonKey) {
   console.warn('Missing or invalid Supabase URL/Key. Using mock client.')
   
   // Mock Chainable Implementation for Database Queries
