@@ -75,6 +75,49 @@
   }
 }
 
+@layer base {
+  .dark .bg-white {
+    @apply bg-card;
+  }
+  .dark .bg-white\/90 {
+    @apply bg-card/90;
+  }
+  .dark .bg-white\/80 {
+    @apply bg-card/80;
+  }
+  .dark .bg-gray-50 {
+    @apply bg-background;
+  }
+  .dark .bg-gray-50\/50 {
+    @apply bg-muted/50;
+  }
+  .dark .bg-gray-50\/80 {
+    @apply bg-muted/80;
+  }
+  .dark .bg-gray-100 {
+    @apply bg-muted;
+  }
+  .dark .border-gray-100,
+  .dark .border-gray-200 {
+    @apply border-border;
+  }
+  .dark .border-white\/50 {
+    @apply border-border/50;
+  }
+  .dark .text-gray-900,
+  .dark .text-gray-800,
+  .dark .text-gray-700 {
+    @apply text-foreground;
+  }
+  .dark .text-gray-600,
+  .dark .text-gray-500,
+  .dark .text-gray-400,
+  .dark .text-gray-300,
+  .dark .text-gray-200 {
+    @apply text-muted-foreground;
+  }
+}
+
 /* Story Editor - Tiptap Styles */
 .story-editor-content {
   line-height: 1.8;

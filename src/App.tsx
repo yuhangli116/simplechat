@@ -22,9 +22,7 @@ import Welfare from '@/pages/Welfare';
 import Guide from '@/pages/Guide';
 import Download from '@/pages/Download';
 import { ToastContainer } from '@/components/ToastContainer';
-import { 
-  Records
-} from '@/pages/placeholders';
+import Records from '@/pages/Records';
 
 // Redirect helper for legacy routes
 const LegacyStoryRedirect = () => {

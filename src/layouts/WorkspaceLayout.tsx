@@ -10,10 +10,11 @@ import {
   CreditCard,
   Calendar,
   Monitor,
-  Settings,
   Sun,
   Moon,
   LogOut,
+  Maximize2,
+  Minimize2,
   ChevronRight,
   ChevronLeft,
   PanelLeft,
@@ -22,28 +23,144 @@ import {
 import { useThemeStore } from '@/store/useThemeStore';
 import FileTree from '@/components/FileTree';
 import UserTopBar from '@/components/UserTopBar';
+import RewardConfirmDialog from '@/components/RewardConfirmDialog';
+import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/store/useAuthStore';
+import { useToastStore } from '@/store/useToastStore';
 
 const WorkspaceLayout = () => {
   const { theme, toggleTheme } = useThemeStore();
   const location = useLocation();
+  const { user, fetchProfile } = useAuthStore();
+  const { addToast } = useToastStore();
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
   const [isFileTreeCollapsed, setIsFileTreeCollapsed] = React.useState(false);
+  const [rewardDialogOpen, setRewardDialogOpen] = React.useState(false);
+  const [rewardDialogLoading, setRewardDialogLoading] = React.useState(false);
+  const [isFocusMode, setIsFocusMode] = React.useState(false);
+  const focusRestoreRef = React.useRef<{ sidebar: boolean; fileTree: boolean }>({ sidebar: false, fileTree: false });
+  const [rewardPayload, setRewardPayload] = React.useState<{
+    taskId: 'first_ai_call' | 'first_template_create';
+    title: string;
+    description: string;
+    rewardDiamonds: number;
+  } | null>(null);
 
   // Determine if we should show the FileTree (secondary sidebar)
   // Only show FileTree when in /workspace path
   const showFileTree = location.pathname.startsWith('/workspace'); 
 
+  const toggleFocusMode = () => {
+    if (!isFocusMode) {
+      focusRestoreRef.current = { sidebar: isSidebarCollapsed, fileTree: isFileTreeCollapsed };
+      setIsSidebarCollapsed(true);
+      setIsFileTreeCollapsed(true);
+      setIsFocusMode(true);
+      return;
+    }
+    setIsSidebarCollapsed(focusRestoreRef.current.sidebar);
+    setIsFileTreeCollapsed(focusRestoreRef.current.fileTree);
+    setIsFocusMode(false);
+  };
+
+  const maybeOpenRewardDialog = React.useCallback(
+    async (payload: {
+      taskId: 'first_ai_call' | 'first_template_create';
+      title: string;
+      description: string;
+      rewardDiamonds: number;
+    }) => {
+      if (!user) return;
+      if (rewardDialogOpen) return;
+
+      const { data, error } = await supabase
+        .from('user_welfare')
+        .select('completed_tasks')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (error && error.code !== 'PGRST116') return;
+
+      if (!data) {
+        await supabase.from('user_welfare').insert({ user_id: user.id, completed_tasks: [] });
+        setRewardPayload(payload);
+        setRewardDialogOpen(true);
+        return;
+      }
+
+      const tasks = Array.isArray((data as any).completed_tasks) ? ((data as any).completed_tasks as string[]) : [];
+      const key = payload.taskId;
+      if (tasks.includes(key)) return;
+
+      setRewardPayload(payload);
+      setRewardDialogOpen(true);
+    },
+    [rewardDialogOpen, user]
+  );
+
+  React.useEffect(() => {
+    if (!user) return;
+
+    const onAiUsed = () => {
+      maybeOpenRewardDialog({
+        taskId: 'first_ai_call',
+        title: '完成首次 AI 调用',
+        description: '检测到你已完成首次 AI 生成，确认后可领取奖励。',
+        rewardDiamonds: 10000,
+      });
+    };
+
+    const onTemplateCreated = () => {
+      maybeOpenRewardDialog({
+        taskId: 'first_template_create',
+        title: '完成首次创建模板',
+        description: '检测到你已创建作品模板或提示词模板，确认后可领取奖励。',
+        rewardDiamonds: 5000,
+      });
+    };
+
+    window.addEventListener('welfare:ai_used', onAiUsed);
+    window.addEventListener('welfare:template_created', onTemplateCreated);
+    return () => {
+      window.removeEventListener('welfare:ai_used', onAiUsed);
+      window.removeEventListener('welfare:template_created', onTemplateCreated);
+    };
+  }, [maybeOpenRewardDialog, user]);
+
+  const confirmReward = async () => {
+    if (!rewardPayload) return;
+    if (!user) return;
+
+    setRewardDialogLoading(true);
+    try {
+      const { data, error } = await supabase.rpc('claim_welfare_task', { p_task_id: rewardPayload.taskId });
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || '领取失败');
+      await fetchProfile();
+      addToast(`领取成功：+${Number(data.reward).toLocaleString()} 钻石`, 'success');
+      setRewardDialogOpen(false);
+      setRewardPayload(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : '领取失败';
+      addToast(message, 'error');
+      setRewardDialogOpen(false);
+      setRewardPayload(null);
+    } finally {
+      setRewardDialogLoading(false);
+    }
+  };
+
   return (
-    <div className="flex h-screen bg-white overflow-hidden">
+    <div className="flex h-screen bg-background text-foreground overflow-hidden">
       {/* 1. Global Sidebar (Leftmost) */}
-      <aside className={`${isSidebarCollapsed ? 'w-16' : 'w-56'} flex-shrink-0 bg-white border-r border-gray-200 flex flex-col py-4 z-20 transition-all duration-300`}>
+      <aside className={`${isSidebarCollapsed ? 'w-16' : 'w-56'} flex-shrink-0 bg-background border-r border-border flex flex-col py-4 z-20 transition-all duration-300`}>
         {/* Branding */}
         <div className={`px-6 mb-6 flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}>
           <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center text-white flex-shrink-0">
             <BookOpen className="w-5 h-5" />
           </div>
-          {!isSidebarCollapsed && <span className="text-lg font-bold text-gray-900 tracking-tight whitespace-nowrap">简单写作</span>}
+          {!isSidebarCollapsed && <span className="text-lg font-bold tracking-tight whitespace-nowrap">简单写作</span>}
         </div>
 
         {/* Navigation Icons */}
@@ -55,7 +172,7 @@ const WorkspaceLayout = () => {
             <NavIcon to="/trash" icon={Trash2} label="回收站" collapsed={isSidebarCollapsed} />
           </div>
 
-          <div className="mx-3 h-px bg-gray-200" />
+          <div className="mx-3 h-px bg-border" />
 
           {/* Section: Discovery */}
           <div className="w-full flex flex-col space-y-1">
@@ -64,13 +181,13 @@ const WorkspaceLayout = () => {
             <NavIcon to="/guide" icon={BookOpen} label="教程专区" collapsed={isSidebarCollapsed} />
           </div>
 
-          <div className="mx-3 h-px bg-gray-200" />
+          <div className="mx-3 h-px bg-border" />
 
           {/* Section: More */}
           <div className="w-full flex flex-col space-y-1">
             <NavIcon to="/prompts" icon={Database} label="提示词库" collapsed={isSidebarCollapsed} />
-            <NavIcon to="/membership" icon={CreditCard} label="充值会员" collapsed={isSidebarCollapsed} />
-            <NavIcon to="/records" icon={Calendar} label="星石记录" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/membership" icon={CreditCard} label="钻石充值" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/records" icon={Calendar} label="钻石记录" collapsed={isSidebarCollapsed} />
             <NavIcon to="/download" icon={Monitor} label="下载软件" collapsed={isSidebarCollapsed} />
           </div>
         </div>
@@ -93,22 +210,22 @@ const WorkspaceLayout = () => {
           {/* Action Buttons */}
           <div className={`flex items-center ${isSidebarCollapsed ? 'flex-col space-y-2' : 'justify-between'}`}>
             <button 
-              className="p-2 text-gray-400 hover:bg-gray-100 rounded-lg transition-colors" 
+              className="p-2 text-gray-500 hover:bg-muted rounded-lg transition-colors" 
               title="切换主题"
               onClick={toggleTheme}
             >
               {theme === 'dark' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
             </button>
             <button 
-              className="p-2 text-gray-400 hover:bg-gray-100 rounded-lg transition-colors" 
-              title="设置"
-              onClick={() => alert('设置功能开发中')}
+              className="p-2 text-gray-500 hover:bg-muted rounded-lg transition-colors" 
+              title={isFocusMode ? '退出专注' : '专注模式'}
+              onClick={toggleFocusMode}
             >
-              <Settings className="w-5 h-5" />
+              {isFocusMode ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
             </button>
             <button 
               onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
-              className="p-2 text-gray-400 hover:bg-gray-100 rounded-lg transition-colors" 
+              className="p-2 text-gray-500 hover:bg-muted rounded-lg transition-colors" 
               title={isSidebarCollapsed ? "展开" : "收起"}
             >
               {isSidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <LogOut className="w-5 h-5 rotate-180" />}
@@ -119,13 +236,13 @@ const WorkspaceLayout = () => {
 
       {/* 2. Secondary Sidebar (File Tree) */}
       {showFileTree && (
-        <aside className={`flex-shrink-0 z-10 h-full flex ${isFileTreeCollapsed ? 'w-10' : 'w-64'} transition-all duration-300 border-r border-gray-200 bg-white`}>
+        <aside className={`flex-shrink-0 z-10 h-full flex ${isFileTreeCollapsed ? 'w-10' : 'w-64'} transition-all duration-300 border-r border-border bg-background`}>
           {/* Collapsed state: show only expand button */}
           {isFileTreeCollapsed ? (
             <div className="w-full flex items-center justify-center">
               <button
                 onClick={() => setIsFileTreeCollapsed(false)}
-                className="p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 rounded-lg transition-colors"
+                className="p-2 text-gray-500 hover:bg-muted rounded-lg transition-colors"
                 title="展开作品栏"
               >
                 <PanelLeft className="w-5 h-5" />
@@ -136,10 +253,10 @@ const WorkspaceLayout = () => {
               {/* FileTree - now wrapped, with its own header */}
               <FileTree />
               {/* Collapse button at bottom */}
-              <div className="border-t border-gray-200 p-2 flex justify-center">
+              <div className="border-t border-border p-2 flex justify-center">
                 <button
                   onClick={() => setIsFileTreeCollapsed(true)}
-                  className="p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 rounded-lg transition-colors"
+                  className="p-2 text-gray-500 hover:bg-muted rounded-lg transition-colors"
                   title="收起作品栏"
                 >
                   <PanelLeftClose className="w-5 h-5" />
@@ -151,14 +268,27 @@ const WorkspaceLayout = () => {
       )}
 
       {/* 3. Main Content Area */}
-      <main className="flex-1 flex flex-col min-w-0 bg-white relative overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 bg-background relative overflow-hidden">
         {/* Top User Bar */}
-        <div className="w-full flex justify-end px-6 py-3 border-b border-gray-100 bg-white">
+        <div className="w-full flex justify-end px-6 py-3 border-b border-border bg-background">
           <UserTopBar />
         </div>
         
         <Outlet />
       </main>
+
+      <RewardConfirmDialog
+        isOpen={rewardDialogOpen && !!rewardPayload}
+        title={rewardPayload?.title || ''}
+        description={rewardPayload?.description || ''}
+        rewardDiamonds={rewardPayload?.rewardDiamonds || 0}
+        onConfirm={confirmReward}
+        onClose={() => {
+          setRewardDialogOpen(false);
+          setRewardPayload(null);
+        }}
+        loading={rewardDialogLoading}
+      />
     </div>
   );
 };
@@ -168,14 +298,14 @@ const NavIcon = ({ to, icon: Icon, label, active, collapsed }: { to: string, ico
     to={to} 
     className={({ isActive }) => `
       group relative flex items-center w-full px-3 py-2.5 rounded-lg transition-all duration-200
-      ${(isActive || active) ? 'bg-purple-50 text-purple-700' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}
+      ${(isActive || active) ? 'bg-purple-50 text-purple-700 dark:bg-purple-500/10 dark:text-purple-300' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white'}
       ${collapsed ? 'justify-center' : ''}
     `}
     title={collapsed ? label : undefined}
   >
     {({ isActive }) => (
       <>
-        <Icon className={`w-5 h-5 flex-shrink-0 ${!collapsed ? 'mr-3' : ''} ${(isActive || active) ? 'text-purple-600' : ''}`} />
+        <Icon className={`w-5 h-5 flex-shrink-0 ${!collapsed ? 'mr-3' : ''} ${(isActive || active) ? 'text-purple-600 dark:text-purple-300' : 'text-gray-400 group-hover:text-gray-700 dark:text-gray-300 dark:group-hover:text-white'}`} />
         {!collapsed && <span className="text-sm font-medium truncate">{label}</span>}
       </>
     )}

@@ -1760,6 +1760,9 @@ const Community = () => {
     setMineTab('templates');
     exitCreate();
     alert('模板已创建');
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('welfare:template_created'));
+    }
   };
 
   const handleCreateSkillTemplate = async () => {
@@ -1883,6 +1886,9 @@ const Community = () => {
     setMineTab('skills');
     exitCreate();
     alert('提示词已创建');
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('welfare:template_created'));
+    }
   };
 
   const handleDeleteTemplate = async (template: Template, e: React.MouseEvent) => {

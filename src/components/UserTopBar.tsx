@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuthStore } from '@/store/useAuthStore';
 import { 
-  User, 
   LogOut, 
   Crown, 
   Settings, 
@@ -134,11 +133,25 @@ const UserTopBar = () => {
               </div>
             </div>
             
-            <div className="mt-4 flex items-center justify-between bg-white/80 p-3 rounded-xl border border-purple-100 shadow-sm backdrop-blur-sm">
-              <span className="text-xs font-medium text-gray-500">我的星石</span>
-              <span className="text-sm font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600 flex items-center gap-1.5">
-                💎 {diamondBalance?.toLocaleString() || 0}
-              </span>
+            <div className="mt-4 bg-white/80 p-3 rounded-xl border border-purple-100 shadow-sm backdrop-blur-sm">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium text-gray-700">我的钻石</span>
+                <span className="text-base font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600 flex items-center gap-1.5">
+                  💎 {diamondBalance?.toLocaleString() || 0}
+                </span>
+              </div>
+              <div className="flex items-center">
+                {storeProfile?.membership_type && storeProfile.membership_type !== 'free' ? (
+                  <span className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded-md border border-amber-100 font-medium">
+                    <Crown className="w-3.5 h-3.5" />
+                    VIP会员 · {storeProfile.membership_expires_at ? `剩 ${Math.max(0, Math.ceil((new Date(storeProfile.membership_expires_at).getTime() - Date.now()) / 86400000))} 天` : '长期有效'}
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-md font-medium">
+                    普通用户 · Free
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 

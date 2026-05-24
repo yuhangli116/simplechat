@@ -628,7 +628,7 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
             >
               <span>{MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING]?.name}</span>
               <span className="text-gray-400 ml-1">
-                (输入 {MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING]?.input}x)
+                (输入 {MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING]?.inputMultiplier}x)
               </span>
               <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${showModelDropdown ? 'rotate-180' : ''}`} />
             </button>
@@ -660,22 +660,22 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
                     <div className="grid grid-cols-2 gap-2 text-[10px]">
                       <div className="flex items-center gap-1 text-gray-500">
                         <span>输入:</span>
-                        <span className="font-mono font-medium text-gray-700">{config.input}x</span>
+                        <span className="font-mono font-medium text-gray-700">{config.inputMultiplier}x</span>
                       </div>
                       <div className="flex items-center gap-1 text-gray-500">
                         <span>输出:</span>
-                        <span className="font-mono font-medium text-gray-700">{config.output}x</span>
+                        <span className="font-mono font-medium text-gray-700">{config.outputMultiplier}x</span>
                       </div>
-                      {(config.reasoning || 0) > 0 && (
+                      {(config.reasoningMultiplier || 0) > 0 && (
                         <div className="flex items-center gap-1 text-gray-500">
                           <span>思考:</span>
-                          <span className="font-mono font-medium text-indigo-600">{config.reasoning}x</span>
+                          <span className="font-mono font-medium text-indigo-600">{config.reasoningMultiplier}x</span>
                         </div>
                       )}
-                      {(config.cache || 0) > 0 && (
+                      {(config.cacheMultiplier || 0) > 0 && (
                         <div className="flex items-center gap-1 text-gray-500">
                           <span>缓存:</span>
-                          <span className="font-mono font-medium text-green-600">{config.cache}x</span>
+                          <span className="font-mono font-medium text-green-600">{config.cacheMultiplier}x</span>
                         </div>
                       )}
                     </div>

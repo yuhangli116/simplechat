@@ -16,8 +16,11 @@ interface Profile {
   id: string;
   username: string | null;
   avatar_url: string | null;
-  membership_type: 'free' | 'pro' | 'max';
-  diamond_balance: number; // mapped from word_balance or new column? Schema says word_balance, store says diamond_balance.
+  membership_type: 'free' | 'monthly' | 'quarterly' | 'yearly';
+  membership_expires_at?: string | null;
+  member_diamonds?: number;
+  permanent_diamonds?: number;
+  diamond_balance: number;
   // The schema has word_balance, the store uses diamondBalance.
   // The mock in supabase.ts returned diamond_balance.
   // I will assume the column is diamond_balance or word_balance.
@@ -71,6 +74,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
                 username: '访客体验',
                 avatar_url: '',
                 membership_type: 'free',
+                membership_expires_at: null,
+                member_diamonds: 0,
+                permanent_diamonds: guestBalance,
                 diamond_balance: guestBalance
             },
             diamondBalance: guestBalance
@@ -93,11 +99,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (data) {
       // Handle schema discrepancy if any. 
       // Schema says word_balance, store used diamond_balance.
-      const balance = data.diamond_balance !== undefined ? data.diamond_balance : data.word_balance;
+      const memberDiamonds = data.member_diamonds !== undefined ? Number(data.member_diamonds) : 0;
+      const permanentDiamonds =
+        data.permanent_diamonds !== undefined
+          ? Number(data.permanent_diamonds)
+          : data.diamond_balance !== undefined
+            ? Number(data.diamond_balance)
+            : Number(data.word_balance ?? 0);
+      const balance = memberDiamonds + permanentDiamonds;
       
       set({ 
         profile: {
             ...data,
+            member_diamonds: memberDiamonds,
+            permanent_diamonds: permanentDiamonds,
             diamond_balance: balance
         }, 
         diamondBalance: balance || 0 
@@ -111,7 +126,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           username: user.user_metadata?.name || user.email?.split('@')[0] || 'User',
           avatar_url: user.user_metadata?.avatar_url || '',
           membership_type: 'free',
-          diamond_balance: 1000000 // New default 1,000,000
       };
       
       const { data: insertedData, error: insertError } = await supabase
@@ -123,10 +137,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (insertError) {
           console.error('Error creating missing profile:', insertError);
       } else if (insertedData) {
-           const balance = insertedData.diamond_balance !== undefined ? insertedData.diamond_balance : insertedData.word_balance;
+           const memberDiamonds = insertedData.member_diamonds !== undefined ? Number(insertedData.member_diamonds) : 0;
+           const permanentDiamonds =
+             insertedData.permanent_diamonds !== undefined
+               ? Number(insertedData.permanent_diamonds)
+               : insertedData.diamond_balance !== undefined
+                 ? Number(insertedData.diamond_balance)
+                 : Number(insertedData.word_balance ?? 0);
+           const balance = memberDiamonds + permanentDiamonds;
            set({ 
              profile: {
                  ...insertedData,
+                 member_diamonds: memberDiamonds,
+                 permanent_diamonds: permanentDiamonds,
                  diamond_balance: balance
              }, 
              diamondBalance: balance || 0 

@@ -27,21 +27,60 @@ import ExportDialog from '@/components/ExportDialog';
 import { exportHtml, exportMarkdown, htmlToMarkdown } from '@/lib/fileExport';
 import { loadChapterContent, saveChapterContent } from '@/lib/workspacePersistence';
 import PromptPickerDialog from '@/components/PromptPickerDialog';
+import { useWorkspacePrefsStore } from '@/store/useWorkspacePrefsStore';
 
 const StoryEditor = () => {
   const { workId, chapterId } = useParams();
   const { user, diamondBalance, fetchBalance } = useAuthStore();
   const { files } = useFileStore();
+  type LocalModelKey = keyof typeof MODEL_PRICING;
+  const { modelMemoryScope } = useWorkspacePrefsStore();
   
   // Prompt Dialog State
   const [isPromptExpanded, setIsPromptExpanded] = useState(true);
   const [promptText, setPromptText] = useState('');
   const [isAiGenerating, setIsAiGenerating] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<string>('deepseek');
+  const [selectedModel, setSelectedModel] = useState<LocalModelKey | ''>('');
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [lastUsage, setLastUsage] = useState<{input_tokens: number, output_tokens: number, total_cost: number} | null>(null);
   const [aiPhase, setAiPhase] = useState('等待开始');
   const [aiElapsed, setAiElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!workId) return;
+    const globalKey = `story-selected-model`;
+    const perWorkKey = `story-selected-model-${workId}`;
+    const perChapterKey = chapterId ? `story-selected-model-${workId}-${chapterId}` : '';
+
+    const stored =
+      modelMemoryScope === 'global'
+        ? localStorage.getItem(globalKey) || ''
+        : modelMemoryScope === 'chapter'
+          ? (perChapterKey ? localStorage.getItem(perChapterKey) : '') || localStorage.getItem(globalKey) || ''
+          : localStorage.getItem(perWorkKey) || localStorage.getItem(globalKey) || '';
+
+    if (stored && stored in MODEL_PRICING) {
+      setSelectedModel(stored as LocalModelKey);
+    } else {
+      setSelectedModel('');
+    }
+  }, [workId, chapterId, modelMemoryScope]);
+
+  useEffect(() => {
+    if (!workId) return;
+    if (!selectedModel) return;
+    const globalKey = `story-selected-model`;
+    const perWorkKey = `story-selected-model-${workId}`;
+    const perChapterKey = chapterId ? `story-selected-model-${workId}-${chapterId}` : '';
+
+    localStorage.setItem(globalKey, selectedModel);
+    if (modelMemoryScope === 'work') {
+      localStorage.setItem(perWorkKey, selectedModel);
+    }
+    if (modelMemoryScope === 'chapter' && perChapterKey) {
+      localStorage.setItem(perChapterKey, selectedModel);
+    }
+  }, [selectedModel, workId, chapterId, modelMemoryScope]);
   
   // AI Context
   const [showContextSelector, setShowContextSelector] = useState(false);
@@ -243,6 +282,67 @@ const StoryEditor = () => {
    * 将 AI 返回的纯文本内容转换为段落分明的 HTML 格式
    * 并逐步插入到编辑器中，保持段落结构
    */
+  const escapeHtml = (value: string) =>
+    value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const sanitizeAiContinuationOutput = (userPrompt: string, content: string) => {
+    const prompt = String(userPrompt ?? '').trim();
+    const raw = String(content ?? '');
+    if (!prompt || !raw.trim()) return raw;
+
+    const normalize = (value: string) => String(value ?? '').replace(/\s+/g, ' ').trim();
+    const normalizedPrompt = normalize(prompt);
+    if (!normalizedPrompt) return raw;
+
+    const lines = raw.split(/\r?\n/);
+    while (lines.length > 0 && !normalize(lines[0])) lines.shift();
+
+    const prefixes = [/^(task|prompt|instruction|任务|提示词|用户需求|需求|指令)\s*[:：]\s*/i];
+
+    while (lines.length > 0) {
+      const line = lines[0];
+      const trimmed = String(line ?? '').trim();
+      const normalizedLine = normalize(trimmed);
+      const normalizedLineStripped = normalize(trimmed.replace(/^[\-\*\u2022>\s"'“”‘’]+/g, ''));
+
+      const isExact =
+        normalizedLine === normalizedPrompt || normalizedLineStripped === normalizedPrompt;
+      const isNearExact =
+        normalizedPrompt.length >= 12 &&
+        normalizedLine.includes(normalizedPrompt) &&
+        normalizedLine.length <= normalizedPrompt.length + 10;
+
+      if (isExact || isNearExact) {
+        lines.shift();
+        while (lines.length > 0 && !normalize(lines[0])) lines.shift();
+        continue;
+      }
+
+      let removedPrefixed = false;
+      for (const re of prefixes) {
+        if (re.test(trimmed)) {
+          const rest = trimmed.replace(re, '');
+          const normalizedRest = normalize(rest);
+          if (normalizedRest === normalizedPrompt || normalizedLine.includes(normalizedPrompt)) {
+            lines.shift();
+            while (lines.length > 0 && !normalize(lines[0])) lines.shift();
+            removedPrefixed = true;
+          }
+          break;
+        }
+      }
+      if (removedPrefixed) continue;
+      break;
+    }
+
+    return lines.join('\n').trimStart();
+  };
+
   const insertContentGradually = async (content: string) => {
     if (!editor) return;
 
@@ -263,7 +363,7 @@ const StoryEditor = () => {
       const paragraphText = paragraph.replace(/\n/g, ' ');
       
       // 插入新段落
-      editor.commands.insertContent(`<p>${paragraphText}</p>`);
+      editor.commands.insertContent(`<p>${escapeHtml(paragraphText)}</p>`);
       
       // 添加短暂延迟，让用户看到插入过程
       await new Promise((resolve) => window.setTimeout(resolve, 100));
@@ -272,6 +372,12 @@ const StoryEditor = () => {
 
   const handleAiContinue = async () => {
     if (!editor) return;
+
+    if (!selectedModel || !(selectedModel in MODEL_PRICING)) {
+      alert('请先选择一个具体的模型');
+      setShowModelSelector(true);
+      return;
+    }
 
     setIsAiGenerating(true);
     setAiPhase('正在准备上下文');
@@ -307,16 +413,18 @@ const StoryEditor = () => {
 
       setAiPhase('正在创作正文');
       
+      const modelKey = selectedModel as LocalModelKey;
       const response = await aiService.generateText({
         prompt: userPrompt,
-        model: selectedModel as any,
+        model: modelKey,
         context: finalContext,
         userId: user?.id || 'guest-user'
       });
 
       if (response.content) {
         setAiPhase('正在写入正文');
-        await insertContentGradually(response.content);
+        const cleaned = sanitizeAiContinuationOutput(userPrompt, response.content);
+        await insertContentGradually(cleaned);
         
         if (workId && chapterId) {
           const content = editor.getHTML();
@@ -553,7 +661,7 @@ const StoryEditor = () => {
             {lastUsage && (
               <div className="flex items-center text-xs text-purple-600 bg-purple-50 px-3 py-1.5 rounded-lg border border-purple-100">
                 <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                <span>上次消耗: {lastUsage.total_cost} 星石</span>
+                <span>上次消耗: {lastUsage.total_cost} 钻石</span>
                 <span className="text-purple-400 mx-1.5">|</span>
                 <span>输入: {lastUsage.input_tokens} / 输出: {lastUsage.output_tokens}</span>
               </div>
@@ -660,7 +768,11 @@ const StoryEditor = () => {
       {showModelSelector && (
         <ModelSelector 
           selectedModel={selectedModel}
-          onSelect={setSelectedModel}
+          onSelect={(model) => {
+            if (model in MODEL_PRICING) {
+              setSelectedModel(model as LocalModelKey);
+            }
+          }}
           onClose={() => setShowModelSelector(false)}
         />
       )}

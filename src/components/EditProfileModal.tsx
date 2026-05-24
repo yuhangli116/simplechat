@@ -76,15 +76,13 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({ isOpen, onCl
       setProfileError('');
       setProfileSuccess(false);
 
-      const { error } = await supabase
-        .from('profiles')
-        .update({
-          username,
-          avatar_url: avatarUrl,
-        })
-        .eq('id', user.id);
+      const { data, error } = await supabase.rpc('update_profile', {
+        p_username: username,
+        p_avatar_url: avatarUrl,
+      });
 
       if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || '更新个人信息失败');
 
       await fetchProfile(); // refresh store
       setProfileSuccess(true);
