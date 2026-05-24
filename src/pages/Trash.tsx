@@ -17,6 +17,7 @@ import { usePromptStore, Prompt } from '@/store/usePromptStore';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
 import { findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
+import Pagination from '@/components/Pagination';
 
 const Trash = () => {
   const { items, restoreItem, permanentlyDelete, clearTrash, syncFromSupabase } = useTrashStore();
@@ -28,6 +29,7 @@ const Trash = () => {
   const [filterType, setFilterType] = useState<'all' | 'work' | 'prompt'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     // Sync with Supabase on mount
@@ -71,6 +73,19 @@ const Trash = () => {
       return true;
     });
   }, [items, filterType, searchTerm]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filterType, searchTerm]);
+
+  const sortedItems = useMemo(() => {
+    return [...filteredItems].sort((a, b) => b.deletedAt - a.deletedAt);
+  }, [filteredItems]);
+
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(sortedItems.length / PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const pagedItems = sortedItems.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   // Selection Handling
   const handleSelectAll = () => {
@@ -224,7 +239,7 @@ const Trash = () => {
   };
 
   const renderItems = () => {
-    if (filteredItems.length === 0) {
+    if (sortedItems.length === 0) {
       return (
         <div className="flex flex-col items-center justify-center py-16 text-gray-400">
           <Trash2 className="w-12 h-12 mb-4 text-gray-200" />
@@ -236,7 +251,7 @@ const Trash = () => {
     const groups: { [key: string]: { workName: string; items: TrashItem[]; isFullWork: boolean; id: string } } = {};
     const standaloneItems: TrashItem[] = [];
 
-    filteredItems.forEach(item => {
+    pagedItems.forEach(item => {
       if (item.type === 'prompt') {
         standaloneItems.push(item);
         return;
@@ -465,9 +480,9 @@ const Trash = () => {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-          {/* Table Body */}
-          {renderItems()}
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">{renderItems()}</div>
+        <div className="pt-4">
+          <Pagination page={safePage} totalPages={totalPages} onChange={setPage} />
         </div>
         
         <div className="mt-4 flex items-start p-4 bg-blue-50 rounded-lg text-sm text-blue-700">

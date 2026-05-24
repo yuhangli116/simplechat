@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { supabase } from '@/lib/supabase';
 import { X, Loader2, Receipt } from 'lucide-react';
+import Pagination from '@/components/Pagination';
 
 interface RechargeHistoryModalProps {
   isOpen: boolean;
@@ -21,6 +22,7 @@ export const RechargeHistoryModal: React.FC<RechargeHistoryModalProps> = ({ isOp
   const { user } = useAuthStore();
   const [logs, setLogs] = useState<RechargeLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     if (isOpen && user) {
@@ -39,12 +41,18 @@ export const RechargeHistoryModal: React.FC<RechargeHistoryModalProps> = ({ isOp
 
       if (error) throw error;
       setLogs(data || []);
+      setPage(1);
     } catch (error) {
       console.error('Failed to fetch recharge logs:', error);
     } finally {
       setLoading(false);
     }
   };
+
+  const PAGE_SIZE = 8;
+  const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const pagedLogs = logs.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   if (!isOpen) return null;
 
@@ -66,73 +74,82 @@ export const RechargeHistoryModal: React.FC<RechargeHistoryModalProps> = ({ isOp
         </div>
 
         {/* Content */}
-        <div className="p-6 max-h-[70vh] overflow-y-auto">
+        <div className="p-6 max-h-[70vh] overflow-hidden flex flex-col">
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-12">
+            <div className="flex flex-col items-center justify-center py-12 flex-1">
               <Loader2 className="w-8 h-8 text-purple-600 animate-spin mb-4" />
               <p className="text-gray-500 text-sm">加载数据中...</p>
             </div>
           ) : logs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+            <div className="flex flex-col items-center justify-center py-12 text-gray-500 flex-1">
               <Receipt className="w-12 h-12 text-gray-300 mb-4" />
               <p>暂无充值记录</p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-50 text-gray-600 text-sm border-b border-gray-200">
-                    <th className="px-6 py-4 font-medium">行为</th>
-                    <th className="px-6 py-4 font-medium">时间</th>
-                    <th className="px-6 py-4 font-medium text-right">充值金额 (元)</th>
-                    <th className="px-6 py-4 font-medium text-right">钻石到账</th>
-                    <th className="px-6 py-4 font-medium text-center">最终状态</th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm divide-y divide-gray-100">
-                  {logs.map((log) => (
-                    <tr key={log.id} className="hover:bg-purple-50/30 transition-colors">
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center">
-                            <span className="text-purple-600 font-bold text-xs">充</span>
-                          </div>
-                          <span className="font-medium text-gray-800">充值获取星石</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-gray-500 font-mono text-xs">
-                        {new Date(log.created_at).toLocaleString('zh-CN', {
-                          year: 'numeric',
-                          month: '2-digit',
-                          day: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit',
-                          hour12: false
-                        }).replace(/\//g, '-')}
-                      </td>
-                      <td className="px-6 py-4 text-right font-medium text-gray-800">
-                        ¥{log.amount_cny.toFixed(2)}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
-                          +{log.diamonds_obtained} 💎
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        <span className={`inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-medium ${
-                          log.status === 'success' 
-                            ? 'bg-green-100 text-green-700 border border-green-200' 
-                            : 'bg-red-100 text-red-700 border border-red-200'
-                        }`}>
-                          {log.status === 'success' ? '支付成功' : '支付失败'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="flex-1 overflow-y-auto">
+                <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 text-gray-600 text-sm border-b border-gray-200">
+                        <th className="px-6 py-4 font-medium">行为</th>
+                        <th className="px-6 py-4 font-medium">时间</th>
+                        <th className="px-6 py-4 font-medium text-right">充值金额 (元)</th>
+                        <th className="px-6 py-4 font-medium text-right">星石到账</th>
+                        <th className="px-6 py-4 font-medium text-center">最终状态</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-sm divide-y divide-gray-100">
+                      {pagedLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-purple-50/30 transition-colors">
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <div className="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center">
+                                <span className="text-purple-600 font-bold text-xs">充</span>
+                              </div>
+                              <span className="font-medium text-gray-800">充值获取星石</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-gray-500 font-mono text-xs">
+                            {new Date(log.created_at)
+                              .toLocaleString('zh-CN', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                                hour12: false,
+                              })
+                              .replace(/\//g, '-')}
+                          </td>
+                          <td className="px-6 py-4 text-right font-medium text-gray-800">¥{log.amount_cny.toFixed(2)}</td>
+                          <td className="px-6 py-4 text-right">
+                            <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
+                              +{log.diamonds_obtained}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <span
+                              className={`inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-medium ${
+                                log.status === 'success'
+                                  ? 'bg-green-100 text-green-700 border border-green-200'
+                                  : 'bg-red-100 text-red-700 border border-red-200'
+                              }`}
+                            >
+                              {log.status === 'success' ? '支付成功' : '支付失败'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="pt-4">
+                <Pagination page={safePage} totalPages={totalPages} onChange={setPage} />
+              </div>
+            </>
           )}
         </div>
       </div>

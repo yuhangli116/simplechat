@@ -6,6 +6,7 @@ import {
   Italic, 
   Sparkles,
   Save,
+  Download,
   ChevronDown,
   ChevronUp,
   Undo2,
@@ -13,7 +14,8 @@ import {
   X,
   Bot,
   FileText,
-  Link as LinkIcon
+  Link as LinkIcon,
+  FileCode
 } from 'lucide-react';
 import { aiService, MODEL_PRICING } from '@/services/ai';
 import ModelSelector from '@/components/ModelSelector';
@@ -21,7 +23,10 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
 import { useParams } from 'react-router-dom';
 import ContextSelectorDialog from '@/components/ContextSelectorDialog';
+import ExportDialog from '@/components/ExportDialog';
+import { exportHtml, exportMarkdown, htmlToMarkdown } from '@/lib/fileExport';
 import { loadChapterContent, saveChapterContent } from '@/lib/workspacePersistence';
+import PromptPickerDialog from '@/components/PromptPickerDialog';
 
 const StoryEditor = () => {
   const { workId, chapterId } = useParams();
@@ -41,6 +46,8 @@ const StoryEditor = () => {
   // AI Context
   const [showContextSelector, setShowContextSelector] = useState(false);
   const [aiContexts, setAiContexts] = useState<Array<{ nodeId: string, content: string, sourceName: string }>>([]);
+  const [showPromptPicker, setShowPromptPicker] = useState(false);
+  const promptTextareaRef = React.useRef<HTMLTextAreaElement | null>(null);
 
   // Fetch balance on mount
   useEffect(() => {
@@ -159,6 +166,40 @@ const StoryEditor = () => {
       alert('保存成功');
     }
   };
+
+  const [showExportDialog, setShowExportDialog] = useState(false);
+
+  const handleExport = () => {
+    setShowExportDialog(true);
+  };
+
+  const handleExportFormat = (format: string) => {
+    if (!editor) return;
+    const htmlContent = editor.getHTML();
+    const markdownContent = htmlToMarkdown(htmlContent);
+    const filename = `${currentChapterName || '未命名章节'}`;
+    
+    if (format === 'html') {
+      exportHtml(htmlContent, `${filename}.html`);
+    } else {
+      exportMarkdown(markdownContent, `${filename}.md`);
+    }
+  };
+
+  const exportOptions = [
+    {
+      value: 'html',
+      label: 'HTML 格式',
+      description: '保留富文本格式，可直接在浏览器打开',
+      icon: <FileCode className="w-5 h-5" />
+    },
+    {
+      value: 'markdown',
+      label: 'Markdown 格式',
+      description: '简洁的文本格式，易于编辑和阅读',
+      icon: <FileText className="w-5 h-5" />
+    }
+  ];
 
   // Load aiContexts
   useEffect(() => {
@@ -323,6 +364,36 @@ const StoryEditor = () => {
 
   const currentModelConfig = MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING];
 
+  const insertPromptContent = (text: string) => {
+    const el = promptTextareaRef.current;
+    const start = el?.selectionStart ?? undefined;
+    const end = el?.selectionEnd ?? undefined;
+    setPromptText((prev) => {
+      const current = String(prev ?? '');
+      if (start === undefined || end === undefined) {
+        return current ? `${current}\n${text}` : text;
+      }
+      const safeStart = Math.min(Math.max(0, start), current.length);
+      const safeEnd = Math.min(Math.max(0, end), current.length);
+      const insertingAtEnd = safeStart === safeEnd && safeStart === current.length;
+      const prefix = insertingAtEnd && current && !current.endsWith('\n') ? '\n' : '';
+      const inserted = `${prefix}${text}`;
+      return current.slice(0, safeStart) + inserted + current.slice(safeEnd);
+    });
+
+    if (el) {
+      requestAnimationFrame(() => {
+        const current = el.value;
+        const baseStart = start ?? current.length;
+        const insertingAtEnd = baseStart === current.length;
+        const prefix = insertingAtEnd && current && !current.endsWith('\n') ? '\n' : '';
+        const pos = Math.min(current.length, baseStart + prefix.length + text.length);
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      });
+    }
+  };
+
   return (
     <div className="flex flex-col h-full min-h-0 p-4 gap-4 overflow-hidden">
       {/* Prompt Dialog (Top) - Collapsible */}
@@ -334,11 +405,6 @@ const StoryEditor = () => {
         >
           {/* Left Side: Label, Model, Balance */}
           <div className="flex items-center gap-3">
-            <div className="flex items-center text-xs font-medium text-purple-700 bg-white border border-purple-200 rounded-lg px-3 py-2 shadow-sm">
-              <Sparkles className="w-3.5 h-3.5 mr-1.5 text-purple-500" />
-              提示词设置
-            </div>
-            
             {/* Model Selector - Quick access */}
             <button
               onClick={(e) => {
@@ -360,6 +426,18 @@ const StoryEditor = () => {
           
           {/* Right Side: Reference, AI Continue, Expand/Collapse */}
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowPromptPicker(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg border transition-colors text-xs font-medium bg-white border-purple-200 hover:bg-purple-50 text-purple-700"
+              title="从提示词库选择并插入"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>选择提示词</span>
+            </button>
             {/* Reference Outline Button */}
             <button
               onClick={(e) => {
@@ -446,6 +524,7 @@ const StoryEditor = () => {
             {/* Prompt Input Area */}
             <div className="relative">
               <textarea
+                ref={promptTextareaRef}
                 value={promptText}
                 onChange={(e) => setPromptText(e.target.value)}
                 onKeyDown={(e) => {
@@ -551,6 +630,13 @@ const StoryEditor = () => {
             <Save className="w-4 h-4" />
             保存
           </button>
+          <button 
+            onClick={handleExport}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-50 hover:border-gray-300 transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            另存为
+          </button>
         </div>
         
         {/* Editor Content */}
@@ -585,6 +671,25 @@ const StoryEditor = () => {
         onClose={() => setShowContextSelector(false)}
         onSelect={handleContextSelect}
         workId={workId}
+      />
+      
+      {/* Export Dialog */}
+      <ExportDialog
+        isOpen={showExportDialog}
+        onClose={() => setShowExportDialog(false)}
+        onExport={handleExportFormat}
+        options={exportOptions}
+        title="选择导出格式"
+      />
+
+      <PromptPickerDialog
+        isOpen={showPromptPicker}
+        onClose={() => setShowPromptPicker(false)}
+        onPick={(content) => {
+          insertPromptContent(content);
+          setShowPromptPicker(false);
+        }}
+        pageSize={6}
       />
     </div>
   );

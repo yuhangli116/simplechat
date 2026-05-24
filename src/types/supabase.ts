@@ -155,8 +155,11 @@ export interface Database {
           author_name: string | null
           category: string
           content: Json
+          creator_id: string | null
+          is_public: boolean | null
           cover_color: string | null
           likes: number | null
+          views: number
           downloads: number | null
           is_official: boolean | null
           tags: string[] | null
@@ -169,8 +172,11 @@ export interface Database {
           author_name?: string | null
           category: string
           content: Json
+          creator_id?: string | null
+          is_public?: boolean | null
           cover_color?: string | null
           likes?: number | null
+          views?: number
           downloads?: number | null
           is_official?: boolean | null
           tags?: string[] | null
@@ -183,11 +189,124 @@ export interface Database {
           author_name?: string | null
           category?: string
           content?: Json
+          creator_id?: string | null
+          is_public?: boolean | null
           cover_color?: string | null
           likes?: number | null
+          views?: number
           downloads?: number | null
           is_official?: boolean | null
           tags?: string[] | null
+          created_at?: string
+        }
+      }
+      community_skill_templates: {
+        Row: {
+          id: string
+          title: string
+          description: string | null
+          category: string
+          prompt_text: string
+          author_name: string | null
+          creator_id: string | null
+          is_public: boolean | null
+          cover_color: string | null
+          likes: number | null
+          uses: number | null
+          is_official: boolean | null
+          tags: string[] | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          title: string
+          description?: string | null
+          category: string
+          prompt_text: string
+          author_name?: string | null
+          creator_id?: string | null
+          is_public?: boolean | null
+          cover_color?: string | null
+          likes?: number | null
+          uses?: number | null
+          is_official?: boolean | null
+          tags?: string[] | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          title?: string
+          description?: string | null
+          category?: string
+          prompt_text?: string
+          author_name?: string | null
+          creator_id?: string | null
+          is_public?: boolean | null
+          cover_color?: string | null
+          likes?: number | null
+          uses?: number | null
+          is_official?: boolean | null
+          tags?: string[] | null
+          created_at?: string
+        }
+      }
+      template_likes: {
+        Row: {
+          id: string
+          template_id: string
+          user_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          template_id: string
+          user_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          template_id?: string
+          user_id?: string
+          created_at?: string
+        }
+      }
+      skill_template_likes: {
+        Row: {
+          id: string
+          skill_template_id: string
+          user_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          skill_template_id: string
+          user_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          skill_template_id?: string
+          user_id?: string
+          created_at?: string
+        }
+      }
+      user_templates: {
+        Row: {
+          id: string
+          template_id: string
+          user_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          template_id: string
+          user_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          template_id?: string
+          user_id?: string
           created_at?: string
         }
       }

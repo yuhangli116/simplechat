@@ -20,7 +20,9 @@ import {
   Award,
   Box,
   Circle,
-  Hexagon
+  Hexagon,
+  Download,
+  Package
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
@@ -29,6 +31,7 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore, FileNode, initialFileStructure } from '@/store/useFileStore';
 import { useTrashStore } from '@/store/useTrashStore';
 import { createTrashSnapshot, deleteWorkspaceNode, findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
+import { createZip } from '@/lib/fileExport';
 
 export type { FileNode };
 
@@ -48,6 +51,7 @@ const FileTreeNode = ({
   onAddMindMap,
   onRename,
   onDelete,
+  onExportWork,
   editingId,
   setEditingId
 }: { 
@@ -58,6 +62,7 @@ const FileTreeNode = ({
   onAddMindMap: (parentId: string) => void,
   onRename: (id: string, newName: string) => void,
   onDelete: (node: FileNode) => void,
+  onExportWork: (node: FileNode) => void,
   editingId: string | null,
   setEditingId: (id: string | null) => void
 }) => {
@@ -146,6 +151,7 @@ const FileTreeNode = ({
   // Check folders
   const isChaptersFolder = node.name === '正文情节';
   const isMetaFolder = node.name === '作品相关';
+  const isWorkFolder = level === 0 && node.type === 'folder';
   
   // Determine if node is editable/deletable
   // Level 0 (Work folders), 'file' type (Chapters), and 'mindmap' type are editable/deletable
@@ -189,43 +195,77 @@ const FileTreeNode = ({
         <div className={`flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity ${isEditing ? 'hidden' : ''}`}>
           {/* Add Chapter Button for specific folder */}
           {isChaptersFolder && (
-            <button 
-              onClick={handleAddClick}
-              className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-gray-700"
-              title="新建章节"
-            >
-              <Plus className="w-3.5 h-3.5" />
-            </button>
+            <div className="relative group/btn">
+              <button 
+                onClick={handleAddClick}
+                className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-gray-700"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+              <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1 px-2 py-0.5 text-[10px] font-medium text-white bg-gray-800 rounded shadow-sm whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+                新建章节
+              </span>
+            </div>
           )}
 
           {/* Add MindMap Button for meta folder */}
           {isMetaFolder && (
-            <button 
-              onClick={handleAddMindMapClick}
-              className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-gray-700"
-              title="新建大纲"
-            >
-              <Plus className="w-3.5 h-3.5" />
-            </button>
+            <div className="relative group/btn">
+              <button 
+                onClick={handleAddMindMapClick}
+                className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-gray-700"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+              <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1 px-2 py-0.5 text-[10px] font-medium text-white bg-gray-800 rounded shadow-sm whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+                新建大纲
+              </span>
+            </div>
           )}
 
+          {/* Export Button for work folder */}
+          {isWorkFolder && (
+            <div className="relative group/btn">
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExportWork(node);
+                }}
+                className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-purple-600"
+              >
+                <Package className="w-3.5 h-3.5" />
+              </button>
+              <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1 px-2 py-0.5 text-[10px] font-medium text-white bg-gray-800 rounded shadow-sm whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+                打包
+              </span>
+            </div>
+          )}
+          
           {/* Edit/Delete Buttons */}
           {canEdit && (
             <>
-              <button 
-                onClick={handleRenameClick}
-                className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-gray-700"
-                title="重命名"
-              >
-                <Edit2 className="w-3.5 h-3.5" />
-              </button>
-              <button 
-                onClick={handleDeleteClick}
-                className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-red-600"
-                title="删除"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
+              <div className="relative group/btn">
+                <button 
+                  onClick={handleRenameClick}
+                  className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-gray-700"
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                </button>
+                <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1 px-2 py-0.5 text-[10px] font-medium text-white bg-gray-800 rounded shadow-sm whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+                  编辑
+                </span>
+              </div>
+              <div className="relative group/btn">
+                <button 
+                  onClick={handleDeleteClick}
+                  className="p-1 rounded hover:bg-gray-300 text-gray-500 hover:text-red-600"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+                <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1 px-2 py-0.5 text-[10px] font-medium text-white bg-gray-800 rounded shadow-sm whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+                  删除
+                </span>
+              </div>
             </>
           )}
         </div>
@@ -243,6 +283,7 @@ const FileTreeNode = ({
               onAddMindMap={onAddMindMap}
               onRename={onRename}
               onDelete={onDelete}
+              onExportWork={onExportWork}
               editingId={editingId}
               setEditingId={setEditingId}
             />
@@ -583,6 +624,71 @@ const FileTree = () => {
     }
   };
 
+  const handleExportWork = async (workNode: FileNode) => {
+    const zipFiles: Array<{ name: string; content: string | Blob }> = [];
+    const workName = workNode.name;
+
+    const collectFiles = (nodes: FileNode[], basePath: string = '') => {
+      nodes.forEach(node => {
+        if (node.type === 'file') {
+          const workId = node.path?.match(/\/workspace\/p\/([^/]+)/)?.[1];
+          const chapterId = node.path?.match(/\/story\/([^/]+)/)?.[1];
+          if (workId && chapterId) {
+            const key = `story-${workId}-${chapterId}`;
+            const content = localStorage.getItem(key) || '';
+            if (content) {
+              zipFiles.push({
+                name: `${basePath}${node.name}.html`,
+                content
+              });
+            }
+          }
+        } else if (node.type === 'mindmap') {
+          let storageKey = '';
+          if (node.path?.includes('/mindmap/')) {
+            const recordId = node.path.split('/').pop();
+            if (recordId) {
+              storageKey = `mindmap-${recordId}`;
+            }
+          } else {
+            const workId = node.path?.match(/\/workspace\/p\/([^/]+)/)?.[1];
+            const route = node.path?.split('/').pop();
+            const editorType = route === 'world' ? 'world' : 
+                              route === 'characters' ? 'character' : 
+                              route === 'events' ? 'event' : 'outline';
+            if (workId) {
+              storageKey = `mindmap-${workId}-${editorType}`;
+            }
+          }
+          
+          if (storageKey) {
+            const saved = localStorage.getItem(storageKey);
+            if (saved) {
+              zipFiles.push({
+                name: `${basePath}${node.name}.json`,
+                content: saved
+              });
+            }
+          }
+        }
+        
+        if (node.children) {
+          collectFiles(node.children, `${basePath}${node.name}/`);
+        }
+      });
+    };
+
+    if (workNode.children) {
+      collectFiles(workNode.children);
+    }
+
+    if (zipFiles.length > 0) {
+      await createZip(zipFiles, `${workName}_完整作品.zip`);
+    } else {
+      alert('当前作品没有可导出的内容');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -612,6 +718,7 @@ const FileTree = () => {
             onAddMindMap={handleAddMindMap}
             onRename={handleRename}
             onDelete={handleDelete}
+            onExportWork={handleExportWork}
             editingId={editingId}
             setEditingId={setEditingId}
           />

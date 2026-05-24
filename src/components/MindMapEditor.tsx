@@ -19,11 +19,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { aiService } from '@/services/ai';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
-import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Sparkles, Palette, Maximize, Check, AlignLeft, AlignRight, ZoomIn, ZoomOut, Lock, Unlock, Edit3 } from 'lucide-react';
+import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Sparkles, Palette, Maximize, Check, AlignLeft, AlignRight, ZoomIn, ZoomOut, Lock, Unlock, Download, FileText, Image as ImageIcon, FileJson } from 'lucide-react';
 import MindMapNode from './MindMapNode';
 import { getLayoutedElements } from '@/utils/layout';
 import AIGenerationDialog from './AIGenerationDialog';
 import ContextSelectorDialog from './ContextSelectorDialog';
+import ExportDialog from './ExportDialog';
+import { exportMindMap, exportMindMapAsImage, exportMindMapAsText } from '@/lib/fileExport';
 import { getMindMapTitleFromRoute, loadMindMapContent, saveMindMapContent } from '@/lib/workspacePersistence';
 
 export const MindMapContext = React.createContext<any>(null);
@@ -152,6 +154,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [showAIDialog, setShowAIDialog] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [showExportDialog, setShowExportDialog] = useState(false);
   const [lastUsage, setLastUsage] = useState<{input_tokens: number, output_tokens: number, total_cost: number} | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   
@@ -555,18 +558,26 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
           const fileName = (location.state as any).fileName;
           newData.nodes[0].data.label = fileName;
       }
+      
       if (content?.nodes?.length) {
         // Backward compatibility: old saved data may miss `type`, which breaks custom node events (double click edit).
         const normalizedNodes = content.nodes.map((node) => ({
           ...node,
           type: node.type || 'mindMap',
         }));
-        setNodes(normalizedNodes);
-        setEdges(content.edges || []);
-        return;
+        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(normalizedNodes, content.edges || [], 'LR');
+        setNodes(layoutedNodes);
+        setEdges(layoutedEdges);
+      } else {
+        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(newData.nodes, newData.edges, 'LR');
+        setNodes(layoutedNodes);
+        setEdges(layoutedEdges);
       }
-      setNodes(newData.nodes);
-      setEdges(newData.edges);
+      
+      // After updating data, instantly fit view without animation
+      setTimeout(() => {
+        reactFlowInstance?.fitView({ padding: 0.2, duration: 0 });
+      }, 50);
     };
 
     const loadData = async () => {
@@ -598,7 +609,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     };
 
     loadData();
-  }, [type, workId, id, setNodes, setEdges, location.state, user, storageKey]);
+  }, [type, workId, id, setNodes, setEdges, location.state, user, storageKey, reactFlowInstance]);
 
   React.useEffect(() => {
     if (!workId && !id) return;
@@ -882,6 +893,49 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     if (nodes.length === 0) return;
     applyStructuredLayoutAndFit(nodes, edges);
   }, [nodes, edges, applyStructuredLayoutAndFit]);
+
+  const handleExport = useCallback(() => {
+    setShowExportDialog(true);
+  }, []);
+
+  const handleExportFormat = useCallback(async (format: string) => {
+    const title = mindMapTitle || '思维导图';
+    
+    switch (format) {
+      case 'json':
+        exportMindMap(nodes, edges, title);
+        break;
+      case 'image':
+        if (reactFlowWrapper.current) {
+          await exportMindMapAsImage(reactFlowWrapper.current, title);
+        }
+        break;
+      case 'text':
+        exportMindMapAsText(nodes, edges, title);
+        break;
+    }
+  }, [nodes, edges, mindMapTitle, reactFlowWrapper]);
+
+  const exportOptions = [
+    {
+      value: 'image',
+      label: '图片格式',
+      description: '导出为 PNG 图片，方便查看和分享',
+      icon: <ImageIcon className="w-5 h-5" />
+    },
+    {
+      value: 'text',
+      label: '文本格式',
+      description: '导出为 Markdown 文本，易于阅读和编辑',
+      icon: <FileText className="w-5 h-5" />
+    },
+    {
+      value: 'json',
+      label: 'JSON 格式',
+      description: '导出完整数据，可用于备份和导入',
+      icon: <FileJson className="w-5 h-5" />
+    }
+  ];
 
   const addNode = (type: 'child' | 'sibling') => {
     if (isLocked) {
@@ -1505,7 +1559,6 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                   tooltip="适应画布" 
                   theme={theme}
                 />
-                <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
                 <ToolbarButton 
                   onClick={() => setIsLocked(!isLocked)}
                   icon={isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />} 
@@ -1514,6 +1567,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                   highlight={isLocked}
                 />
                 <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
+                <ToolbarButton 
+                  onClick={handleExport} 
+                  icon={<Download className="w-4 h-4" />} 
+                  tooltip="另存为" 
+                  theme={theme}
+                />
                 <div className="relative">
                     <ToolbarButton 
                       onClick={toggleThemeSelector} 
@@ -1612,6 +1671,15 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             // We don't close AI dialog, we just update context
         }}
         workId={workId}
+      />
+      
+      {/* Export Dialog */}
+      <ExportDialog
+        isOpen={showExportDialog}
+        onClose={() => setShowExportDialog(false)}
+        onExport={handleExportFormat}
+        options={exportOptions}
+        title="选择导出格式"
       />
       </MindMapContext.Provider>
     </div>

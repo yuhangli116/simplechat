@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { Database } from '@/types/supabase';
+import Pagination from '@/components/Pagination';
 
 type Tutorial = Database['public']['Tables']['tutorials']['Row'];
 
@@ -18,6 +19,7 @@ const Guide = () => {
   const [activeTab, setActiveTab] = useState<'all' | 'video' | 'text'>('all');
   const [tutorials, setTutorials] = useState<Tutorial[]>([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     const fetchTutorials = async () => {
@@ -91,10 +93,19 @@ const Guide = () => {
     return true;
   });
 
+  useEffect(() => {
+    setPage(1);
+  }, [activeTab, searchTerm]);
+
+  const PAGE_SIZE = 8;
+  const totalPages = Math.max(1, Math.ceil(filteredTutorials.length / PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const pagedTutorials = filteredTutorials.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
   return (
-    <div className="flex-1 h-full bg-gray-50 flex flex-col overflow-y-auto">
+    <div className="h-full min-h-0 bg-gray-50 flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-8 py-8">
+      <div className="bg-white border-b border-gray-200 px-8 py-8 shrink-0">
         <h1 className="text-3xl font-bold text-gray-900 mb-4">教程专区</h1>
         <div className="max-w-2xl relative">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -109,7 +120,7 @@ const Guide = () => {
       </div>
 
       {/* Tabs */}
-      <div className="px-8 py-6 flex space-x-4">
+      <div className="px-8 py-6 flex space-x-4 shrink-0">
         <button 
           onClick={() => setActiveTab('all')}
           className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
@@ -139,13 +150,13 @@ const Guide = () => {
       </div>
 
       {/* Content List */}
-      <div className="flex-1 p-8 pt-0">
+      <div className="flex-1 min-h-0 overflow-y-auto p-8 pt-0">
         <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
           {loading ? (
              <div className="p-10 text-center text-gray-500">加载中...</div>
           ) : filteredTutorials.length > 0 ? (
             <div className="divide-y divide-gray-100">
-              {filteredTutorials.map(item => (
+              {pagedTutorials.map(item => (
                 <div key={item.id} className="p-6 hover:bg-gray-50 transition-colors flex items-start group cursor-pointer">
                   {/* Thumbnail */}
                   <div className={`w-40 h-24 rounded-lg flex-shrink-0 mr-6 relative overflow-hidden ${item.thumbnail_url || 'bg-gray-200'} flex items-center justify-center`}>
@@ -194,6 +205,9 @@ const Guide = () => {
               <p>没有找到相关教程</p>
             </div>
           )}
+        </div>
+        <div className="pt-4">
+          <Pagination page={safePage} totalPages={totalPages} onChange={setPage} />
         </div>
       </div>
     </div>
