@@ -294,7 +294,8 @@ simplechat/
 │       ├── generate.js           # AI文本生成API
 │       └── summarize.js          # AI摘要API
 ├── server/                       # 服务端代码
-│   └── aiProxy.js               # AI代理核心逻辑
+│   ├── aiProxy.js               # AI代理核心逻辑
+│   └── index.js                 # 自建服务器 Express 入口
 ├── src/                         # 前端源代码
 │   ├── components/              # 可复用UI组件
 │   ├── layouts/                 # 布局组件
@@ -327,18 +328,22 @@ npm install
 
 ### 2. 环境变量配置
 
-创建 `.env` 文件：
+确保项目根目录存在 `.env` 文件，并至少包含：
 
 ```env
-# Supabase
 VITE_SUPABASE_URL=your_supabase_url
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 
-# AI API Keys
-VITE_DEEPSEEK_API_KEY=your_deepseek_key
-VITE_ANTHROPIC_API_KEY=your_anthropic_key
-VITE_OPENAI_API_KEY=your_openai_key
-VITE_OPENROUTER_API_KEY=your_openrouter_key
+DEEPSEEK_API_KEY=your_deepseek_key
+ANTHROPIC_API_KEY=your_anthropic_key
+OPENAI_API_KEY=your_openai_key
+OPENROUTER_API_KEY=your_openrouter_key
+
+APP_URL=http://localhost:5173
+APP_NAME=simplechat
+
+PORT=3001
+JSON_BODY_LIMIT=2mb
 ```
 
 ### 3. 启动开发服务器
@@ -351,6 +356,13 @@ npm run dev
 
 ```bash
 npm run build
+```
+
+### 5. 自建服务器启动（生产）
+
+```bash
+npm install
+npm run start
 ```
 
 ---

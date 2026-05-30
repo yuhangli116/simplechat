@@ -249,7 +249,7 @@ export const summarizeContextServer = async ({ context }) => {
   ];
 
   return requestModel({
-    model: 'deepseek',
+    model: 'deepseek-v3',
     messages,
     temperature: 0.3,
   });
