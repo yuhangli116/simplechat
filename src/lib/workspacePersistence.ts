@@ -410,6 +410,35 @@ export const loadMindMapContent = async (params: { workId: string; id?: string; 
   return data?.content || null
 }
 
+export const loadMindMapRecord = async (params: { workId: string; id?: string; type?: EditorType }) => {
+  const { workId, id, type } = params
+
+  if (id) {
+    const { data, error } = await supabase
+      .from('mind_maps')
+      .select('content, updated_at')
+      .eq('work_id', workId)
+      .eq('id', id)
+      .maybeSingle()
+
+    if (error) throw error
+    return data ? { content: data.content, updatedAt: data.updated_at } : null
+  }
+
+  if (!type) return null
+
+  const { data, error } = await supabase
+    .from('mind_maps')
+    .select('content, updated_at')
+    .eq('work_id', workId)
+    .eq('is_default', true)
+    .eq('editor_type', type)
+    .maybeSingle()
+
+  if (error) throw error
+  return data ? { content: data.content, updatedAt: data.updated_at } : null
+}
+
 export const saveMindMapContent = async (params: {
   workId: string
   nodeId: string
@@ -430,6 +459,7 @@ export const saveMindMapContent = async (params: {
       is_default: isDefault,
       custom_icon: customIcon || null,
       content,
+      updated_at: new Date().toISOString(),
     },
     { onConflict: 'id' }
   )

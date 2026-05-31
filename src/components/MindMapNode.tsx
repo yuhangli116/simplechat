@@ -190,16 +190,14 @@ const MindMapNodeInner = React.memo(({
   const isRoot = data.isRoot;
   const bgColor = isRoot ? currentStyle.rootBg : currentStyle.nodeBg;
   const textColor = isRoot ? 'text-white' : currentStyle.text;
-  const borderColor = selected || isAiActive
+  const isNodeSelected = !isLocked && (selected || isAiActive || isMultiSelected);
+
+  const borderColor = isNodeSelected
     ? 'ring-1 ring-purple-500 border-purple-500'
-    : isMultiSelected
-      ? 'ring-1 ring-purple-500 border-purple-500'
-      : (isRoot ? 'border-transparent' : currentStyle.border);
-  const shadow = selected || isAiActive
+    : (isRoot ? 'border-transparent' : currentStyle.border);
+  const shadow = isNodeSelected
     ? 'shadow-md shadow-purple-500/20'
-    : isMultiSelected
-      ? 'shadow-md shadow-purple-500/20'
-      : 'shadow-[0_3px_10px_rgba(15,23,42,0.12)]';
+    : 'shadow-[0_3px_10px_rgba(15,23,42,0.12)]';
 
   const contentPreview = isEditing ? content.trim() : (typeof data.content === 'string' ? data.content.trim() : '');
   const wrappedPreview = wrapTextByChars(contentPreview, CONTENT_WRAP_CHARS);

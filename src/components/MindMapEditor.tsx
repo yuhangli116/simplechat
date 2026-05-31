@@ -17,8 +17,10 @@ import 'reactflow/dist/style.css';
 import '@/styles/reactflow.css';
 import { v4 as uuidv4 } from 'uuid';
 import { aiService } from '@/services/ai';
+import type { ModelKey } from '@/services/billing';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
+import { useToastStore } from '@/store/useToastStore';
 import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Sparkles, Palette, Maximize, Check, AlignLeft, AlignRight, ZoomIn, ZoomOut, Lock, Unlock, Download, FileText, Image as ImageIcon, FileJson } from 'lucide-react';
 import MindMapNode from './MindMapNode';
 import { getLayoutedElements } from '@/utils/layout';
@@ -26,7 +28,7 @@ import AIGenerationDialog from './AIGenerationDialog';
 import ContextSelectorDialog from './ContextSelectorDialog';
 import ExportDialog from './ExportDialog';
 import { exportMindMap, exportMindMapAsImage, exportMindMapAsText } from '@/lib/fileExport';
-import { getMindMapTitleFromRoute, loadMindMapContent, saveMindMapContent } from '@/lib/workspacePersistence';
+import { getMindMapTitleFromRoute, loadMindMapContent, loadMindMapRecord, saveMindMapContent } from '@/lib/workspacePersistence';
 
 export const MindMapContext = React.createContext<any>(null);
 
@@ -146,6 +148,7 @@ const parseMindMapAIResult = (content: string) => {
 
 const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId, id, initialData }) => {
   const { user, fetchBalance, diamondBalance } = useAuthStore();
+  const { addToast } = useToastStore();
   const { files } = useFileStore();
   const location = useLocation();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -234,6 +237,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const [history, setHistory] = useState<{nodes: Node[], edges: Edge[]}[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const initialFitKeyRef = useRef<string | null>(null);
+  const lastSaveErrorAtRef = useRef(0);
+  const isHydratingRef = useRef(false);
+  const hasHydratedRef = useRef(false);
+  const saveSeqRef = useRef(0);
+  const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving' | 'error'>('saved');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
 
   // Add state to history
   const recordState = useCallback((newNodes: Node[], newEdges: Edge[]) => {
@@ -297,8 +306,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const [edges, setEdges, onEdgesChange] = useEdgesState(startEdges);
 
   const onNodesChange = useCallback((changes: any[]) => {
-    originalOnNodesChange(changes);
-    const hasDimensionChange = changes.some(c => c.type === 'dimensions');
+    const filteredChanges = isLocked
+      ? changes.filter((c: any) => c.type !== 'select')
+      : changes;
+    if (filteredChanges.length === 0) return;
+    originalOnNodesChange(filteredChanges);
+    const hasDimensionChange = filteredChanges.some(c => c.type === 'dimensions');
     // Trigger layout recalculation on ANY dimension change, not just when editing.
     // This ensures newly added nodes align perfectly once their true DOM dimensions are known.
     if (hasDimensionChange) {
@@ -342,7 +355,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
          });
       }, 10);
     }
-  }, [originalOnNodesChange, setEdges, setNodes]);
+  }, [originalOnNodesChange, setEdges, setNodes, isLocked]);
   const activeNodeId = useMemo(
     () => selectedNodeId || nodes.find((node) => Boolean((node as Node & { selected?: boolean }).selected))?.id || null,
     [selectedNodeId, nodes]
@@ -397,6 +410,15 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const showLockedHint = useCallback(() => {
     alert('当前页面已锁住，点击节点不会选中。请先点击右上角“解锁编辑”，再继续编辑。');
   }, []);
+
+  React.useEffect(() => {
+    if (!isLocked) return;
+    setSelectedNodeId(null);
+    setMultiSelectedNodeIds([]);
+    setShowAIDialog(false);
+    setEditingNodeId(null);
+    setNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: false })));
+  }, [isLocked, setSelectedNodeId, setMultiSelectedNodeIds, setShowAIDialog, setEditingNodeId, setNodes]);
 
   const handleAiClick = useCallback((nodeId: string) => {
     if (isLocked) {
@@ -552,7 +574,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return;
     }
 
-    const applyMindMapData = (content: { nodes?: Node[]; edges?: Edge[] } | null) => {
+    const applyMindMapData = (content: { nodes?: Node[]; edges?: Edge[]; updated_at?: string } | null) => {
+      isHydratingRef.current = true;
       const newData = getDefaultData(type);
       if (location.state && (location.state as any).fileName) {
           const fileName = (location.state as any).fileName;
@@ -578,59 +601,136 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       setTimeout(() => {
         reactFlowInstance?.fitView({ padding: 0.2, duration: 0 });
       }, 50);
+
+      setTimeout(() => {
+        isHydratingRef.current = false;
+        hasHydratedRef.current = true;
+        setSaveState('saved');
+        const updatedAtValue = content?.updated_at;
+        if (typeof updatedAtValue === 'string' && updatedAtValue) {
+          const ts = Date.parse(updatedAtValue);
+          if (!Number.isNaN(ts)) {
+            setLastSavedAt(ts);
+          }
+        }
+      }, 0);
     };
 
     const loadData = async () => {
+      const saved = localStorage.getItem(storageKey);
+      let localParsed: any = null;
+      let localUpdatedAt = -1;
+
+      if (saved) {
+        try {
+          localParsed = JSON.parse(saved);
+          const parsedUpdatedAt = localParsed?.updated_at;
+          localUpdatedAt =
+            typeof parsedUpdatedAt === 'string' && parsedUpdatedAt
+              ? Date.parse(parsedUpdatedAt)
+              : -1;
+          applyMindMapData(localParsed);
+        } catch (e) {
+          console.error('Failed to parse saved mindmap', e);
+          localStorage.removeItem(storageKey);
+          localParsed = null;
+          localUpdatedAt = -1;
+        }
+      }
+
       if (user && workId) {
         try {
-          const remoteContent = await loadMindMapContent({ workId, id, type: id ? undefined : type });
-          if (remoteContent) {
-            localStorage.setItem(storageKey, JSON.stringify(remoteContent));
-            applyMindMapData(remoteContent as { nodes?: Node[]; edges?: Edge[] } | null);
-            return;
+          const remoteRecord = await loadMindMapRecord({ workId, id, type: id ? undefined : type });
+          if (remoteRecord?.content) {
+            const remoteUpdatedAt =
+              typeof remoteRecord.updatedAt === 'string' && remoteRecord.updatedAt
+                ? Date.parse(remoteRecord.updatedAt)
+                : -1;
+            if (localUpdatedAt < 0 || (remoteUpdatedAt >= 0 && remoteUpdatedAt > localUpdatedAt)) {
+              const payload = {
+                ...(remoteRecord.content as any),
+                updated_at: remoteRecord.updatedAt || undefined,
+              };
+              localStorage.setItem(storageKey, JSON.stringify(payload));
+              applyMindMapData(payload as any);
+              return;
+            }
           }
         } catch (error) {
           console.error('Failed to load mind map from Supabase:', error);
         }
       }
 
-      const saved = localStorage.getItem(storageKey);
-      if (!saved) {
-        applyMindMapData(null);
+      if (localUpdatedAt >= 0) {
+        if (user && workId && Array.isArray(localParsed?.nodes) && localParsed.nodes.length > 0) {
+          saveMindMapContent({
+            workId,
+            nodeId: id || `mm-${type}-${workId}`,
+            title: mindMapTitle,
+            type,
+            isDefault: !id,
+            content: {
+              nodes: Array.isArray(localParsed?.nodes) ? localParsed.nodes : [],
+              edges: Array.isArray(localParsed?.edges) ? localParsed.edges : [],
+            },
+          }).catch(() => {});
+        }
         return;
       }
 
-      try {
-        applyMindMapData(JSON.parse(saved));
-      } catch (e) {
-        console.error('Failed to parse saved mindmap', e);
-        applyMindMapData(null);
-      }
+      applyMindMapData(null);
     };
 
     loadData();
   }, [type, workId, id, setNodes, setEdges, location.state, user, storageKey, reactFlowInstance]);
 
   React.useEffect(() => {
+    if (!hasHydratedRef.current || isHydratingRef.current) return;
+    setSaveState('dirty');
+  }, [nodes, edges]);
+
+  React.useEffect(() => {
     if (!workId && !id) return;
     const timeout = setTimeout(() => {
-      const payload = { nodes, edges };
+      const now = Date.now();
+      const updatedAt = new Date(now).toISOString();
+      const payload = { nodes, edges, updated_at: updatedAt };
       localStorage.setItem(storageKey, JSON.stringify(payload));
-      if (user && workId) {
-        saveMindMapContent({
-          workId,
-          nodeId: id || `mm-${type}-${workId}`,
-          title: mindMapTitle,
-          type,
-          isDefault: !id,
-          content: payload,
-        }).catch((error) => {
-          console.error('Failed to save mind map to Supabase:', error);
-        });
+      if (!user || !workId) {
+        setSaveState('saved');
+        setLastSavedAt(now);
+        return;
       }
+
+
+      setSaveState('saving');
+      const seq = ++saveSeqRef.current;
+      saveMindMapContent({
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        title: mindMapTitle,
+        type,
+        isDefault: !id,
+        content: { nodes: payload.nodes, edges: payload.edges },
+      })
+        .then(() => {
+          if (seq !== saveSeqRef.current) return;
+          setSaveState('saved');
+          setLastSavedAt(now);
+        })
+        .catch((error) => {
+          if (seq !== saveSeqRef.current) return;
+          setSaveState('error');
+          console.error('Failed to save mind map to Supabase:', error);
+          if (now - lastSaveErrorAtRef.current > 5000) {
+            lastSaveErrorAtRef.current = now;
+            const message = error instanceof Error ? error.message : '未知错误';
+            addToast(`思维导图保存失败：${message}`, 'error');
+          }
+        });
     }, 1000);
     return () => clearTimeout(timeout);
-  }, [nodes, edges, workId, type, id, user, storageKey, mindMapTitle]);
+  }, [nodes, edges, workId, type, id, user, storageKey, mindMapTitle, addToast]);
 
   // Center view once after each mind map page is loaded.
   // Keep viewport unchanged for regular edits like add/delete node.
@@ -832,21 +932,43 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   }, []);
 
   const persistMindMapNow = useCallback((payload: { nodes: Node[]; edges: Edge[] }) => {
-    localStorage.setItem(storageKey, JSON.stringify(payload));
+    const now = Date.now();
+    const updatedAt = new Date(now).toISOString();
+    const payloadWithMeta = { ...payload, updated_at: updatedAt };
+    localStorage.setItem(storageKey, JSON.stringify(payloadWithMeta));
 
-    if (user && workId) {
-      saveMindMapContent({
-        workId,
-        nodeId: id || `mm-${type}-${workId}`,
-        title: mindMapTitle,
-        type,
-        isDefault: !id,
-        content: payload,
-      }).catch((error) => {
-        console.error('Failed to save mind map to Supabase:', error);
-      });
+    if (!user || !workId) {
+      setSaveState('saved');
+      setLastSavedAt(now);
+      return;
     }
-  }, [storageKey, user, workId, id, type, mindMapTitle]);
+
+    setSaveState('saving');
+    const seq = ++saveSeqRef.current;
+    saveMindMapContent({
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      title: mindMapTitle,
+      type,
+      isDefault: !id,
+      content: payload,
+    })
+      .then(() => {
+        if (seq !== saveSeqRef.current) return;
+        setSaveState('saved');
+        setLastSavedAt(now);
+      })
+      .catch((error) => {
+        if (seq !== saveSeqRef.current) return;
+        setSaveState('error');
+        console.error('Failed to save mind map to Supabase:', error);
+        if (now - lastSaveErrorAtRef.current > 5000) {
+          lastSaveErrorAtRef.current = now;
+          const message = error instanceof Error ? error.message : '未知错误';
+          addToast(`思维导图保存失败：${message}`, 'error');
+        }
+      });
+  }, [storageKey, user, workId, id, type, mindMapTitle, addToast]);
 
   const applyStructuredLayoutAndFit = useCallback((sourceNodes: Node[], sourceEdges: Edge[]) => {
     // Also enforce edge styling here for safety
@@ -1179,7 +1301,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   
   // (Old handleAiClick removed to avoid duplicate declaration)
 
-  const handleAiSubmit = async (model: string, userPrompt: string) => {
+  const handleAiSubmit = async (model: ModelKey, userPrompt: string) => {
     if (isLocked) {
       showLockedHint();
       return;
@@ -1196,6 +1318,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     try {
         let finalContext = '';
         let summarizationUsage = null;
+        let billingGroupId: string | undefined;
         
         if (aiContexts.length > 0) {
             let combinedContext = '';
@@ -1204,7 +1327,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             });
             
             if (combinedContext.length > 3000) {
-                const summaryRes = await aiService.summarizeContext(combinedContext, user?.id);
+                billingGroupId = uuidv4();
+                const summaryRes = await aiService.summarizeContext(combinedContext, user?.id, model, billingGroupId);
                 if (summaryRes.error) {
                     alert(`总结上下文失败: ${summaryRes.error}`);
                     setIsGenerating(false);
@@ -1250,7 +1374,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             prompt,
             context: finalContext,
             model: model as any, 
-            userId: user?.id || 'guest-user' // Guest fallback
+            userId: user?.id,
+            billingGroupId
         });
 
         if (response.content) {
@@ -1458,7 +1583,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             fitView
             attributionPosition="bottom-right"
             nodesDraggable={!isLocked && !editingNodeId}
-            elementsSelectable={!editingNodeId}
+            nodesConnectable={!isLocked}
+            elementsSelectable={!isLocked && !editingNodeId}
             panOnScroll
             panOnScrollMode={PanOnScrollMode.Vertical}
             zoomOnScroll={false}
@@ -1603,6 +1729,41 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                       </div>
                     )}
                 </div>
+                <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
+                <div
+                  className={`px-2 py-1 rounded-md border text-xs font-medium ${
+                    saveState === 'saved'
+                      ? theme === 'dark'
+                        ? 'bg-emerald-500/15 border-emerald-400/30 text-emerald-200'
+                        : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                      : saveState === 'saving'
+                        ? theme === 'dark'
+                          ? 'bg-blue-500/15 border-blue-400/30 text-blue-200'
+                          : 'bg-blue-50 border-blue-200 text-blue-700'
+                        : saveState === 'error'
+                          ? theme === 'dark'
+                            ? 'bg-red-500/15 border-red-400/30 text-red-200'
+                            : 'bg-red-50 border-red-200 text-red-700'
+                          : theme === 'dark'
+                            ? 'bg-amber-500/15 border-amber-400/30 text-amber-200'
+                            : 'bg-amber-50 border-amber-200 text-amber-700'
+                  }`}
+                  title={
+                    lastSavedAt
+                      ? `上次保存：${new Date(lastSavedAt).toLocaleString()}`
+                      : saveState === 'dirty'
+                        ? '有未保存的更改'
+                        : ''
+                  }
+                >
+                  {saveState === 'saved'
+                    ? '已保存'
+                    : saveState === 'saving'
+                      ? '保存中...'
+                      : saveState === 'error'
+                        ? '保存失败'
+                        : '未保存'}
+                </div>
               </div>
             </Panel>
 
@@ -1667,7 +1828,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         isOpen={showContextSelector}
         onClose={() => setShowContextSelector(false)}
         onSelect={(context) => {
-            setAiContexts(prev => [...prev, context]);
+            setAiContexts(prev => {
+              if (prev.some(c => c.nodeId === context.nodeId)) {
+                return prev;
+              }
+              return [...prev, context];
+            });
             // We don't close AI dialog, we just update context
         }}
         workId={workId}

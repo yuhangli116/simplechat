@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { User, Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { getEffectiveProfileDiamonds } from '@/services/billing'
 
 const GUEST_BALANCE_KEY = 'guest-diamond-balance'
 const GUEST_DEFAULT_BALANCE = 9999
@@ -97,25 +98,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
       
     if (data) {
-      // Handle schema discrepancy if any. 
-      // Schema says word_balance, store used diamond_balance.
-      const memberDiamonds = data.member_diamonds !== undefined ? Number(data.member_diamonds) : 0;
-      const permanentDiamonds =
-        data.permanent_diamonds !== undefined
-          ? Number(data.permanent_diamonds)
-          : data.diamond_balance !== undefined
-            ? Number(data.diamond_balance)
-            : Number(data.word_balance ?? 0);
-      const balance = memberDiamonds + permanentDiamonds;
+      const effective = getEffectiveProfileDiamonds({
+        member_diamonds: data.member_diamonds,
+        permanent_diamonds:
+          data.permanent_diamonds !== undefined
+            ? Number(data.permanent_diamonds)
+            : data.diamond_balance !== undefined
+              ? Number(data.diamond_balance)
+              : Number(data.word_balance ?? 0),
+        membership_type: data.membership_type,
+        membership_expires_at: data.membership_expires_at,
+      });
       
       set({ 
         profile: {
             ...data,
-            member_diamonds: memberDiamonds,
-            permanent_diamonds: permanentDiamonds,
-            diamond_balance: balance
+            membership_type: effective.membershipType as Profile['membership_type'],
+            membership_expires_at: effective.membershipExpiresAt,
+            member_diamonds: effective.memberDiamonds,
+            permanent_diamonds: effective.permanentDiamonds,
+            diamond_balance: effective.totalDiamonds
         }, 
-        diamondBalance: balance || 0 
+        diamondBalance: effective.totalDiamonds || 0 
       });
     } else {
       // Profile missing! Create it.
@@ -137,22 +141,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (insertError) {
           console.error('Error creating missing profile:', insertError);
       } else if (insertedData) {
-           const memberDiamonds = insertedData.member_diamonds !== undefined ? Number(insertedData.member_diamonds) : 0;
-           const permanentDiamonds =
-             insertedData.permanent_diamonds !== undefined
-               ? Number(insertedData.permanent_diamonds)
-               : insertedData.diamond_balance !== undefined
-                 ? Number(insertedData.diamond_balance)
-                 : Number(insertedData.word_balance ?? 0);
-           const balance = memberDiamonds + permanentDiamonds;
+           const effective = getEffectiveProfileDiamonds({
+             member_diamonds: insertedData.member_diamonds,
+             permanent_diamonds:
+               insertedData.permanent_diamonds !== undefined
+                 ? Number(insertedData.permanent_diamonds)
+                 : insertedData.diamond_balance !== undefined
+                   ? Number(insertedData.diamond_balance)
+                   : Number(insertedData.word_balance ?? 0),
+             membership_type: insertedData.membership_type,
+             membership_expires_at: insertedData.membership_expires_at,
+           });
            set({ 
              profile: {
                  ...insertedData,
-                 member_diamonds: memberDiamonds,
-                 permanent_diamonds: permanentDiamonds,
-                 diamond_balance: balance
+                 membership_type: effective.membershipType as Profile['membership_type'],
+                 membership_expires_at: effective.membershipExpiresAt,
+                 member_diamonds: effective.memberDiamonds,
+                 permanent_diamonds: effective.permanentDiamonds,
+                 diamond_balance: effective.totalDiamonds
              }, 
-             diamondBalance: balance || 0 
+             diamondBalance: effective.totalDiamonds || 0 
            });
       }
     }

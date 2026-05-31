@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { MODEL_PRICING } from '@/services/billing';
+import { MODEL_PRICING, syncModelPricingFromDb } from '@/services/billing';
 import { X } from 'lucide-react';
 
 interface ModelSelectorProps {
@@ -10,6 +10,14 @@ interface ModelSelectorProps {
 }
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({ selectedModel, onSelect, onClose }) => {
+  const [, setPricingRefreshTick] = React.useState(0);
+
+  React.useEffect(() => {
+    syncModelPricingFromDb()
+      .then(() => setPricingRefreshTick((value) => value + 1))
+      .catch((error) => console.warn('[ModelSelector] sync pricing failed', error));
+  }, []);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
@@ -85,7 +93,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ selectedModel, onSelect, 
           </div>
           
           <div className="mt-6 flex flex-col gap-1 justify-end text-xs text-gray-400">
-            <p>* 计费基准：1 钻石 = 1 个基础 Token（DeepSeek-V3 输入）</p>
+            <p>* 定价基准：1x = DeepSeek V3 输入（V4 系列更便宜更强）</p>
             <p>* 倍率说明：各模型按其成本相对于基准 Token 成本折算倍率，最终扣费 = 消耗 Tokens × 对应倍率</p>
           </div>
         </div>

@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { generateTextServer, sendJson, summarizeContextServer } from './aiProxy.js';
+import { generateTextServer, getRequestContext, sendJson, summarizeContextServer } from './aiProxy.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -19,7 +19,7 @@ app.all('/api/ai/generate', async (req, res) => {
   }
 
   try {
-    const result = await generateTextServer(req.body || {});
+    const result = await generateTextServer(req.body || {}, getRequestContext(req));
     return sendJson(res, 200, result);
   } catch (error) {
     return sendJson(res, 500, {
@@ -34,7 +34,7 @@ app.all('/api/ai/summarize', async (req, res) => {
   }
 
   try {
-    const result = await summarizeContextServer(req.body || {});
+    const result = await summarizeContextServer(req.body || {}, getRequestContext(req));
     return sendJson(res, 200, result);
   } catch (error) {
     return sendJson(res, 500, {

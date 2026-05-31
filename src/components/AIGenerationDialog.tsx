@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { MODEL_PRICING } from '@/services/ai';
+import { syncModelPricingFromDb, type ModelKey } from '@/services/billing';
 import { X, Send, ChevronDown, Check, Sparkles } from 'lucide-react';
 import PromptPickerDialog from '@/components/PromptPickerDialog';
 
@@ -438,7 +439,7 @@ const officialSkills: Skill[] = [
 interface AIGenerationDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (model: string, prompt: string) => void;
+  onSubmit: (model: ModelKey, prompt: string) => void;
   nodeLabel: string;
   nodeId: string;
   balance: number;
@@ -472,10 +473,11 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
   loadingText = '正在生成...',
   lastUsage = null
 }) => {
-  const [selectedModel, setSelectedModel] = useState('deepseek-v3');
+  const [selectedModel, setSelectedModel] = useState<ModelKey>('deepseek-v4-flash');
   const [prompt, setPrompt] = useState('');
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showPromptPicker, setShowPromptPicker] = useState(false);
+  const [, setPricingRefreshTick] = useState(0);
   
   const dropdownRef = React.useRef<HTMLDivElement>(null);
   const promptTextareaRef = React.useRef<HTMLTextAreaElement | null>(null);
@@ -491,7 +493,7 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleModelSelect = (modelKey: string) => {
+  const handleModelSelect = (modelKey: ModelKey) => {
     setSelectedModel(modelKey);
     setShowModelDropdown(false);
   };
@@ -499,6 +501,9 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
   React.useEffect(() => {
     if (!isOpen) return;
     setPrompt('');
+    syncModelPricingFromDb()
+      .then(() => setPricingRefreshTick((value) => value + 1))
+      .catch((error) => console.warn('[AIGenerationDialog] sync pricing failed', error));
   }, [isOpen, nodeId]);
 
   if (!isOpen) return null;
@@ -597,7 +602,7 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
             <div className="flex flex-wrap gap-1.5 max-h-[60px] overflow-y-auto custom-scrollbar">
               {contexts.map((ctx, idx) => (
                 <span key={idx} className="flex items-center bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100 max-w-full">
-                  <span className="truncate max-w-[150px]">{ctx.sourceName}</span>
+                  <span className="truncate max-w-[150px]" title={ctx.sourceName}>{ctx.sourceName}</span>
                   {onRemoveContext && (
                     <button
                       onClick={() => onRemoveContext(idx)}
@@ -638,7 +643,7 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
                 {Object.entries(MODEL_PRICING).map(([key, config]) => (
                   <button
                     key={key}
-                    onClick={() => handleModelSelect(key)}
+                    onClick={() => handleModelSelect(key as ModelKey)}
                     className={`w-full text-left px-4 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors ${
                       selectedModel === key ? 'bg-purple-50/50' : ''
                     }`}

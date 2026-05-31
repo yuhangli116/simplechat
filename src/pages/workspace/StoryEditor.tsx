@@ -18,6 +18,7 @@ import {
   FileCode
 } from 'lucide-react';
 import { aiService, MODEL_PRICING } from '@/services/ai';
+import { syncModelPricingFromDb } from '@/services/billing';
 import ModelSelector from '@/components/ModelSelector';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
@@ -28,6 +29,7 @@ import { exportHtml, exportMarkdown, htmlToMarkdown } from '@/lib/fileExport';
 import { loadChapterContent, saveChapterContent } from '@/lib/workspacePersistence';
 import PromptPickerDialog from '@/components/PromptPickerDialog';
 import { useWorkspacePrefsStore } from '@/store/useWorkspacePrefsStore';
+import { v4 as uuidv4 } from 'uuid';
 
 const StoryEditor = () => {
   const { workId, chapterId } = useParams();
@@ -40,11 +42,18 @@ const StoryEditor = () => {
   const [isPromptExpanded, setIsPromptExpanded] = useState(true);
   const [promptText, setPromptText] = useState('');
   const [isAiGenerating, setIsAiGenerating] = useState(false);
+  const [isAiTiming, setIsAiTiming] = useState(false);
   const [selectedModel, setSelectedModel] = useState<LocalModelKey | ''>('');
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [lastUsage, setLastUsage] = useState<{input_tokens: number, output_tokens: number, total_cost: number} | null>(null);
   const [aiPhase, setAiPhase] = useState('等待开始');
   const [aiElapsed, setAiElapsed] = useState(0);
+
+  useEffect(() => {
+    syncModelPricingFromDb().catch((error) => {
+      console.warn('[StoryEditor] sync pricing failed', error);
+    });
+  }, []);
 
   useEffect(() => {
     if (!workId) return;
@@ -62,7 +71,7 @@ const StoryEditor = () => {
     if (stored && stored in MODEL_PRICING) {
       setSelectedModel(stored as LocalModelKey);
     } else {
-      setSelectedModel('');
+      setSelectedModel('deepseek-v4-flash' as LocalModelKey);
     }
   }, [workId, chapterId, modelMemoryScope]);
 
@@ -96,7 +105,7 @@ const StoryEditor = () => {
   }, [user]);
 
   useEffect(() => {
-    if (!isAiGenerating) {
+    if (!isAiTiming) {
       setAiElapsed(0);
       return;
     }
@@ -106,7 +115,7 @@ const StoryEditor = () => {
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [isAiGenerating]);
+  }, [isAiTiming]);
 
   const currentChapterName = React.useMemo(() => {
     const findByPath = (nodes: typeof files): string | null => {
@@ -380,13 +389,16 @@ const StoryEditor = () => {
     }
 
     setIsAiGenerating(true);
+    setIsAiTiming(true);
     setAiPhase('正在准备上下文');
     
     try {
+      const modelKey = selectedModel as LocalModelKey;
       const textContext = editor.getText().slice(-2000);
       
       let finalContext = textContext;
       let summarizationUsage = null;
+      let billingGroupId: string | undefined;
       
       // Combine user prompt with context
       const userPrompt = promptText.trim() || "请续写这段小说情节，保持风格一致，情节紧凑。";
@@ -395,11 +407,14 @@ const StoryEditor = () => {
         const references = aiContexts.map(c => `来源: ${c.sourceName}\n内容:\n${c.content}`).join('\n\n');
         
         if (references.length > 3000) {
+          billingGroupId = uuidv4();
           setAiPhase('正在总结参考大纲');
-          const summaryRes = await aiService.summarizeContext(references, user?.id);
+          const summaryRes = await aiService.summarizeContext(references, user?.id, modelKey, billingGroupId);
           if (summaryRes.error) {
             alert(`总结大纲/设定失败: ${summaryRes.error}`);
             setIsAiGenerating(false);
+            setIsAiTiming(false);
+            setAiPhase('等待开始');
             return;
           }
           finalContext = `【经过精简的参考大纲/设定】\n${summaryRes.content}\n\n【当前章节前文内容】\n${textContext}`;
@@ -413,24 +428,26 @@ const StoryEditor = () => {
 
       setAiPhase('正在创作正文');
       
-      const modelKey = selectedModel as LocalModelKey;
       const response = await aiService.generateText({
         prompt: userPrompt,
         model: modelKey,
         context: finalContext,
-        userId: user?.id || 'guest-user'
+        userId: user?.id,
+        billingGroupId,
       });
 
       if (response.content) {
         setAiPhase('正在写入正文');
         const cleaned = sanitizeAiContinuationOutput(userPrompt, response.content);
         await insertContentGradually(cleaned);
+        setIsAiTiming(false);
         
         if (workId && chapterId) {
           const content = editor.getHTML();
           localStorage.setItem(`story-${workId}-${chapterId}`, content);
           if (user) {
             try {
+              setAiPhase('正在保存');
               await saveChapterContent(workId, chapterId, currentChapterName, content);
             } catch (e) {
               console.error('Auto-save failed:', e);
@@ -462,6 +479,7 @@ const StoryEditor = () => {
       alert('AI生成发生错误，请重试');
     } finally {
       setIsAiGenerating(false);
+      setIsAiTiming(false);
       setAiPhase('等待开始');
     }
   };
@@ -651,7 +669,10 @@ const StoryEditor = () => {
                 <div className="absolute inset-0 bg-white/80 backdrop-blur-sm rounded-xl flex items-center justify-center">
                   <div className="flex items-center gap-2 text-sm text-purple-600">
                     <div className="w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
-                    <span>{aiPhase} ({aiElapsed}s)</span>
+                    <span>
+                      {aiPhase}
+                      {isAiTiming ? ` (${aiElapsed}s)` : ''}
+                    </span>
                   </div>
                 </div>
               )}

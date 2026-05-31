@@ -1,3 +1,5 @@
+import { createClient } from '@supabase/supabase-js';
+
 const normalizeApiKey = (apiKey) => apiKey?.trim().replace(/^['"`]|['"`]$/g, '');
 
 const getEnvValue = (...names) => {
@@ -10,43 +12,98 @@ const getEnvValue = (...names) => {
   return '';
 };
 
+const MAX_OUTPUT_TOKENS = Number(process.env.AI_MAX_OUTPUT_TOKENS || 10000);
+const SINGLE_CALL_DIAMOND_CAP = Number(process.env.AI_SINGLE_CALL_DIAMOND_CAP || 1000000);
+const PRECHECK_OUTPUT_TOKENS = Number(process.env.AI_PRECHECK_OUTPUT_TOKENS || 900);
+const PRECHECK_REASONING_TOKENS = Number(process.env.AI_PRECHECK_REASONING_TOKENS || 600);
+const ANOMALY_HOURLY_DIAMONDS = Number(process.env.AI_ANOMALY_HOURLY_DIAMONDS || 800000);
+const ANOMALY_LOOKBACK_DAYS = Number(process.env.AI_ANOMALY_LOOKBACK_DAYS || 7);
+const SUPABASE_URL = getEnvValue('SUPABASE_URL', 'VITE_SUPABASE_URL');
+const SUPABASE_ANON_KEY = getEnvValue('SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY');
+const SUMMARIZE_FETCH_TIMEOUT_MS = Number(process.env.AI_SUMMARIZE_FETCH_TIMEOUT_MS || 60000);
+
+const estimateTokens = (text = '') => {
+  const normalized = String(text || '').trim();
+  if (!normalized) return 0;
+
+  const cjkChars = (normalized.match(/[\u3400-\u9fff\uf900-\ufaff]/g) || []).length;
+  const latinWords = (normalized.match(/[A-Za-z]+(?:'[A-Za-z]+)*/g) || []).length;
+  const numbers = (normalized.match(/\d+(?:\.\d+)?/g) || []).length;
+  const punctuation = (normalized.match(/[^\p{L}\p{N}\s]/gu) || []).length;
+  const whitespace = (normalized.match(/\s+/g) || []).length;
+
+  return Math.max(
+    1,
+    Math.ceil(
+      cjkChars * 1.15 +
+        latinWords * 1.3 +
+        numbers * 0.6 +
+        punctuation * 0.35 +
+        whitespace * 0.1
+    )
+  );
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const shouldRetryFetchError = (error) => {
+  if (!error) return false;
+  if (error.name === 'AbortError') return true;
+  if (error instanceof TypeError && String(error.message || '').toLowerCase().includes('fetch')) return true;
+  return false;
+};
+
 const getModelRegistry = () => ({
+  'deepseek-v4-flash': {
+    type: 'openai-compatible',
+    provider: 'deepseek',
+    modelName: 'deepseek-v4-flash',
+    maxOutputTokens: 10000,
+    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
+    apiKey: getEnvValue('DEEPSEEK_API_KEY', 'VITE_DEEPSEEK_API_KEY'),
+  },
+  'deepseek-v4-pro': {
+    type: 'openai-compatible',
+    provider: 'deepseek',
+    modelName: 'deepseek-v4-pro',
+    maxOutputTokens: 10000,
+    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
+    apiKey: getEnvValue('DEEPSEEK_API_KEY', 'VITE_DEEPSEEK_API_KEY'),
+  },
   'deepseek-v3': {
     type: 'openai-compatible',
     provider: 'deepseek',
     modelName: 'deepseek-chat',
-    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
-    apiKey: getEnvValue('DEEPSEEK_API_KEY', 'VITE_DEEPSEEK_API_KEY'),
-  },
-  'deepseek-r1': {
-    type: 'openai-compatible',
-    provider: 'deepseek',
-    modelName: 'deepseek-reasoner',
+    maxOutputTokens: 8000,
     baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
     apiKey: getEnvValue('DEEPSEEK_API_KEY', 'VITE_DEEPSEEK_API_KEY'),
   },
   'claude-sonnet': {
     type: 'anthropic',
     provider: 'anthropic',
-    modelName: 'claude-3-5-sonnet-20240620',
+    modelName: 'claude-sonnet-4-6',
+    maxOutputTokens: 16384,
     apiKey: getEnvValue('ANTHROPIC_API_KEY', 'VITE_ANTHROPIC_API_KEY'),
   },
   'claude-opus': {
     type: 'anthropic',
     provider: 'anthropic',
-    modelName: 'claude-3-opus-20240229',
+    modelName: 'claude-opus-4-7',
+    maxOutputTokens: 16384,
     apiKey: getEnvValue('ANTHROPIC_API_KEY', 'VITE_ANTHROPIC_API_KEY'),
   },
   'claude-haiku': {
     type: 'anthropic',
     provider: 'anthropic',
-    modelName: 'claude-3-haiku-20240307',
+    modelName: 'claude-haiku-4-5-20251001',
+    maxOutputTokens: 16384,
     apiKey: getEnvValue('ANTHROPIC_API_KEY', 'VITE_ANTHROPIC_API_KEY'),
   },
   'gemini-2.5-pro': {
     type: 'openai-compatible',
     provider: 'openrouter',
-    modelName: 'google/gemini-1.5-flash',
+    modelName: 'google/gemini-2.5-pro',
+    maxOutputTokens: 8192,
     baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
     apiKey: getEnvValue('OPENROUTER_API_KEY', 'VITE_OPENROUTER_API_KEY'),
     extraHeaders: {
@@ -57,7 +114,8 @@ const getModelRegistry = () => ({
   'gemini-3.1-pro': {
     type: 'openai-compatible',
     provider: 'openrouter',
-    modelName: 'google/gemini-1.5-pro',
+    modelName: 'google/gemini-3.1-pro',
+    maxOutputTokens: 8192,
     baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
     apiKey: getEnvValue('OPENROUTER_API_KEY', 'VITE_OPENROUTER_API_KEY'),
     extraHeaders: {
@@ -65,17 +123,19 @@ const getModelRegistry = () => ({
       'X-Title': process.env.APP_NAME || 'simplechat',
     },
   },
-  'gpt-4.1': {
+  'gpt-4-turbo': {
     type: 'openai-compatible',
     provider: 'openai',
     modelName: 'gpt-4-turbo',
+    maxOutputTokens: 4096,
     baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
     apiKey: getEnvValue('OPENAI_API_KEY', 'VITE_OPENAI_API_KEY'),
   },
-  'gpt-5.4': {
+  'gpt-4o': {
     type: 'openai-compatible',
     provider: 'openai',
     modelName: 'gpt-4o',
+    maxOutputTokens: 16384,
     baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
     apiKey: getEnvValue('OPENAI_API_KEY', 'VITE_OPENAI_API_KEY'),
   },
@@ -86,17 +146,27 @@ const normalizeUsage = (usage) => ({
     usage?.prompt_tokens ??
     usage?.input_tokens ??
     usage?.promptTokens ??
+    usage?.inputTokens ??
     0,
   output_tokens:
     usage?.completion_tokens ??
     usage?.output_tokens ??
     usage?.completionTokens ??
+    usage?.outputTokens ??
     0,
   reasoning_tokens:
-    usage?.completion_tokens_details?.reasoning_tokens ?? 0,
+    usage?.reasoning_tokens ??
+    usage?.thinking_tokens ??
+    usage?.completion_tokens_details?.reasoning_tokens ??
+    usage?.completion_tokens_details?.thinking_tokens ??
+    usage?.output_tokens_details?.reasoning_tokens ??
+    usage?.output_tokens_details?.thinking_tokens ??
+    0,
   cache_hit_tokens:
     usage?.prompt_tokens_details?.cached_tokens ??
-    usage?.cache_creation_input_tokens ??
+    usage?.input_tokens_details?.cached_tokens ??
+    usage?.cached_tokens ??
+    usage?.cached_context_tokens ??
     usage?.cache_read_input_tokens ??
     0,
 });
@@ -123,41 +193,312 @@ const extractMessageContent = (content) => {
   return '';
 };
 
+const getRequestAccessToken = (headers = {}) => {
+  const raw = headers.authorization || headers.Authorization || '';
+  const match = String(raw).match(/^Bearer\s+(.+)$/i);
+  return match?.[1] || '';
+};
+
+export const getRequestContext = (req) => {
+  const headers = req?.headers || {};
+  const forwardedFor = headers['x-forwarded-for'];
+  const ip = Array.isArray(forwardedFor)
+    ? forwardedFor[0]
+    : String(forwardedFor || req?.socket?.remoteAddress || '').split(',')[0].trim();
+
+  return {
+    accessToken: getRequestAccessToken(headers),
+    ip,
+    userAgent: headers['user-agent'] || '',
+  };
+};
+
+const getSupabaseClientForRequest = (accessToken) => {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !accessToken) return null;
+
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+  });
+};
+
+const getAuthenticatedUser = async (supabase) => {
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data?.user) return null;
+  return data.user;
+};
+
+const getModelPricingFromDb = async (supabase, modelKey) => {
+  const { data, error } = await supabase
+    .from('model_pricing')
+    .select(
+      'model_key, model_name, input_multiplier, output_multiplier, reasoning_multiplier, cache_multiplier, provider, model_api_name'
+    )
+    .eq('model_key', modelKey)
+    .eq('is_active', true)
+    .single();
+
+  if (error || !data) {
+    const code = error?.code ? ` (${error.code})` : '';
+    const detail = error?.message ? `：${error.message}` : '';
+    throw new Error(`模型定价配置不存在(${modelKey})${code}${detail}`);
+  }
+
+  return {
+    ...data,
+    input_multiplier: Number(data.input_multiplier ?? 0),
+    output_multiplier: Number(data.output_multiplier ?? 0),
+    reasoning_multiplier: Number(data.reasoning_multiplier ?? 0),
+    cache_multiplier: Number(data.cache_multiplier ?? 0),
+  };
+};
+
+const getEffectiveBalance = async (supabase, userId) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('member_diamonds, permanent_diamonds, membership_type, membership_expires_at')
+    .eq('id', userId)
+    .single();
+
+  if (error || !data) {
+    throw new Error('读取用户余额失败');
+  }
+
+  const expiresAt = data.membership_expires_at ? new Date(data.membership_expires_at).getTime() : 0;
+  const expired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt < Date.now();
+  const memberDiamonds = expired ? 0 : Number(data.member_diamonds ?? 0);
+  const permanentDiamonds = Number(data.permanent_diamonds ?? 0);
+
+  return {
+    expired,
+    memberDiamonds,
+    permanentDiamonds,
+    totalRemaining: memberDiamonds + permanentDiamonds,
+    membershipType: expired ? 'free' : data.membership_type ?? 'free',
+    membershipExpiresAt: expired ? null : data.membership_expires_at ?? null,
+  };
+};
+
+const calculateDiamondCost = (pricing, usage) => {
+  const inputTokens = Math.max(0, Number(usage?.input_tokens ?? 0));
+  const rawCacheHitTokens = Math.max(0, Number(usage?.cache_hit_tokens ?? 0));
+  const cacheHitTokens = Math.min(inputTokens, rawCacheHitTokens);
+  const nonCachedInputTokens = Math.max(0, inputTokens - cacheHitTokens);
+
+  return Math.ceil(
+    nonCachedInputTokens * pricing.input_multiplier +
+      cacheHitTokens * pricing.cache_multiplier +
+      Math.max(0, Number(usage?.output_tokens ?? 0)) * pricing.output_multiplier +
+      Math.max(0, Number(usage?.reasoning_tokens ?? 0)) * pricing.reasoning_multiplier
+  );
+};
+
+const estimateUsageForPrecheck = ({ kind, prompt = '', context = '', pricing }) => {
+  const inputTokens =
+    kind === 'summarize'
+      ? estimateTokens(context)
+      : estimateTokens(`${context || ''}\n${prompt || ''}`);
+
+  const outputTokens =
+    kind === 'summarize'
+      ? Math.min(Math.max(Math.ceil(inputTokens * 0.18), 120), PRECHECK_OUTPUT_TOKENS)
+      : Math.min(Math.max(Math.ceil(inputTokens * 0.3), 240), PRECHECK_OUTPUT_TOKENS);
+
+  const reasoningTokens =
+    pricing.reasoning_multiplier > 0
+      ? Math.min(Math.ceil(outputTokens * 0.5), PRECHECK_REASONING_TOKENS)
+      : 0;
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    reasoning_tokens: reasoningTokens,
+    cache_hit_tokens: 0,
+  };
+};
+
+const createUserFacingError = (message, meta = {}) => {
+  const error = new Error(message);
+  error.isUserFacing = true;
+  error.meta = meta;
+  return error;
+};
+
+const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, context }) => {
+  const balance = await getEffectiveBalance(supabase, userId);
+  let pricing;
+  try {
+    pricing = await getModelPricingFromDb(supabase, model);
+  } catch (error) {
+    let host = '';
+    try {
+      host = SUPABASE_URL ? new URL(SUPABASE_URL).hostname : '';
+    } catch (_) {
+      host = '';
+    }
+
+    throw createUserFacingError(
+      `${error?.message || `模型定价配置不存在(${model})`}。请确认已在当前 Supabase 项目${host ? ` (${host})` : ''} 执行模型定价迁移，并确保 model_pricing 中该模型 is_active=true。`,
+      {
+        available: balance.totalRemaining,
+      }
+    );
+  }
+
+  const estimatedUsage = estimateUsageForPrecheck({ kind, prompt, context, pricing });
+  const estimatedDiamonds = calculateDiamondCost(pricing, estimatedUsage);
+
+  if (estimatedDiamonds > SINGLE_CALL_DIAMOND_CAP) {
+    throw createUserFacingError(
+      `本次请求预估需要 ${estimatedDiamonds} 钻石，超过单次上限 ${SINGLE_CALL_DIAMOND_CAP}，请缩短上下文或拆分生成。`,
+      { estimatedRequired: estimatedDiamonds, available: balance.totalRemaining }
+    );
+  }
+
+  if (balance.totalRemaining < estimatedDiamonds) {
+    throw createUserFacingError(
+      `钻石不足（预计至少需要 ${estimatedDiamonds}，当前 ${balance.totalRemaining}），请充值或缩短输入后重试。`,
+      { estimatedRequired: estimatedDiamonds, available: balance.totalRemaining }
+    );
+  }
+
+  return { pricing, balance, estimatedUsage, estimatedDiamonds };
+};
+
+const detectAbnormalUsage = async ({ supabase, userId, latestDiamonds }) => {
+  const since = new Date(Date.now() - ANOMALY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+
+  const { data, error } = await supabase
+    .from('usage_logs')
+    .select('diamonds_consumed, created_at')
+    .eq('user_id', userId)
+    .gte('created_at', since)
+    .order('created_at', { ascending: false });
+
+  if (error || !data?.length) return undefined;
+
+  const totalRecent = data.reduce((sum, row) => sum + Number(row.diamonds_consumed ?? 0), 0);
+  const lastHour = data.reduce((sum, row) => {
+    const createdAt = new Date(row.created_at).getTime();
+    return createdAt >= oneHourAgo ? sum + Number(row.diamonds_consumed ?? 0) : sum;
+  }, 0);
+  const dailyAverage = totalRecent / Math.max(1, ANOMALY_LOOKBACK_DAYS);
+  const projectedHourTotal = lastHour;
+
+  if (projectedHourTotal >= Math.max(ANOMALY_HOURLY_DIAMONDS, dailyAverage * 3)) {
+    return `风险提醒：你最近 1 小时已消耗 ${projectedHourTotal.toLocaleString()} 钻石，显著高于平时，请确认当前模型与上下文长度是否符合预期。`;
+  }
+
+  if (latestDiamonds >= SINGLE_CALL_DIAMOND_CAP * 0.5) {
+    return `风险提醒：本次调用消耗 ${latestDiamonds.toLocaleString()} 钻石，已接近单次上限，请留意模型选择与上下文长度。`;
+  }
+
+  return undefined;
+};
+
+const deductUsageOnServer = async ({ supabase, userId, model, usage, billingGroupId, billingStep }) => {
+  const { data, error } = await supabase.rpc('deduct_diamonds_v4', {
+    p_user_id: userId,
+    p_model_key: model,
+    p_input_tokens: usage.input_tokens ?? 0,
+    p_output_tokens: usage.output_tokens ?? 0,
+    p_reasoning_tokens: usage.reasoning_tokens ?? 0,
+    p_cache_tokens: usage.cache_hit_tokens ?? 0,
+    p_billing_group_id: billingGroupId ?? null,
+    p_billing_step: billingStep ?? null,
+  });
+
+  if (error) {
+    throw new Error(error.message || '扣费失败');
+  }
+
+  if (!data?.success) {
+    throw createUserFacingError(
+      data?.error === '钻石不足'
+        ? `钻石不足（需要 ${data?.needed ?? '-'}，当前 ${data?.available ?? '-'}），请充值后继续使用。`
+        : data?.error || '扣费失败，请稍后重试',
+      {
+        estimatedRequired: data?.needed,
+        available: data?.available,
+      }
+    );
+  }
+
+  return data;
+};
+
 const requestOpenAICompatible = async ({ config, messages, temperature }) => {
   if (!config.apiKey) {
     throw new Error(`${config.provider} API Key is missing`);
   }
 
-  const response = await fetch(`${config.baseURL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json',
-      ...(config.extraHeaders || {}),
-    },
-    body: JSON.stringify({
-      model: config.modelName,
-      messages,
-      temperature,
-      stream: false,
-    }),
-  });
+  const url = `${config.baseURL}/chat/completions`;
+  const requestBody = {
+    model: config.modelName,
+    messages,
+    temperature,
+    max_tokens: config.maxOutputTokens || MAX_OUTPUT_TOKENS,
+    stream: false,
+  };
 
-  const data = await response.json().catch(() => null);
+  let lastError;
+  const maxAttempts = Math.max(1, Number(config.retries || 0) + 1);
 
-  if (!response.ok) {
-    const message =
-      data?.error?.message ||
-      data?.message ||
-      `${response.status} ${response.statusText}`;
-    throw new Error(message);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const controller = config.timeoutMs ? new AbortController() : null;
+    const timeoutId =
+      controller && config.timeoutMs ? setTimeout(() => controller.abort(), config.timeoutMs) : null;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          'Content-Type': 'application/json',
+          ...(config.extraHeaders || {}),
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller?.signal,
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const message =
+          data?.error?.message ||
+          data?.message ||
+          `${response.status} ${response.statusText}`;
+        throw new Error(message);
+      }
+
+      return {
+        content: data?.choices?.[0]?.message?.content || '',
+        usage: normalizeUsage(data?.usage),
+        raw: data,
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts - 1 && shouldRetryFetchError(error)) {
+        await sleep(250 * (attempt + 1));
+        continue;
+      }
+      break;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   }
 
-  return {
-    content: data?.choices?.[0]?.message?.content || '',
-    usage: normalizeUsage(data?.usage),
-    raw: data,
-  };
+  const suffix = config.provider ? ` (${config.provider})` : '';
+  throw new Error(`${lastError?.message || 'fetch failed'}${suffix}`);
 };
 
 const requestAnthropic = async ({ config, messages, temperature }) => {
@@ -177,7 +518,7 @@ const requestAnthropic = async ({ config, messages, temperature }) => {
     },
     body: JSON.stringify({
       model: config.modelName,
-      max_tokens: 2048,
+      max_tokens: config.maxOutputTokens || Number(process.env.ANTHROPIC_MAX_TOKENS || MAX_OUTPUT_TOKENS),
       temperature,
       system: systemMessage,
       messages: userMessages,
@@ -201,7 +542,7 @@ const requestAnthropic = async ({ config, messages, temperature }) => {
   };
 };
 
-const requestModel = async ({ model, messages, temperature = 0.7 }) => {
+const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig }) => {
   const modelRegistry = getModelRegistry();
   const config = modelRegistry[model];
 
@@ -209,19 +550,136 @@ const requestModel = async ({ model, messages, temperature = 0.7 }) => {
     throw new Error(`Model ${model} not supported`);
   }
 
-  if (config.type === 'anthropic') {
-    return requestAnthropic({ config, messages, temperature });
+  const finalConfig = runtimeConfig ? { ...config, ...runtimeConfig } : config;
+
+  if (finalConfig.type === 'anthropic') {
+    return requestAnthropic({ config: finalConfig, messages, temperature });
   }
 
-  return requestOpenAICompatible({ config, messages, temperature });
+  return requestOpenAICompatible({ config: finalConfig, messages, temperature });
 };
 
-export const generateTextServer = async ({ prompt, model, context }) => {
+const executeAiTask = async ({ kind, prompt = '', context = '', model, messages, temperature, requestContext, billingGroupId, billingStep }) => {
+  const supabase = getSupabaseClientForRequest(requestContext?.accessToken);
+  if (!supabase) {
+    return { content: '', error: '请先登录后再使用 AI 创作功能。' };
+  }
+
+  const user = await getAuthenticatedUser(supabase);
+  if (!user) {
+    return { content: '', error: '请先登录后再使用 AI 创作功能。' };
+  }
+
+  let finalModel = model;
+  if (finalModel === undefined) {
+    finalModel = 'deepseek-v4-flash';
+  }
+
+  if (typeof finalModel !== 'string' || finalModel.trim() === '') {
+    return { content: '', error: '请先选择一个具体的模型。' };
+  }
+  finalModel = finalModel.trim();
+
+  try {
+    const preflight = await ensureBudgetPreflight({
+      supabase,
+      userId: user.id,
+      model: finalModel,
+      kind,
+      prompt,
+      context,
+    });
+
+    const result = await requestModel({
+      model: finalModel,
+      messages,
+      temperature,
+      runtimeConfig:
+        kind === 'summarize'
+          ? {
+              retries: 1,
+              timeoutMs: SUMMARIZE_FETCH_TIMEOUT_MS,
+            }
+          : undefined,
+    });
+
+    const usage = {
+      input_tokens:
+        result.usage?.input_tokens ??
+        preflight.estimatedUsage.input_tokens,
+      output_tokens:
+        result.usage?.output_tokens ??
+        estimateTokens(result.content),
+      reasoning_tokens:
+        result.usage?.reasoning_tokens ??
+        preflight.estimatedUsage.reasoning_tokens,
+      cache_hit_tokens:
+        result.usage?.cache_hit_tokens ??
+        0,
+    };
+
+    const actualDiamonds = calculateDiamondCost(preflight.pricing, usage);
+    if (actualDiamonds > SINGLE_CALL_DIAMOND_CAP) {
+      return {
+        content: '',
+        error: `本次请求实际消耗已达到 ${actualDiamonds} 钻石，超过单次上限 ${SINGLE_CALL_DIAMOND_CAP}，系统已阻止扣费，请缩短上下文后重试。`,
+        billing: {
+          estimatedRequired: preflight.estimatedDiamonds,
+          available: preflight.balance.totalRemaining,
+        },
+      };
+    }
+
+    const billing = await deductUsageOnServer({
+      supabase,
+      userId: user.id,
+      model: finalModel,
+      usage,
+      billingGroupId,
+      billingStep: billingStep || kind,
+    });
+
+    const warning = await detectAbnormalUsage({
+      supabase,
+      userId: user.id,
+      latestDiamonds: billing?.diamonds_consumed ?? actualDiamonds,
+    });
+
+    return {
+      content: result.content,
+      usage: {
+        ...usage,
+        total_cost: billing?.diamonds_consumed ?? actualDiamonds,
+      },
+      billing: {
+        totalRemaining: billing?.total_remaining,
+        warning,
+        estimatedRequired: preflight.estimatedDiamonds,
+        available: preflight.balance.totalRemaining,
+      },
+    };
+  } catch (error) {
+    if (error?.isUserFacing) {
+      return {
+        content: '',
+        error: error.message,
+        billing: {
+          warning: error?.meta?.warning,
+          estimatedRequired: error?.meta?.estimatedRequired,
+          available: error?.meta?.available,
+        },
+      };
+    }
+    throw error;
+  }
+};
+
+export const generateTextServer = async ({ prompt, model = 'deepseek-v4-flash', context, billingGroupId }, requestContext = {}) => {
   const messages = [
     {
       role: 'system',
       content:
-        '你是一个专业的小说续写助手。请严格参考以下背景设定与前文剧情（Context），确保新生成的情节或节点符合既有的人物性格与剧情发展逻辑，同时满足用户的具体要求（Task）。如果要求生成思维导图子节点，请返回 JSON。',
+        '你是一个专业的小说续写助手。请严格参考以下背景设定与前文剧情（Context），确保新生成的情节或节点符合既有的人物性格与剧情发展逻辑，同时满足用户的具体要求（Task）。如果要求生成思维导图子节点，请返回 JSON。注意：单次输出请控制在 5000 字以内。如果内容较长，请在合适的段落处自然收尾并提示用户可继续生成。',
     },
     {
       role: 'user',
@@ -229,18 +687,24 @@ export const generateTextServer = async ({ prompt, model, context }) => {
     },
   ];
 
-  return requestModel({
+  return executeAiTask({
+    kind: 'generate',
+    prompt,
+    context,
     model,
     messages,
     temperature: 0.7,
+    requestContext,
+    billingGroupId,
   });
 };
 
-export const summarizeContextServer = async ({ context }) => {
+export const summarizeContextServer = async ({ context, model = 'deepseek-v4-flash', billingGroupId }, requestContext = {}) => {
   const messages = [
     {
       role: 'system',
-      content: '你是一个专业的剧情与设定提炼助手。请提取以下章节或设定中的核心剧情、角色状态和关键设定，生成一份字数精简的背景摘要。',
+      content:
+        '你是一个专业的剧情与设定提炼助手。你的目标是为“下一次续写/补全”提供高密度、可直接使用的背景摘要。\n\n硬性要求：\n- 总长度控制在 300–450 个中文字符左右（宁可更短，不要更长）。\n- 输出必须是纯文本，不要 Markdown 标题、不要代码块、不要引用原文句子。\n- 只保留对续写有用的信息：人物状态、关键关系、动机、已发生事件的因果链、当前局面、未解决冲突/悬念。\n- 删除细枝末节、重复描写、修辞性句子、无关对话。\n- 不要补写新剧情，不要臆测未给出的设定。\n\n输出格式（严格遵循）：\n1) 一句话总览（不超过 40 字）\n2) 要点（最多 12 条，每条不超过 30 字，用“• ”开头）\n3) 续写重点（1–3 条，用“→ ”开头，指出下一段最该推进的矛盾/目标）',
     },
     {
       role: 'user',
@@ -248,10 +712,14 @@ export const summarizeContextServer = async ({ context }) => {
     },
   ];
 
-  return requestModel({
-    model: 'deepseek-v3',
+  return executeAiTask({
+    kind: 'summarize',
+    context,
+    model,
     messages,
     temperature: 0.3,
+    requestContext,
+    billingGroupId,
   });
 };
 

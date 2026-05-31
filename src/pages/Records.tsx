@@ -24,6 +24,8 @@ type UsageLog = {
   output_diamonds: number | null;
   reasoning_diamonds: number | null;
   cache_diamonds: number | null;
+  billing_group_id?: string | null;
+  billing_step?: string | null;
 };
 
 type RechargeLog = {
@@ -79,6 +81,61 @@ const Records: React.FC = () => {
   const usageTotalPages = useMemo(() => Math.max(1, Math.ceil(usageTotal / PAGE_SIZE)), [usageTotal]);
   const rechargeTotalPages = useMemo(() => Math.max(1, Math.ceil(rechargeTotal / PAGE_SIZE)), [rechargeTotal]);
 
+  const mergedUsageLogs = useMemo(() => {
+    const byGroup = new Map<string, UsageLog[]>();
+    const singles: UsageLog[] = [];
+
+    for (const log of usageLogs) {
+      const groupId = log.billing_group_id;
+      if (groupId) {
+        const bucket = byGroup.get(groupId) || [];
+        bucket.push(log);
+        byGroup.set(groupId, bucket);
+      } else {
+        singles.push(log);
+      }
+    }
+
+    const merged = Array.from(byGroup.entries()).map(([groupId, logs]) => {
+      const sorted = [...logs].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+      const first = sorted[0];
+      const latestExpiresAt = sorted.reduce((max, row) => {
+        return new Date(row.expires_at).getTime() > new Date(max).getTime() ? row.expires_at : max;
+      }, first.expires_at);
+      const modelNames = Array.from(new Set(sorted.map((row) => row.model_name).filter(Boolean)));
+      const mergedModelName = modelNames.length === 1 ? modelNames[0] : '多模型';
+
+      const sum = (selector: (row: UsageLog) => number | null | undefined) =>
+        sorted.reduce((acc, row) => acc + Number(selector(row) ?? 0), 0);
+
+      return {
+        ...first,
+        id: groupId,
+        created_at: first.created_at,
+        expires_at: latestExpiresAt,
+        model_name: mergedModelName,
+        input_tokens: sum((row) => row.input_tokens),
+        output_tokens: sum((row) => row.output_tokens),
+        reasoning_tokens: sum((row) => row.reasoning_tokens),
+        cache_tokens: sum((row) => row.cache_tokens),
+        diamonds_consumed: sum((row) => row.diamonds_consumed),
+        member_diamonds_used: sum((row) => row.member_diamonds_used),
+        permanent_diamonds_used: sum((row) => row.permanent_diamonds_used),
+        input_diamonds: sum((row) => row.input_diamonds),
+        output_diamonds: sum((row) => row.output_diamonds),
+        reasoning_diamonds: sum((row) => row.reasoning_diamonds),
+        cache_diamonds: sum((row) => row.cache_diamonds),
+        billing_group_id: groupId,
+      } satisfies UsageLog;
+    });
+
+    return [...merged, ...singles].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+  }, [usageLogs]);
+
   useEffect(() => {
     if (!user || didCleanup) return;
     supabase
@@ -101,7 +158,7 @@ const Records: React.FC = () => {
       const { data, error, count } = await supabase
         .from('usage_logs')
         .select(
-          'id, created_at, expires_at, model_name, input_tokens, output_tokens, reasoning_tokens, cache_tokens, diamonds_consumed, member_diamonds_used, permanent_diamonds_used, input_diamonds, output_diamonds, reasoning_diamonds, cache_diamonds',
+          'id, created_at, expires_at, model_name, input_tokens, output_tokens, reasoning_tokens, cache_tokens, diamonds_consumed, member_diamonds_used, permanent_diamonds_used, input_diamonds, output_diamonds, reasoning_diamonds, cache_diamonds, billing_group_id, billing_step',
           { count: 'exact' }
         )
         .eq('user_id', user.id)
@@ -219,7 +276,7 @@ const Records: React.FC = () => {
             </div>
           ) : activeTab === 'usage' ? (
             <div className="p-6">
-              {usageLogs.length === 0 ? (
+              {mergedUsageLogs.length === 0 ? (
                 <div className="text-center text-gray-500 py-12">暂无消费记录</div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-gray-200">
@@ -235,7 +292,7 @@ const Records: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="text-sm divide-y divide-gray-100">
-                      {usageLogs.map((log) => {
+                      {mergedUsageLogs.map((log) => {
                         const diamonds = Number(log.diamonds_consumed ?? 0);
                         const memberUsed = Number(log.member_diamonds_used ?? 0);
                         const permanentUsed = Number(log.permanent_diamonds_used ?? 0);

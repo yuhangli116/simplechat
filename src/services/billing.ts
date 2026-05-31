@@ -1,5 +1,7 @@
 import { supabase } from '@/lib/supabase';
 
+export const PRICING_VERSION = 'v4.1';
+
 export const PRICING_CONFIG = {
   DIAMONDS_PER_YUAN: 250000,
   NEW_USER_BONUS: 500000,
@@ -16,9 +18,9 @@ export const PRICING_CONFIG = {
 } as const;
 
 export type ModelKey =
+  | 'deepseek-v4-flash'
+  | 'deepseek-v4-pro'
   | 'deepseek-v3'
-  | 'deepseek-v3.2'
-  | 'deepseek-r1'
   | 'claude-haiku'
   | 'claude-sonnet'
   | 'claude-opus'
@@ -27,52 +29,64 @@ export type ModelKey =
   | 'gemini-2.5-pro'
   | 'gemini-3.1-pro';
 
-export const MODEL_PRICING: Record<
-  ModelKey,
-  {
-    name: string;
-    inputMultiplier: number;
-    outputMultiplier: number;
-    reasoningMultiplier: number;
-    cacheMultiplier: number;
-    provider: string;
-    modelApiName: string;
-    tags: string[];
-    description?: string;
-  }
-> = {
+export interface ModelPricingConfig {
+  name: string;
+  inputMultiplier: number;
+  outputMultiplier: number;
+  reasoningMultiplier: number;
+  cacheMultiplier: number;
+  provider: string;
+  modelApiName: string;
+  tags: string[];
+  description?: string;
+}
+
+export const MODEL_ORDER: ModelKey[] = [
+  'deepseek-v4-flash',
+  'deepseek-v4-pro',
+  'deepseek-v3',
+  'claude-haiku',
+  'claude-sonnet',
+  'claude-opus',
+  'gpt-4-turbo',
+  'gpt-4o',
+  'gemini-2.5-pro',
+  'gemini-3.1-pro',
+];
+
+const DEFAULT_MODEL_PRICING: Record<ModelKey, ModelPricingConfig> = {
+  'deepseek-v4-flash': {
+    name: 'DeepSeek V4 Flash',
+    inputMultiplier: 0.5,
+    outputMultiplier: 1,
+    reasoningMultiplier: 1,
+    cacheMultiplier: 0.01,
+    provider: 'deepseek',
+    modelApiName: 'deepseek-v4-flash',
+    tags: ['推荐', '高性价比'],
+    description: '新一代轻量模型，速度快价格低，日常创作首选',
+  },
+  'deepseek-v4-pro': {
+    name: 'DeepSeek V4 Pro',
+    inputMultiplier: 1.5,
+    outputMultiplier: 3,
+    reasoningMultiplier: 3,
+    cacheMultiplier: 0.0125,
+    provider: 'deepseek',
+    modelApiName: 'deepseek-v4-pro',
+    tags: ['旗舰'],
+    description: '强推理能力，适合复杂剧情与长篇创作',
+  },
   'deepseek-v3': {
-    name: 'DeepSeek-V3',
+    name: 'DeepSeek V3',
     inputMultiplier: 1,
     outputMultiplier: 4,
     reasoningMultiplier: 0,
-    cacheMultiplier: 0.4,
+    cacheMultiplier: 0.25,
     provider: 'deepseek',
     modelApiName: 'deepseek-chat',
-    tags: ['推荐', '高性价比'],
-    description: '适合日常创作',
-  },
-  'deepseek-v3.2': {
-    name: 'DeepSeek-V3.2',
-    inputMultiplier: 1,
-    outputMultiplier: 1.5,
-    reasoningMultiplier: 0,
-    cacheMultiplier: 0.1,
-    provider: 'deepseek',
-    modelApiName: 'deepseek-chat',
-    tags: ['特价', '性价比之王'],
-    description: '限时特价，输出成本降低60%',
-  },
-  'deepseek-r1': {
-    name: 'DeepSeek-R1',
-    inputMultiplier: 2,
-    outputMultiplier: 8,
-    reasoningMultiplier: 8,
-    cacheMultiplier: 0.8,
-    provider: 'deepseek',
-    modelApiName: 'deepseek-reasoner',
-    tags: ['深度推理', '思考模型'],
-    description: '适合复杂情节设计',
+    tags: ['基准定价'],
+    description: '基准模型（1x=V3输入价），V4系列已全面优于V3',
   },
   'claude-haiku': {
     name: 'Claude Haiku',
@@ -81,7 +95,7 @@ export const MODEL_PRICING: Record<
     reasoningMultiplier: 0,
     cacheMultiplier: 0.35,
     provider: 'anthropic',
-    modelApiName: 'claude-3-haiku-20240307',
+    modelApiName: 'claude-haiku-4-5-20251001',
     tags: ['快速', '入门级'],
     description: 'Claude入门款',
   },
@@ -92,7 +106,7 @@ export const MODEL_PRICING: Record<
     reasoningMultiplier: 0,
     cacheMultiplier: 1.05,
     provider: 'anthropic',
-    modelApiName: 'claude-3-5-sonnet-20240620',
+    modelApiName: 'claude-sonnet-4-6',
     tags: ['推荐', '进阶'],
     description: '长篇创作首选',
   },
@@ -103,7 +117,7 @@ export const MODEL_PRICING: Record<
     reasoningMultiplier: 0,
     cacheMultiplier: 1.75,
     provider: 'anthropic',
-    modelApiName: 'claude-3-opus-20240229',
+    modelApiName: 'claude-opus-4-7',
     tags: ['旗舰', '最强'],
     description: '追求极致质量',
   },
@@ -136,9 +150,9 @@ export const MODEL_PRICING: Record<
     reasoningMultiplier: 0,
     cacheMultiplier: 0,
     provider: 'google',
-    modelApiName: 'google/gemini-1.5-flash',
+    modelApiName: 'google/gemini-2.5-pro',
     tags: ['Google', '长上下文'],
-    description: '超长上下文支持',
+    description: 'Google Gemini 2.5 Pro 路由',
   },
   'gemini-3.1-pro': {
     name: 'Gemini 3.1 Pro',
@@ -147,10 +161,121 @@ export const MODEL_PRICING: Record<
     reasoningMultiplier: 0,
     cacheMultiplier: 0.7,
     provider: 'google',
-    modelApiName: 'google/gemini-1.5-pro',
+    modelApiName: 'google/gemini-3.1-pro',
     tags: ['旗舰', 'Google'],
-    description: 'Google旗舰模型',
+    description: 'Google Gemini 3.1 Pro 路由',
   },
+};
+
+export const MODEL_PRICING: Record<ModelKey, ModelPricingConfig> = Object.fromEntries(
+  MODEL_ORDER.map((key) => [key, { ...DEFAULT_MODEL_PRICING[key], tags: [...DEFAULT_MODEL_PRICING[key].tags] }])
+) as Record<ModelKey, ModelPricingConfig>;
+
+let pricingSyncPromise: Promise<Record<ModelKey, ModelPricingConfig>> | undefined;
+let lastPricingSyncAt = 0;
+const PRICING_SYNC_TTL_MS = 5 * 60 * 1000;
+
+const isMembershipExpired = (membershipExpiresAt?: string | null) => {
+  if (!membershipExpiresAt) return false;
+  const expiresAt = new Date(membershipExpiresAt).getTime();
+  return Number.isFinite(expiresAt) && expiresAt < Date.now();
+};
+
+export const getEffectiveProfileDiamonds = (profile: {
+  member_diamonds?: number | null;
+  permanent_diamonds?: number | null;
+  membership_type?: string | null;
+  membership_expires_at?: string | null;
+}) => {
+  const expired = isMembershipExpired(profile.membership_expires_at);
+  const memberDiamonds = expired ? 0 : Number(profile.member_diamonds ?? 0);
+  const permanentDiamonds = Number(profile.permanent_diamonds ?? 0);
+
+  return {
+    expired,
+    memberDiamonds,
+    permanentDiamonds,
+    totalDiamonds: memberDiamonds + permanentDiamonds,
+    membershipType: expired ? 'free' : profile.membership_type ?? 'free',
+    membershipExpiresAt: expired ? null : profile.membership_expires_at ?? null,
+  };
+};
+
+const applyRuntimePricing = (nextPricing: Partial<Record<ModelKey, ModelPricingConfig>>) => {
+  MODEL_ORDER.forEach((key) => {
+    const source = nextPricing[key] ?? DEFAULT_MODEL_PRICING[key];
+    MODEL_PRICING[key] = {
+      ...source,
+      tags: [...(source.tags ?? [])],
+    };
+  });
+};
+
+export const syncModelPricingFromDb = async (force = false): Promise<Record<ModelKey, ModelPricingConfig>> => {
+  const shouldReuse =
+    !force &&
+    pricingSyncPromise &&
+    Date.now() - lastPricingSyncAt < PRICING_SYNC_TTL_MS;
+
+  if (shouldReuse) {
+    return pricingSyncPromise!;
+  }
+
+  pricingSyncPromise = (async () => {
+    try {
+      const [{ data: pricingRows, error: pricingError }, { data: configRows, error: configError }] =
+        await Promise.all([
+          supabase
+            .from('model_pricing')
+            .select(
+              'model_key, model_name, input_multiplier, output_multiplier, reasoning_multiplier, cache_multiplier, provider, model_api_name, tags, description, is_active'
+            )
+            .eq('is_active', true),
+          supabase
+            .from('system_config')
+            .select('key, value')
+            .in('key', ['pricing_version']),
+        ]);
+
+      if (pricingError) throw pricingError;
+      if (configError) throw configError;
+
+      const pricingVersion = configRows?.find((row: { key: string; value: string }) => row.key === 'pricing_version')?.value;
+      if (pricingVersion && pricingVersion !== PRICING_VERSION) {
+        console.warn(`[billing] pricing_version mismatch: db=${pricingVersion}, local=${PRICING_VERSION}`);
+      }
+
+      const runtimePricing: Partial<Record<ModelKey, ModelPricingConfig>> = {};
+
+      for (const row of pricingRows ?? []) {
+        const key = row.model_key as ModelKey;
+        if (!(key in DEFAULT_MODEL_PRICING)) continue;
+
+        runtimePricing[key] = {
+          name: row.model_name,
+          inputMultiplier: Number(row.input_multiplier ?? 0),
+          outputMultiplier: Number(row.output_multiplier ?? 0),
+          reasoningMultiplier: Number(row.reasoning_multiplier ?? 0),
+          cacheMultiplier: Number(row.cache_multiplier ?? 0),
+          provider: row.provider,
+          modelApiName: row.model_api_name || DEFAULT_MODEL_PRICING[key].modelApiName,
+          tags: Array.isArray(row.tags) ? row.tags.filter(Boolean) : [...DEFAULT_MODEL_PRICING[key].tags],
+          description: row.description || DEFAULT_MODEL_PRICING[key].description,
+        };
+      }
+
+      applyRuntimePricing(runtimePricing);
+      lastPricingSyncAt = Date.now();
+    } catch (error) {
+      console.warn('[billing] Failed to sync pricing from database, using local defaults.', error);
+      applyRuntimePricing({});
+      lastPricingSyncAt = Date.now();
+    }
+
+    return MODEL_PRICING;
+  })();
+
+  return pricingSyncPromise;
 };
 
 export function calculateDiamonds(
@@ -161,11 +286,15 @@ export function calculateDiamonds(
   cacheTokens: number = 0
 ): number {
   const pricing = MODEL_PRICING[modelKey];
+  const safeInput = Math.max(0, Number(inputTokens ?? 0));
+  const safeCacheHit = Math.max(0, Number(cacheTokens ?? 0));
+  const cacheHit = Math.min(safeInput, safeCacheHit);
+  const nonCachedInput = Math.max(0, safeInput - cacheHit);
   return Math.ceil(
-    inputTokens * pricing.inputMultiplier +
-      outputTokens * pricing.outputMultiplier +
-      reasoningTokens * pricing.reasoningMultiplier +
-      cacheTokens * pricing.cacheMultiplier
+    nonCachedInput * pricing.inputMultiplier +
+      cacheHit * pricing.cacheMultiplier +
+      Math.max(0, Number(outputTokens ?? 0)) * pricing.outputMultiplier +
+      Math.max(0, Number(reasoningTokens ?? 0)) * pricing.reasoningMultiplier
   );
 }
 
@@ -235,15 +364,18 @@ export async function getUserBalance(userId: string): Promise<{
     return { memberDiamonds: 0, permanentDiamonds: 0, totalDiamonds: 0 };
   }
 
-  const memberDiamonds = Number(data.member_diamonds ?? 0);
-  const permanentDiamonds = Number(data.permanent_diamonds ?? 0);
+  const effective = getEffectiveProfileDiamonds({
+    member_diamonds: data.member_diamonds,
+    permanent_diamonds: data.permanent_diamonds,
+    membership_type: data.membership_type,
+    membership_expires_at: data.membership_expires_at,
+  });
 
   return {
-    memberDiamonds,
-    permanentDiamonds,
-    totalDiamonds: memberDiamonds + permanentDiamonds,
-    membershipType: data.membership_type ?? undefined,
-    membershipExpiresAt: data.membership_expires_at ?? null,
+    memberDiamonds: effective.memberDiamonds,
+    permanentDiamonds: effective.permanentDiamonds,
+    totalDiamonds: effective.totalDiamonds,
+    membershipType: effective.membershipType,
+    membershipExpiresAt: effective.membershipExpiresAt,
   };
 }
-

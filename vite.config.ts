@@ -1,7 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
-import { generateTextServer, parseRequestBody, sendJson, summarizeContextServer } from './server/aiProxy.js'
+import { generateTextServer, getRequestContext, parseRequestBody, sendJson, summarizeContextServer } from './server/aiProxy.js'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
             }
             try {
               const body = await parseRequestBody(req)
-              const result = await generateTextServer(body)
+              const result = await generateTextServer(body, getRequestContext(req))
               sendJson(res, 200, result)
             } catch (error) {
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI request failed' })
@@ -40,7 +40,7 @@ export default defineConfig(({ mode }) => {
             }
             try {
               const body = await parseRequestBody(req)
-              const result = await summarizeContextServer(body)
+              const result = await summarizeContextServer(body, getRequestContext(req))
               sendJson(res, 200, result)
             } catch (error) {
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI summarize failed' })

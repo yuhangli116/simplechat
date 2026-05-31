@@ -1,5 +1,6 @@
 import { useAuthStore } from '@/store/useAuthStore';
-import { deductDiamondsV4, MODEL_PRICING, type ModelKey } from '@/services/billing';
+import { supabase } from '@/lib/supabase';
+import { calculateDiamonds, MODEL_PRICING, syncModelPricingFromDb, type ModelKey } from '@/services/billing';
 
 interface AIResponse {
   content: string;
@@ -7,7 +8,15 @@ interface AIResponse {
   usage?: {
     input_tokens: number;
     output_tokens: number;
+    reasoning_tokens?: number;
+    cache_hit_tokens?: number;
     total_cost: number;
+  };
+  billing?: {
+    totalRemaining?: number;
+    warning?: string;
+    estimatedRequired?: number;
+    available?: number;
   };
 }
 
@@ -16,43 +25,59 @@ interface AIRequest {
   model: ModelKey;
   context?: string;
   userId?: string; // Required for billing
+  billingGroupId?: string;
 }
 
-const estimateTokens = (text: string) => Math.ceil(text.length / 1.5);
-const GUEST_BALANCE_KEY = 'guest-diamond-balance';
-const GUEST_DEFAULT_BALANCE = 9999;
+const estimateTokens = (text: string) => {
+  const normalized = text.trim();
+  if (!normalized) return 0;
+
+  const cjkChars = (normalized.match(/[\u3400-\u9fff\uf900-\ufaff]/g) || []).length;
+  const latinWords = (normalized.match(/[A-Za-z]+(?:'[A-Za-z]+)*/g) || []).length;
+  const numbers = (normalized.match(/\d+(?:\.\d+)?/g) || []).length;
+  const punctuation = (normalized.match(/[^\p{L}\p{N}\s]/gu) || []).length;
+  const whitespace = (normalized.match(/\s+/g) || []).length;
+
+  return Math.max(
+    1,
+    Math.ceil(
+      cjkChars * 1.15 +
+        latinWords * 1.3 +
+        numbers * 0.6 +
+        punctuation * 0.35 +
+        whitespace * 0.1
+    )
+  );
+};
 
 const isUuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
-const getGuestBalance = () => {
-  if (typeof window === 'undefined') return GUEST_DEFAULT_BALANCE;
-  const raw = localStorage.getItem(GUEST_BALANCE_KEY);
-  const parsed = raw ? Number(raw) : NaN;
-  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : GUEST_DEFAULT_BALANCE;
+const applyServerBalance = (response: AIResponse) => {
+  const totalRemaining = response.billing?.totalRemaining;
+  if (typeof totalRemaining !== 'number') return;
+
+  const { setDiamondBalance, profile, setProfile } = useAuthStore.getState();
+  setDiamondBalance(totalRemaining);
+  if (profile) {
+    setProfile({ ...profile, diamond_balance: totalRemaining });
+  }
 };
 
-const updateGuestBalance = (nextBalance: number) => {
-  const safeBalance = Math.max(0, Math.floor(nextBalance));
-
-  if (typeof window !== 'undefined') {
-    localStorage.setItem(GUEST_BALANCE_KEY, String(safeBalance));
-  }
-
-  const { profile, setDiamondBalance, setProfile } = useAuthStore.getState();
-  setDiamondBalance(safeBalance);
-  if (profile?.id === 'guest') {
-    setProfile({ ...profile, diamond_balance: safeBalance });
-  }
+const getAccessToken = async () => {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token || '';
 };
 
 const callAIEndpoint = async (
   endpoint: '/api/ai/generate' | '/api/ai/summarize',
   payload: Record<string, unknown>
 ): Promise<AIResponse> => {
+  const accessToken = await getAccessToken();
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     },
     body: JSON.stringify(payload),
   });
@@ -68,11 +93,16 @@ const callAIEndpoint = async (
     content: result?.content || '',
     error: result?.error,
     usage: result?.usage,
+    billing: result?.billing,
   };
 };
 
 const getFriendlyErrorMessage = (error: any, provider: string): string => {
   const msg = error?.message || '';
+
+  if (msg.includes('模型定价配置不存在')) {
+    return `计费配置缺失：${msg}。请确认已在当前 Supabase 项目执行模型定价迁移（model_pricing 表包含该 model_key 且 is_active=true）。`;
+  }
   
   if (
     msg.includes('401') ||
@@ -113,82 +143,50 @@ const getFriendlyErrorMessage = (error: any, provider: string): string => {
 };
 
 export const aiService = {
-  async summarizeContext(context: string, userId?: string): Promise<AIResponse> {
+  async summarizeContext(
+    context: string,
+    userId?: string,
+    model: ModelKey = 'deepseek-v4-flash',
+    billingGroupId?: string
+  ): Promise<AIResponse> {
     if (!context || context.length < 10) return { content: context };
+    if (!userId || !isUuid(userId)) {
+      return { content: '', error: '请先登录后再使用 AI 创作功能。' };
+    }
 
-    const modelKey: ModelKey = 'deepseek-v3';
+    await syncModelPricingFromDb();
+
+    const modelKey: ModelKey = model;
     const config = MODEL_PRICING[modelKey];
 
     try {
-      const response = await callAIEndpoint('/api/ai/summarize', { context });
+      const response = await callAIEndpoint('/api/ai/summarize', { context, model: modelKey, userId, billingGroupId });
       const content = response.content;
+      const promptTokens = response.usage?.input_tokens ?? estimateTokens(context);
+      const completionTokens = response.usage?.output_tokens ?? estimateTokens(content);
+      const reasoningTokens = response.usage?.reasoning_tokens ?? 0;
+      const cacheHitTokens = response.usage?.cache_hit_tokens ?? 0;
+      const totalCost =
+        response.usage?.total_cost ??
+        calculateDiamonds(modelKey, promptTokens, completionTokens, reasoningTokens, cacheHitTokens);
 
-      if (userId) {
-        const promptTokens = response.usage?.input_tokens ?? estimateTokens(context);
-        const completionTokens = response.usage?.output_tokens ?? estimateTokens(content);
-        const reasoningTokens = (response.usage as any)?.reasoning_tokens ?? 0;
-        const cacheHitTokens = (response.usage as any)?.cache_hit_tokens ?? 0;
-        
-        let totalCost = Math.ceil(
-          promptTokens * config.inputMultiplier + 
-          completionTokens * config.outputMultiplier +
-          reasoningTokens * config.reasoningMultiplier +
-          cacheHitTokens * config.cacheMultiplier
-        );
-        
-        const canUseServerBilling = isUuid(userId);
-
-        if (canUseServerBilling) {
-          const result = await deductDiamondsV4({
-            userId,
-            modelKey,
-            inputTokens: promptTokens,
-            outputTokens: completionTokens,
-            reasoningTokens,
-            cacheTokens: cacheHitTokens,
-          });
-
-          if (!result.success) {
-            if (result.error === '钻石不足') {
-              return {
-                content: '',
-                error: `钻石不足（需要 ${result.needed ?? '-'}，当前 ${result.available ?? '-'}），请充值后继续使用。`,
-              };
-            }
-            console.error('Summarization Billing Error:', result.error);
-            return { content: '', error: '扣费失败，请稍后重试' };
-          } else {
-            totalCost = result.diamondsConsumed ?? totalCost;
-            if (typeof result.totalRemaining === 'number') {
-              const { setDiamondBalance, profile, setProfile } = useAuthStore.getState();
-              setDiamondBalance(result.totalRemaining);
-              if (profile?.id === userId) {
-                setProfile({ ...profile, diamond_balance: result.totalRemaining });
-              }
-            }
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('welfare:ai_used'));
-            }
-          }
-        } else {
-          const currentGuestBalance = getGuestBalance();
-          if (currentGuestBalance < totalCost) {
-            return { content: '', error: '访客体验余额不足，请减少生成内容后重试。' };
-          }
-          updateGuestBalance(currentGuestBalance - totalCost);
-        }
-
-        return {
-          content,
-          usage: {
-            input_tokens: promptTokens,
-            output_tokens: completionTokens,
-            total_cost: totalCost
-          }
-        };
+      applyServerBalance(response);
+      if (typeof window !== 'undefined' && !response.error) {
+        window.dispatchEvent(new CustomEvent('welfare:ai_used'));
       }
 
-      return { content };
+      return {
+        content,
+        error: response.error,
+        billing: response.billing,
+        usage: {
+          input_tokens: promptTokens,
+          output_tokens: completionTokens,
+          reasoning_tokens: reasoningTokens,
+          cache_hit_tokens: cacheHitTokens,
+          total_cost: totalCost,
+        },
+      };
     } catch (error: any) {
       console.error('Summarization Error:', error);
       return { content: '', error: '总结上下文失败：' + (error.message || '未知错误') };
@@ -196,96 +194,50 @@ export const aiService = {
   },
 
   async generateText(request: AIRequest): Promise<AIResponse> {
+    if (!request.userId || !isUuid(request.userId)) {
+      return { content: '', error: '请先登录后再使用 AI 创作功能。' };
+    }
+
+    await syncModelPricingFromDb();
     const config = MODEL_PRICING[request.model];
     if (!config) return { content: '', error: `Model ${request.model} not supported` };
-
-    const canUseServerBilling = Boolean(request.userId && isUuid(request.userId));
-
-    if (request.userId) {
-      if (!canUseServerBilling) {
-        const guestBalance = getGuestBalance();
-        if (guestBalance <= 0) {
-          return { content: '', error: '访客体验余额不足，请减少生成内容后重试。' };
-        }
-      }
-    }
 
     try {
       const response = await callAIEndpoint('/api/ai/generate', {
         prompt: request.prompt,
         model: request.model,
         context: request.context,
+        userId: request.userId,
+        billingGroupId: request.billingGroupId,
       });
       const content = response.content;
+      const promptTokens =
+        response.usage?.input_tokens ??
+        estimateTokens(`${request.context || ''}\n${request.prompt}`);
+      const completionTokens = response.usage?.output_tokens ?? estimateTokens(content);
+      const reasoningTokens = response.usage?.reasoning_tokens ?? 0;
+      const cacheHitTokens = response.usage?.cache_hit_tokens ?? 0;
+      const totalCost =
+        response.usage?.total_cost ??
+        calculateDiamonds(request.model, promptTokens, completionTokens, reasoningTokens, cacheHitTokens);
 
-      if (request.userId) {
-        const promptTokens =
-          response.usage?.input_tokens ??
-          estimateTokens(`${request.context || ''}${request.prompt}`);
-        const completionTokens =
-          response.usage?.output_tokens ??
-          estimateTokens(content);
-        const reasoningTokens = (response.usage as any)?.reasoning_tokens ?? 0;
-        const cacheHitTokens = (response.usage as any)?.cache_hit_tokens ?? 0;
-          
-        let totalCost = Math.ceil(
-          promptTokens * config.inputMultiplier + 
-          completionTokens * config.outputMultiplier +
-          reasoningTokens * config.reasoningMultiplier +
-          cacheHitTokens * config.cacheMultiplier
-        );
-
-        if (canUseServerBilling) {
-          const result = await deductDiamondsV4({
-            userId: request.userId!,
-            modelKey: request.model,
-            inputTokens: promptTokens,
-            outputTokens: completionTokens,
-            reasoningTokens,
-            cacheTokens: cacheHitTokens,
-          });
-
-          if (!result.success) {
-            if (result.error === '钻石不足') {
-              return {
-                content: '',
-                error: `钻石不足（需要 ${result.needed ?? '-'}，当前 ${result.available ?? '-'}），请充值后继续使用。`,
-              };
-            }
-            console.error('Billing Error:', result.error);
-            return { content: '', error: '扣费失败，请稍后重试' };
-          } else {
-            totalCost = result.diamondsConsumed ?? totalCost;
-            if (typeof result.totalRemaining === 'number') {
-              const { setDiamondBalance, profile, setProfile } = useAuthStore.getState();
-              setDiamondBalance(result.totalRemaining);
-              if (profile?.id === request.userId) {
-                setProfile({ ...profile, diamond_balance: result.totalRemaining });
-              }
-            }
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('welfare:ai_used'));
-            }
-          }
-        } else {
-          const currentGuestBalance = getGuestBalance();
-          if (currentGuestBalance < totalCost) {
-            return { content: '', error: '访客体验余额不足，请减少生成内容后重试。' };
-          }
-          updateGuestBalance(currentGuestBalance - totalCost);
-        }
-
-        return {
-          content,
-          usage: {
-            input_tokens: promptTokens,
-            output_tokens: completionTokens,
-            total_cost: totalCost
-          }
-        };
+      applyServerBalance(response);
+      if (typeof window !== 'undefined' && !response.error) {
+        window.dispatchEvent(new CustomEvent('welfare:ai_used'));
       }
 
-      return { content };
+      return {
+        content,
+        error: response.error,
+        billing: response.billing,
+        usage: {
+          input_tokens: promptTokens,
+          output_tokens: completionTokens,
+          reasoning_tokens: reasoningTokens,
+          cache_hit_tokens: cacheHitTokens,
+          total_cost: totalCost,
+        },
+      };
 
     } catch (error: any) {
       console.error('AI Generation Error:', error);
@@ -297,13 +249,23 @@ export const aiService = {
     }
   },
 
-  async generateOutline(prompt: string): Promise<{ nodes: Array<{ id: string; label: string }> }> {
+  async generateOutline(
+    prompt: string,
+    userId?: string,
+    model: ModelKey = 'deepseek-v4-flash'
+  ): Promise<{ nodes: Array<{ id: string; label: string }> }> {
     try {
-      const response = await callAIEndpoint('/api/ai/generate', {
-        model: 'deepseek',
+      const response = await this.generateText({
+        model,
+        userId,
         context: '无',
         prompt: `你是一个专业的小说大纲生成助手。请为这个主题生成 JSON 数组，每一项都包含 id 和 label 字段，只返回 JSON：${prompt}`,
       });
+
+      if (response.error) {
+        throw new Error(response.error);
+      }
+
       const text = response.content || '';
       const nodes = JSON.parse(text.match(/\[.*\]/s)?.[0] || '[]');
 

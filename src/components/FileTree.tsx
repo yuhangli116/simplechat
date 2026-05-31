@@ -43,28 +43,64 @@ const getRandomIcon = () => {
   return CUSTOM_ICONS[Math.floor(Math.random() * CUSTOM_ICONS.length)];
 };
 
+type DragPayload = {
+  nodeId: string;
+  parentId: string;
+  nodeType: 'file' | 'mindmap';
+};
+
+const DRAG_MIME = 'application/x-simplechat-filetree';
+
+const readDragPayload = (event: React.DragEvent): DragPayload | null => {
+  const raw = event.dataTransfer.getData(DRAG_MIME) || event.dataTransfer.getData('text/plain');
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as DragPayload;
+    if (!parsed?.nodeId || !parsed?.parentId || !parsed?.nodeType) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
 const FileTreeNode = ({ 
   node, 
   level, 
+  parentId,
+  parentName,
   onSelect, 
   onAddChapter,
   onAddMindMap,
   onRename,
   onDelete,
   onExportWork,
+  onReorder,
   editingId,
-  setEditingId
+  setEditingId,
+  dragging,
+  setDragging,
+  dragOver,
+  setDragOver,
+  onDragEnd
 }: { 
   node: FileNode, 
   level: number, 
+  parentId: string | null,
+  parentName: string | null,
   onSelect: (node: FileNode) => void, 
   onAddChapter: (parentId: string) => void,
   onAddMindMap: (parentId: string) => void,
   onRename: (id: string, newName: string) => void,
   onDelete: (node: FileNode) => void,
   onExportWork: (node: FileNode) => void,
+  onReorder: (payload: DragPayload, targetParentId: string, targetId: string | null, insertAfter: boolean) => void,
   editingId: string | null,
-  setEditingId: (id: string | null) => void
+  setEditingId: (id: string | null) => void,
+  dragging: DragPayload | null,
+  setDragging: (value: DragPayload | null) => void,
+  dragOver: { targetId: string; position: 'before' | 'after' | 'append' } | null,
+  setDragOver: (value: { targetId: string; position: 'before' | 'after' | 'append' } | null) => void,
+  onDragEnd: () => void
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [editName, setEditName] = useState(node.name);
@@ -157,15 +193,107 @@ const FileTreeNode = ({
   // Level 0 (Work folders), 'file' type (Chapters), and 'mindmap' type are editable/deletable
   const canEdit = level === 0 || node.type === 'file' || node.type === 'mindmap';
 
+  const draggable = Boolean(
+    !isEditing &&
+    parentId &&
+    ((node.type === 'file' && parentName === '正文情节') ||
+      (node.type === 'mindmap' && parentName === '作品相关'))
+  );
+
+  const isDropContainer = Boolean(
+    !isEditing &&
+    (isChaptersFolder || isMetaFolder)
+  );
+
+  const isDragOverRow = dragOver?.targetId === node.id;
+
+  const handleDragStart = (e: React.DragEvent) => {
+    if (!draggable || !parentId) return;
+    if (node.type !== 'file' && node.type !== 'mindmap') return;
+    e.stopPropagation();
+    const payload: DragPayload = {
+      nodeId: node.id,
+      parentId,
+      nodeType: node.type,
+    };
+    const raw = JSON.stringify(payload);
+    e.dataTransfer.setData(DRAG_MIME, raw);
+    e.dataTransfer.setData('text/plain', raw);
+    e.dataTransfer.effectAllowed = 'move';
+    setDragging(payload);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    const payload = dragging || readDragPayload(e);
+    if (!payload) return;
+    if (payload.nodeId === node.id) return;
+    if (payload.nodeType !== 'file' && payload.nodeType !== 'mindmap') return;
+
+    if (node.type === 'folder') {
+      if (node.id !== payload.parentId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      setDragOver({ targetId: node.id, position: 'append' });
+      return;
+    }
+
+    if (!parentId) return;
+    if (payload.parentId !== parentId) return;
+    if (payload.nodeType !== node.type) return;
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const insertAfter = e.clientY > rect.top + rect.height / 2;
+    setDragOver({ targetId: node.id, position: insertAfter ? 'after' : 'before' });
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    const payload = dragging || readDragPayload(e);
+    if (!payload) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (node.type === 'folder') {
+      if (node.id !== payload.parentId) return;
+      onReorder(payload, node.id, null, true);
+      onDragEnd();
+      return;
+    }
+
+    if (!parentId) return;
+    if (payload.parentId !== parentId) return;
+    if (payload.nodeType !== node.type) return;
+    if (payload.nodeId === node.id) return;
+
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const insertAfter = e.clientY > rect.top + rect.height / 2;
+    onReorder(payload, parentId, node.id, insertAfter);
+    onDragEnd();
+  };
+
   return (
     <div>
       <div 
-        className={`group flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors text-sm select-none pr-2
+        className={`group relative flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors text-sm select-none pr-2
           ${isSelected ? 'bg-gray-200 text-gray-900' : 'hover:bg-gray-100 text-gray-700'}
+          ${isDragOverRow ? (dragOver?.position === 'append' ? 'ring-1 ring-purple-400' : '') : ''}
         `}
         style={{ paddingLeft: `${level * 16 + 12}px` }}
         onClick={handleToggle}
+        draggable={draggable}
+        onDragStart={handleDragStart}
+        onDragEnd={onDragEnd}
+        onDragOver={draggable || isDropContainer ? handleDragOver : undefined}
+        onDrop={draggable || isDropContainer ? handleDrop : undefined}
       >
+        {isDragOverRow && dragOver?.position === 'before' && (
+          <div className="pointer-events-none absolute left-2 right-2 top-0 h-[2px] bg-purple-500 rounded" />
+        )}
+        {isDragOverRow && dragOver?.position === 'after' && (
+          <div className="pointer-events-none absolute left-2 right-2 bottom-0 h-[2px] bg-purple-500 rounded" />
+        )}
+
         <div className="flex items-center overflow-hidden flex-1">
           <span className="mr-1 text-gray-400 flex-shrink-0">
             {node.type === 'folder' && (
@@ -278,14 +406,22 @@ const FileTreeNode = ({
               key={child.id} 
               node={child} 
               level={level + 1} 
+              parentId={node.id}
+              parentName={node.name}
               onSelect={onSelect} 
               onAddChapter={onAddChapter}
               onAddMindMap={onAddMindMap}
               onRename={onRename}
               onDelete={onDelete}
               onExportWork={onExportWork}
+              onReorder={onReorder}
               editingId={editingId}
               setEditingId={setEditingId}
+              dragging={dragging}
+              setDragging={setDragging}
+              dragOver={dragOver}
+              setDragOver={setDragOver}
+              onDragEnd={onDragEnd}
             />
           ))}
         </div>
@@ -299,6 +435,8 @@ const FileTree = () => {
   const { user } = useAuthStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [dragging, setDragging] = useState<DragPayload | null>(null);
+  const [dragOver, setDragOver] = useState<{ targetId: string; position: 'before' | 'after' | 'append' } | null>(null);
   
   const { files, setFiles, removeNode } = useFileStore();
   const { addToTrash } = useTrashStore();
@@ -321,6 +459,56 @@ const FileTree = () => {
     if (node.path) {
       // Pass the node name in the state so the target component can use it
       navigate(node.path, { state: { fileName: node.name } });
+    }
+  };
+
+  const handleDragEnd = () => {
+    setDragOver(null);
+    setDragging(null);
+  };
+
+  const reorderWithinParent = (nodes: FileNode[], parentId: string, draggedId: string, targetId: string | null, insertAfter: boolean): FileNode[] => {
+    return nodes.map((node) => {
+      if (node.id === parentId) {
+        const children = [...(node.children || [])];
+        const fromIndex = children.findIndex((c) => c.id === draggedId);
+        if (fromIndex === -1) return node;
+
+        const [moved] = children.splice(fromIndex, 1);
+
+        let insertIndex = children.length;
+        if (targetId) {
+          const targetIndex = children.findIndex((c) => c.id === targetId);
+          if (targetIndex !== -1) {
+            insertIndex = insertAfter ? targetIndex + 1 : targetIndex;
+          }
+        }
+
+        children.splice(Math.max(0, Math.min(insertIndex, children.length)), 0, moved);
+        return { ...node, children };
+      }
+
+      if (node.children) {
+        return { ...node, children: reorderWithinParent(node.children, parentId, draggedId, targetId, insertAfter) };
+      }
+
+      return node;
+    });
+  };
+
+  const handleReorder = async (payload: DragPayload, targetParentId: string, targetId: string | null, insertAfter: boolean) => {
+    if (!payload?.nodeId || !payload?.parentId) return;
+    if (payload.parentId !== targetParentId) return;
+
+    const nextFiles = reorderWithinParent(files, targetParentId, payload.nodeId, targetId, insertAfter);
+    setFiles(nextFiles);
+
+    if (user) {
+      const workNode = findWorkNodeForTarget(nextFiles as any, targetParentId);
+      if (workNode) {
+        await persistWorkTree(user.id, workNode as any);
+        await refreshWorkspace();
+      }
     }
   };
 
@@ -713,14 +901,22 @@ const FileTree = () => {
             key={node.id}
             node={node}
             level={0}
+            parentId={'root'}
+            parentName={'我的作品'}
             onSelect={handleSelect}
             onAddChapter={handleAddChapter}
             onAddMindMap={handleAddMindMap}
             onRename={handleRename}
             onDelete={handleDelete}
             onExportWork={handleExportWork}
+            onReorder={handleReorder}
             editingId={editingId}
             setEditingId={setEditingId}
+            dragging={dragging}
+            setDragging={setDragging}
+            dragOver={dragOver}
+            setDragOver={setDragOver}
+            onDragEnd={handleDragEnd}
           />
         ))}
       </div>

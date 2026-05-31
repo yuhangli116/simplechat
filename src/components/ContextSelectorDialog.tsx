@@ -23,6 +23,11 @@ const ContextSelectorDialog: React.FC<ContextSelectorDialogProps> = ({ isOpen, o
   const [fileContent, setFileContent] = useState<{ nodes: Node[], edges: Edge[] } | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    setSelectedNodeId(null);
+  }, [isOpen]);
+
   // Load file tree on mount
   useEffect(() => {
     if (!isOpen) return;
@@ -129,9 +134,6 @@ const ContextSelectorDialog: React.FC<ContextSelectorDialogProps> = ({ isOpen, o
               });
               if (remoteContent) {
                   content = JSON.stringify(remoteContent);
-                  if (key) {
-                      localStorage.setItem(key, content);
-                  }
               }
           } catch (error) {
               console.error('Failed to load mind map context from Supabase', error);

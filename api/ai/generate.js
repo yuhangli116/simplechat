@@ -1,4 +1,4 @@
-import { generateTextServer, parseRequestBody, sendJson } from '../../server/aiProxy.js';
+import { generateTextServer, getRequestContext, parseRequestBody, sendJson } from '../../server/aiProxy.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -7,7 +7,7 @@ export default async function handler(req, res) {
 
   try {
     const body = await parseRequestBody(req);
-    const result = await generateTextServer(body);
+    const result = await generateTextServer(body, getRequestContext(req));
     return sendJson(res, 200, result);
   } catch (error) {
     return sendJson(res, 500, {
