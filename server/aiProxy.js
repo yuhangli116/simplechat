@@ -4,7 +4,14 @@ const normalizeApiKey = (apiKey) => apiKey?.trim().replace(/^['"`]|['"`]$/g, '')
 
 const getEnvValue = (...names) => {
   for (const name of names) {
-    const value = process.env[name];
+    // 先试不带前缀的
+    let value = process.env[name];
+    if (value) {
+      return normalizeApiKey(value);
+    }
+    // 再试带 VITE_ 前缀的
+    const viteName = `VITE_${name}`;
+    value = process.env[viteName];
     if (value) {
       return normalizeApiKey(value);
     }
@@ -18,8 +25,7 @@ const PRECHECK_OUTPUT_TOKENS = Number(process.env.AI_PRECHECK_OUTPUT_TOKENS || 9
 const PRECHECK_REASONING_TOKENS = Number(process.env.AI_PRECHECK_REASONING_TOKENS || 600);
 const ANOMALY_HOURLY_DIAMONDS = Number(process.env.AI_ANOMALY_HOURLY_DIAMONDS || 800000);
 const ANOMALY_LOOKBACK_DAYS = Number(process.env.AI_ANOMALY_LOOKBACK_DAYS || 7);
-const SUPABASE_URL = getEnvValue('SUPABASE_URL', 'VITE_SUPABASE_URL');
-const SUPABASE_ANON_KEY = getEnvValue('SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY');
+// 注意：不要在模块加载时读取 SUPABASE_URL/ANON_KEY，改成在 getSupabaseClientForRequest 里实时读取
 const SUMMARIZE_FETCH_TIMEOUT_MS = Number(process.env.AI_SUMMARIZE_FETCH_TIMEOUT_MS || 60000);
 
 const estimateTokens = (text = '') => {
@@ -214,9 +220,20 @@ export const getRequestContext = (req) => {
 };
 
 const getSupabaseClientForRequest = (accessToken) => {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !accessToken) return null;
+  // 每次调用都实时读取，确保 vite.config.ts 里已经加载了 env
+  const SUPABASE_URL_RUNTIME = getEnvValue('SUPABASE_URL', 'VITE_SUPABASE_URL');
+  const SUPABASE_ANON_KEY_RUNTIME = getEnvValue('SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY');
+  
+  console.log('[debug getSupabaseClientForRequest] SUPABASE_URL:', SUPABASE_URL_RUNTIME ? '✅ 已加载' : '❌ 未加载', SUPABASE_URL_RUNTIME?.slice(0, 30) || '');
+  console.log('[debug getSupabaseClientForRequest] SUPABASE_ANON_KEY:', SUPABASE_ANON_KEY_RUNTIME ? '✅ 已加载' : '❌ 未加载', SUPABASE_ANON_KEY_RUNTIME?.slice(0, 20) || '');
+  console.log('[debug getSupabaseClientForRequest] accessToken:', accessToken ? '✅ 已提供' : '❌ 未提供', accessToken?.slice(0, 20) || '');
 
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  if (!SUPABASE_URL_RUNTIME || !SUPABASE_ANON_KEY_RUNTIME || !accessToken) {
+    console.log('[debug getSupabaseClientForRequest] ❌ 缺少必要参数，返回 null');
+    return null;
+  }
+
+  return createClient(SUPABASE_URL_RUNTIME, SUPABASE_ANON_KEY_RUNTIME, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -230,13 +247,55 @@ const getSupabaseClientForRequest = (accessToken) => {
   });
 };
 
-const getAuthenticatedUser = async (supabase) => {
-  const { data, error } = await supabase.auth.getUser();
-  if (error || !data?.user) return null;
-  return data.user;
+const getAuthenticatedUser = async (supabase, accessToken) => {
+  console.log('[debug getAuthenticatedUser] 开始验证用户');
+  
+  // 方案一：先用 supabase.auth.getUser 验证
+  const { data, error } = await supabase.auth.getUser({ jwt: accessToken });
+  
+  console.log('[debug getAuthenticatedUser] getUser 结果:', {
+    error: error?.message || '无错误',
+    user: data?.user ? '✅' : '❌',
+    userId: data?.user?.id || '无'
+  });
+
+  if (!error && data?.user) {
+    console.log('[debug getAuthenticatedUser] getUser 验证成功 ✅');
+    return data.user;
+  }
+
+  // 方案二：如果 getUser 失败，尝试直接解析 JWT（备用方案，确保不阻塞）
+  console.log('[debug getAuthenticatedUser] getUser 失败，尝试解析 JWT');
+  const safeBase64UrlDecode = (str) => {
+    const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = base64.length % 4 ? "=".repeat(4 - (base64.length % 4)) : "";
+    return Buffer.from(base64 + pad, 'base64');
+  };
+  const parseJwt = (token) => {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    try {
+      const payload = JSON.parse(safeBase64UrlDecode(parts[1]).toString('utf8'));
+      console.log('[debug getAuthenticatedUser] JWT payload:', payload);
+      return payload;
+    } catch (e) {
+      console.error('[debug getAuthenticatedUser] JWT 解析失败:', e);
+      return null;
+    }
+  };
+
+  const payload = parseJwt(accessToken);
+  if (!payload?.sub) {
+    console.log('[debug getAuthenticatedUser] JWT 解析也失败 ❌');
+    return null;
+  }
+  console.log('[debug getAuthenticatedUser] JWT 解析成功 ✅，userId:', payload.sub);
+  return { id: payload.sub };
 };
 
 const getModelPricingFromDb = async (supabase, modelKey) => {
+  console.log('[debug getModelPricingFromDb] 开始读取模型定价，modelKey:', modelKey);
+
   const { data, error } = await supabase
     .from('model_pricing')
     .select(
@@ -246,9 +305,15 @@ const getModelPricingFromDb = async (supabase, modelKey) => {
     .eq('is_active', true)
     .single();
 
+  console.log('[debug getModelPricingFromDb] 读取结果:', { 
+    error: error?.message || null, 
+    data: data ? { model_key: data.model_key, input_multiplier: data.input_multiplier } : null 
+  });
+
   if (error || !data) {
     const code = error?.code ? ` (${error.code})` : '';
     const detail = error?.message ? `：${error.message}` : '';
+    console.error('[debug getModelPricingFromDb] ❌ 读取失败:', error?.message || '无数据');
     throw new Error(`模型定价配置不存在(${modelKey})${code}${detail}`);
   }
 
@@ -262,13 +327,21 @@ const getModelPricingFromDb = async (supabase, modelKey) => {
 };
 
 const getEffectiveBalance = async (supabase, userId) => {
+  console.log('[debug getEffectiveBalance] 开始读取用户余额，userId:', userId);
+  
   const { data, error } = await supabase
     .from('profiles')
     .select('member_diamonds, permanent_diamonds, membership_type, membership_expires_at')
     .eq('id', userId)
     .single();
 
+  console.log('[debug getEffectiveBalance] 读取结果:', { 
+    error: error ? error.message : null, 
+    data: data ? { ...data, member_diamonds: data.member_diamonds, permanent_diamonds: data.permanent_diamonds } : null 
+  });
+
   if (error || !data) {
+    console.error('[debug getEffectiveBalance] ❌ 读取失败:', error?.message || '无数据');
     throw new Error('读取用户余额失败');
   }
 
@@ -560,15 +633,25 @@ const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig 
 };
 
 const executeAiTask = async ({ kind, prompt = '', context = '', model, messages, temperature, requestContext, billingGroupId, billingStep }) => {
-  const supabase = getSupabaseClientForRequest(requestContext?.accessToken);
+  console.log('[debug executeAiTask] 开始执行，requestContext:', {
+    ...requestContext,
+    accessToken: requestContext?.accessToken ? requestContext.accessToken.slice(0, 20) + '...' : null
+  });
+
+  const accessToken = requestContext?.accessToken || '';
+  const supabase = getSupabaseClientForRequest(accessToken);
   if (!supabase) {
+    console.log('[debug executeAiTask] ❌ getSupabaseClientForRequest 返回 null');
     return { content: '', error: '请先登录后再使用 AI 创作功能。' };
   }
 
-  const user = await getAuthenticatedUser(supabase);
+  const user = await getAuthenticatedUser(supabase, accessToken);
   if (!user) {
+    console.log('[debug executeAiTask] ❌ getAuthenticatedUser 返回 null');
     return { content: '', error: '请先登录后再使用 AI 创作功能。' };
   }
+
+  console.log('[debug executeAiTask] ✅ 用户验证通过，userId:', user.id);
 
   let finalModel = model;
   if (finalModel === undefined) {

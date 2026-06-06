@@ -18,13 +18,43 @@ export interface TrashItem {
   extra?: any; // Any other metadata
 }
 
+const isMissingTrashTableError = (error: any) =>
+  error?.code === 'PGRST205' || error?.status === 404;
+
+let trashSyncCapability: boolean | null = null;
+
+const canSyncTrash = () => trashSyncCapability === true;
+
+const shouldProbeTrashSync = () => trashSyncCapability !== false;
+
+const setTrashSyncCapability = (available: boolean) => {
+  trashSyncCapability = available;
+};
+
+const handleTrashSyncError = (error: any, action: string) => {
+  if (!error) {
+    setTrashSyncCapability(true);
+    return false;
+  }
+
+  if (isMissingTrashTableError(error)) {
+    setTrashSyncCapability(false);
+    console.warn('Supabase trash sync disabled because public.trash_items is missing.');
+    return true;
+  }
+
+  console.error(`Failed to ${action}:`, error);
+  return true;
+};
+
 interface TrashState {
   items: TrashItem[];
-  addToTrash: (item: Omit<TrashItem, 'id' | 'deletedAt' | 'expiresAt'>) => void;
-  restoreItem: (id: string) => Promise<TrashItem | undefined>; // Returns item for caller to handle re-insertion
+  addExistingItem: (item: TrashItem) => void;
+  addToTrash: (item: Omit<TrashItem, 'id' | 'deletedAt' | 'expiresAt'>) => Promise<void>;
+  getTrashItem: (id: string) => Promise<TrashItem | null>;
   permanentlyDelete: (id: string) => Promise<void>;
-  clearTrash: () => Promise<void>; // Clears all items
-  clearExpired: () => Promise<void>; // Clears expired items
+  clearTrash: () => Promise<void>;
+  clearExpired: () => Promise<void>;
   syncFromSupabase: () => Promise<void>;
 }
 
@@ -34,6 +64,12 @@ export const useTrashStore = create<TrashState>()(
   persist(
     (set, get) => ({
       items: [],
+      addExistingItem: (item) => {
+        set((state) => {
+          const existing = state.items.some((i) => i.id === item.id);
+          return existing ? state : { items: [item, ...state.items] };
+        });
+      },
       
       addToTrash: async (item) => {
         const now = Date.now();
@@ -54,8 +90,8 @@ export const useTrashStore = create<TrashState>()(
         // Try to sync with Supabase
         try {
           const user = useAuthStore.getState().user;
-          if (user) {
-            await supabase.from('trash_items').insert({
+          if (user && canSyncTrash()) {
+            const { error } = await supabase.from('trash_items').insert({
               id: newItem.id,
               user_id: user.id,
               original_id: newItem.originalId,
@@ -69,30 +105,59 @@ export const useTrashStore = create<TrashState>()(
               work_name: newItem.workName,
               extra: newItem.extra
             });
+
+            handleTrashSyncError(error, 'sync trash item to Supabase');
           }
         } catch (error) {
-          console.error('Failed to sync trash item to Supabase:', error);
+          handleTrashSyncError(error, 'sync trash item to Supabase');
         }
       },
 
-      restoreItem: async (id) => {
+      getTrashItem: async (id: string) => {
         const state = get();
-        const item = state.items.find(i => i.id === id);
-        if (item) {
-          set((state) => ({
-            items: state.items.filter(i => i.id !== id)
-          }));
-          
+        let item = state.items.find(i => i.id === id);
+
+        if (!item) {
           try {
             const user = useAuthStore.getState().user;
-            if (user) {
-              await supabase.from('trash_items').delete().eq('id', id).eq('user_id', user.id);
+            if (user && canSyncTrash()) {
+              const { data, error } = await supabase
+                .from('trash_items')
+                .select('*')
+                .eq('id', id)
+                .eq('user_id', user.id)
+                .maybeSingle();
+
+              if (handleTrashSyncError(error, 'fetch trash item from Supabase')) {
+                return null;
+              }
+
+              if (data) {
+                const fetchedItem: TrashItem = {
+                  id: data.id,
+                  originalId: data.original_id,
+                  type: data.type,
+                  title: data.title,
+                  content: data.content,
+                  deletedAt: data.deleted_at,
+                  expiresAt: data.expires_at,
+                  originalPath: data.original_path,
+                  parentId: data.parent_id,
+                  workName: data.work_name,
+                  extra: data.extra
+                };
+                item = fetchedItem;
+                set((state) => ({
+                  items: [fetchedItem, ...state.items]
+                }));
+              }
             }
           } catch (error) {
-            console.error('Failed to delete trash item from Supabase:', error);
+            handleTrashSyncError(error, 'fetch trash item from Supabase');
           }
         }
-        return item;
+
+        return item || null;
       },
 
       permanentlyDelete: async (id) => {
@@ -102,11 +167,12 @@ export const useTrashStore = create<TrashState>()(
         
         try {
           const user = useAuthStore.getState().user;
-          if (user) {
-            await supabase.from('trash_items').delete().eq('id', id).eq('user_id', user.id);
+          if (user && canSyncTrash()) {
+            const { error } = await supabase.from('trash_items').delete().eq('id', id).eq('user_id', user.id);
+            handleTrashSyncError(error, 'delete trash item from Supabase');
           }
         } catch (error) {
-          console.error('Failed to delete trash item from Supabase:', error);
+          handleTrashSyncError(error, 'delete trash item from Supabase');
         }
       },
 
@@ -115,11 +181,12 @@ export const useTrashStore = create<TrashState>()(
         
         try {
           const user = useAuthStore.getState().user;
-          if (user) {
-            await supabase.from('trash_items').delete().eq('user_id', user.id);
+          if (user && canSyncTrash()) {
+            const { error } = await supabase.from('trash_items').delete().eq('user_id', user.id);
+            handleTrashSyncError(error, 'clear trash from Supabase');
           }
         } catch (error) {
-          console.error('Failed to clear trash from Supabase:', error);
+          handleTrashSyncError(error, 'clear trash from Supabase');
         }
       },
 
@@ -135,11 +202,12 @@ export const useTrashStore = create<TrashState>()(
           
           try {
             const user = useAuthStore.getState().user;
-            if (user) {
-              await supabase.from('trash_items').delete().in('id', expiredIds).eq('user_id', user.id);
+            if (user && canSyncTrash()) {
+              const { error } = await supabase.from('trash_items').delete().in('id', expiredIds).eq('user_id', user.id);
+              handleTrashSyncError(error, 'clear expired trash from Supabase');
             }
           } catch (error) {
-            console.error('Failed to clear expired trash from Supabase:', error);
+            handleTrashSyncError(error, 'clear expired trash from Supabase');
           }
         }
       },
@@ -148,14 +216,18 @@ export const useTrashStore = create<TrashState>()(
       syncFromSupabase: async () => {
         try {
           const user = useAuthStore.getState().user;
-          if (user) {
+          if (user && shouldProbeTrashSync()) {
             const { data, error } = await supabase
               .from('trash_items')
               .select('*')
               .eq('user_id', user.id)
               .order('deleted_at', { ascending: false });
-              
-            if (!error && data) {
+
+            if (handleTrashSyncError(error, 'sync trash items from Supabase')) {
+              return;
+            }
+
+            if (data) {
               const items: TrashItem[] = data.map((d: any) => ({
                 id: d.id,
                 originalId: d.original_id,
@@ -173,7 +245,7 @@ export const useTrashStore = create<TrashState>()(
             }
           }
         } catch (error) {
-          console.error('Failed to sync trash items from Supabase:', error);
+          handleTrashSyncError(error, 'sync trash items from Supabase');
         }
       }
     }),

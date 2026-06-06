@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import type { Edge, Node } from 'reactflow'
+import { v4 as uuidv4 } from 'uuid'
 
 export interface WorkspaceFileNode {
   id: string
@@ -64,6 +65,23 @@ const DEFAULT_MIND_MAPS: Array<{ editorType: EditorType; title: string; route: s
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 const isUuid = (value?: string | null) => !!value && uuidPattern.test(value)
+const isMissingRelationError = (error: any) => error?.code === 'PGRST205'
+let mindMapsCapability: boolean | null = null
+
+const getMindMapsCapability = () => mindMapsCapability
+
+const setMindMapsCapability = (available: boolean) => {
+  mindMapsCapability = available
+}
+
+const throwPersistenceError = (error: any, fallbackMessage: string) => {
+  if (!error) return
+  if (isMissingRelationError(error)) {
+    setMindMapsCapability(false)
+    throw new Error('数据库缺少 public.mind_maps 表，思维导图和作品树无法完整持久化，请先执行修复 SQL。')
+  }
+  throw new Error(error.message || fallbackMessage)
+}
 
 const stripHtml = (value: string | null | undefined) =>
   (value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
@@ -182,17 +200,108 @@ const enrichNodeForTrash = async (node: WorkspaceFileNode): Promise<WorkspaceFil
   }
 }
 
+export const loadWorkSnapshotForTrash = async (workId: string): Promise<WorkspaceFileNode | null> => {
+  if (!isUuid(workId)) return null
+
+  const [{ data: workRow, error: workError }, { data: chaptersData, error: chaptersError }, { data: mindMapsData, error: mindMapsError }] =
+    await Promise.all([
+      supabase.from('works').select('id, title').eq('id', workId).maybeSingle(),
+      supabase.from('chapters').select('id, title, content, chapter_number').eq('work_id', workId).order('chapter_number', { ascending: true }),
+      supabase
+        .from('mind_maps')
+        .select('id, title, editor_type, is_default, custom_icon, content, created_at')
+        .eq('work_id', workId)
+        .order('created_at', { ascending: true }),
+    ])
+
+  if (workError) throw workError
+  if (!workRow) return null
+  if (chaptersError) throw chaptersError
+  if (mindMapsError && !isMissingRelationError(mindMapsError)) throw mindMapsError
+
+  const chapters = (chaptersData || []) as Array<Pick<ChapterRow, 'id' | 'title' | 'content' | 'chapter_number'>>
+  const mindMaps = (mindMapsError && isMissingRelationError(mindMapsError)
+    ? []
+    : (mindMapsData || [])) as MindMapRow[]
+
+  const chapterNodes: WorkspaceFileNode[] = chapters.map((chapter) => ({
+    id: `ch-${chapter.id}`,
+    name: chapter.title,
+    type: 'file',
+    path: `/workspace/p/${workId}/story/${chapter.id}`,
+    savedContent: chapter.content,
+  }))
+
+  const defaultMindMaps: WorkspaceFileNode[] = DEFAULT_MIND_MAPS.flatMap((item) => {
+    const existing = mindMaps.find((mindMap) => mindMap.is_default && mindMap.editor_type === item.editorType)
+    if (!existing) return []
+
+    return [
+      {
+        id: existing.id,
+        name: existing.title,
+        type: 'mindmap' as const,
+        mindMapType: item.editorType,
+        customIcon: existing.custom_icon || undefined,
+        path: getStandardMindMapPath(workId, item.editorType),
+        savedMindMap: (existing.content || { nodes: [], edges: [] }) as any,
+      },
+    ]
+  })
+
+  const customMindMaps: WorkspaceFileNode[] = mindMaps
+    .filter((mindMap) => !mindMap.is_default)
+    .map((mindMap) => ({
+      id: `mm-custom-${mindMap.id}`,
+      name: mindMap.title,
+      type: 'mindmap',
+      mindMapType: mindMap.editor_type,
+      customIcon: mindMap.custom_icon || undefined,
+      path: `/workspace/p/${workId}/mindmap/${mindMap.id}`,
+      savedMindMap: (mindMap.content || { nodes: [], edges: [] }) as any,
+    }))
+
+  const workNode: WorkspaceFileNode = {
+    id: workId,
+    name: (workRow as any).title || '未命名作品',
+    type: 'folder',
+    children: [
+      {
+        id: `meta-${workId}`,
+        name: '作品相关',
+        type: 'folder',
+        children: [...defaultMindMaps, ...customMindMaps],
+      },
+      {
+        id: `chapters-${workId}`,
+        name: '正文情节',
+        type: 'folder',
+        children: chapterNodes,
+      },
+    ],
+  }
+
+  return workNode
+}
+
 const persistNestedNodes = async (
   workId: string,
   node: WorkspaceFileNode,
-  chapterNumberRef: { value: number }
+  chapterNumberRef: { value: number },
+  restoreMode: boolean = false
 ) => {
   if (node.type === 'file') {
-    const chapterId = getChapterIdFromPath(node.path)
+    let chapterId = getChapterIdFromPath(node.path)
+
+    // In restore mode, generate new IDs for chapters to avoid conflicts
+    if (restoreMode && !isUuid(chapterId)) {
+      chapterId = uuidv4()
+    }
+
     if (!isUuid(chapterId)) return
 
     const content = node.savedContent ?? readLocalChapterContent(node)
-    await supabase.from('chapters').upsert(
+    const { error } = await supabase.from('chapters').upsert(
       {
         id: chapterId,
         work_id: workId,
@@ -204,19 +313,26 @@ const persistNestedNodes = async (
       },
       { onConflict: 'id' }
     )
+    throwPersistenceError(error, '保存章节失败')
 
     chapterNumberRef.value += 1
     return
   }
 
   if (node.type === 'mindmap') {
-    const recordId = getMindMapRecordId(node)
+    let recordId = getMindMapRecordId(node)
     const isDefault = !node.path?.includes('/mindmap/')
     const route = node.path?.split('/').pop()
     const editorType = node.mindMapType || getEditorTypeFromRoute(route)
-    const content = readLocalMindMapContent(node)
+    const content = node.savedMindMap || readLocalMindMapContent(node)
 
-    await supabase.from('mind_maps').upsert(
+    // In restore mode, generate new IDs for default mindmaps based on new workId
+    // This avoids conflicts with existing mindmaps from other works
+    if (restoreMode && isDefault) {
+      recordId = getStandardMindMapId(workId, editorType)
+    }
+
+    const { error } = await supabase.from('mind_maps').upsert(
       {
         id: recordId,
         work_id: workId,
@@ -228,6 +344,8 @@ const persistNestedNodes = async (
       },
       { onConflict: 'id' }
     )
+    throwPersistenceError(error, '保存思维导图失败')
+    setMindMapsCapability(true)
 
     return
   }
@@ -235,25 +353,35 @@ const persistNestedNodes = async (
   if (!node.children?.length) return
 
   for (const child of node.children) {
-    await persistNestedNodes(workId, child, chapterNumberRef)
+    await persistNestedNodes(workId, child, chapterNumberRef, restoreMode)
   }
 }
 
 export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNode[]> => {
+  const canUseMindMaps = getMindMapsCapability() !== false
+  const mindMapsRequest = canUseMindMaps
+    ? supabase.from('mind_maps').select('*').order('created_at', { ascending: true })
+    : Promise.resolve({ data: [], error: null })
+
   const [{ data: worksData, error: worksError }, { data: chaptersData, error: chaptersError }, { data: mindMapsData, error: mindMapsError }] =
     await Promise.all([
       supabase.from('works').select('*').eq('user_id', userId).order('created_at', { ascending: true }),
       supabase.from('chapters').select('*').order('chapter_number', { ascending: true }),
-      supabase.from('mind_maps').select('*').order('created_at', { ascending: true }),
+      mindMapsRequest,
     ])
 
   if (worksError) throw worksError
   if (chaptersError) throw chaptersError
-  if (mindMapsError) throw mindMapsError
+  if (mindMapsError && !isMissingRelationError(mindMapsError)) throw mindMapsError
+  if (mindMapsError && isMissingRelationError(mindMapsError)) {
+    setMindMapsCapability(false)
+  } else if (canUseMindMaps) {
+    setMindMapsCapability(true)
+  }
 
   const works = (worksData || []) as WorkRow[]
   const chapters = (chaptersData || []) as ChapterRow[]
-  const mindMaps = (mindMapsData || []) as MindMapRow[]
+  const mindMaps = (mindMapsError && isMissingRelationError(mindMapsError) ? [] : (mindMapsData || [])) as MindMapRow[]
 
   const children: WorkspaceFileNode[] = works.map((work) => {
     const workChapters = chapters
@@ -267,17 +395,20 @@ export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNo
       }))
 
     const workMindMaps = mindMaps.filter((mindMap) => mindMap.work_id === work.id)
-    const defaultMindMaps: WorkspaceFileNode[] = DEFAULT_MIND_MAPS.map((item) => {
+    const defaultMindMaps: WorkspaceFileNode[] = DEFAULT_MIND_MAPS.flatMap((item) => {
       const existing = workMindMaps.find((mindMap) => mindMap.is_default && mindMap.editor_type === item.editorType)
+      if (!existing) return []
 
-      return {
-        id: existing?.id || getStandardMindMapId(work.id, item.editorType),
-        name: existing?.title || item.title,
-        type: 'mindmap' as const,
-        mindMapType: item.editorType,
-        customIcon: existing?.custom_icon || undefined,
-        path: getStandardMindMapPath(work.id, item.editorType),
-      }
+      return [
+        {
+          id: existing.id,
+          name: existing.title,
+          type: 'mindmap' as const,
+          mindMapType: item.editorType,
+          customIcon: existing.custom_icon || undefined,
+          path: getStandardMindMapPath(work.id, item.editorType),
+        },
+      ]
     })
 
     const customMindMaps = workMindMaps
@@ -318,7 +449,7 @@ export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNo
 export const persistWorkTree = async (userId: string, workNode: WorkspaceFileNode) => {
   if (!isUuid(workNode.id)) return
 
-  await supabase.from('works').upsert(
+  const { error } = await supabase.from('works').upsert(
     {
       id: workNode.id,
       user_id: userId,
@@ -329,6 +460,7 @@ export const persistWorkTree = async (userId: string, workNode: WorkspaceFileNod
     },
     { onConflict: 'id' }
   )
+  throwPersistenceError(error, '保存作品失败')
 
   const chapterNumberRef = { value: 1 }
   for (const child of workNode.children || []) {
@@ -340,23 +472,28 @@ export const deleteWorkspaceNode = async (node: WorkspaceFileNode) => {
   if (node.type === 'file') {
     const chapterId = getChapterIdFromPath(node.path)
     if (chapterId) {
-      await supabase.from('chapters').delete().eq('id', chapterId)
+      const { error } = await supabase.from('chapters').delete().eq('id', chapterId)
+      throwPersistenceError(error, '删除章节失败')
     }
     return
   }
 
   if (node.type === 'mindmap') {
     const recordId = getMindMapRecordId(node)
-    await supabase.from('mind_maps').delete().eq('id', recordId)
+    const { error } = await supabase.from('mind_maps').delete().eq('id', recordId)
+    throwPersistenceError(error, '删除思维导图失败')
     return
   }
 
   if (isUuid(node.id)) {
-    await supabase.from('works').delete().eq('id', node.id)
+    const { error } = await supabase.from('works').delete().eq('id', node.id)
+    throwPersistenceError(error, '删除作品失败')
   }
 }
 
 export const loadChapterContent = async (chapterId: string) => {
+  if (!isUuid(chapterId)) return null
+
   const { data, error } = await supabase
     .from('chapters')
     .select('content')
@@ -368,7 +505,9 @@ export const loadChapterContent = async (chapterId: string) => {
 }
 
 export const saveChapterContent = async (workId: string, chapterId: string, title: string, content: string) => {
-  await supabase.from('chapters').upsert(
+  if (!isUuid(workId) || !isUuid(chapterId)) return
+
+  const { error } = await supabase.from('chapters').upsert(
     {
       id: chapterId,
       work_id: workId,
@@ -379,10 +518,12 @@ export const saveChapterContent = async (workId: string, chapterId: string, titl
     },
     { onConflict: 'id' }
   )
+  throwPersistenceError(error, '保存正文失败')
 }
 
 export const loadMindMapContent = async (params: { workId: string; id?: string; type?: EditorType }) => {
   const { workId, id, type } = params
+  if (getMindMapsCapability() === false) return null
 
   if (id) {
     const { data, error } = await supabase
@@ -392,7 +533,14 @@ export const loadMindMapContent = async (params: { workId: string; id?: string; 
       .eq('id', id)
       .maybeSingle()
 
-    if (error) throw error
+    if (error) {
+      if (isMissingRelationError(error)) {
+        setMindMapsCapability(false)
+        return null
+      }
+      throw error
+    }
+    setMindMapsCapability(true)
     return data?.content || null
   }
 
@@ -406,12 +554,20 @@ export const loadMindMapContent = async (params: { workId: string; id?: string; 
     .eq('editor_type', type)
     .maybeSingle()
 
-  if (error) throw error
+  if (error) {
+    if (isMissingRelationError(error)) {
+      setMindMapsCapability(false)
+      return null
+    }
+    throw error
+  }
+  setMindMapsCapability(true)
   return data?.content || null
 }
 
 export const loadMindMapRecord = async (params: { workId: string; id?: string; type?: EditorType }) => {
   const { workId, id, type } = params
+  if (getMindMapsCapability() === false) return null
 
   if (id) {
     const { data, error } = await supabase
@@ -421,7 +577,14 @@ export const loadMindMapRecord = async (params: { workId: string; id?: string; t
       .eq('id', id)
       .maybeSingle()
 
-    if (error) throw error
+    if (error) {
+      if (isMissingRelationError(error)) {
+        setMindMapsCapability(false)
+        return null
+      }
+      throw error
+    }
+    setMindMapsCapability(true)
     return data ? { content: data.content, updatedAt: data.updated_at } : null
   }
 
@@ -435,7 +598,14 @@ export const loadMindMapRecord = async (params: { workId: string; id?: string; t
     .eq('editor_type', type)
     .maybeSingle()
 
-  if (error) throw error
+  if (error) {
+    if (isMissingRelationError(error)) {
+      setMindMapsCapability(false)
+      return null
+    }
+    throw error
+  }
+  setMindMapsCapability(true)
   return data ? { content: data.content, updatedAt: data.updated_at } : null
 }
 
@@ -449,8 +619,10 @@ export const saveMindMapContent = async (params: {
   content: { nodes: Node[]; edges: Edge[] }
 }) => {
   const { workId, nodeId, title, type, isDefault, customIcon, content } = params
-
-  await supabase.from('mind_maps').upsert(
+  if (getMindMapsCapability() === false) {
+    throw new Error('数据库缺少 public.mind_maps 表，思维导图云端保存不可用，请先执行修复 SQL。')
+  }
+  const { error } = await supabase.from('mind_maps').upsert(
     {
       id: nodeId,
       work_id: workId,
@@ -463,6 +635,8 @@ export const saveMindMapContent = async (params: {
     },
     { onConflict: 'id' }
   )
+  throwPersistenceError(error, '保存思维导图失败')
+  setMindMapsCapability(true)
 }
 
 export const createTrashSnapshot = async (node: WorkspaceFileNode) => enrichNodeForTrash(node)
@@ -490,6 +664,35 @@ export const findWorkNodeForTarget = (nodes: WorkspaceFileNode[], targetId: stri
   }
 
   return null
+}
+
+export const restoreWorkFromTrash = async (userId: string, workSnapshot: WorkspaceFileNode): Promise<void> => {
+  if (!isUuid(workSnapshot.id)) return;
+
+  // Generate new ID for the restored work to avoid conflicts
+  const newWorkId = uuidv4();
+
+  // Create new work record
+  const { error: workError } = await supabase.from('works').upsert(
+    {
+      id: newWorkId,
+      user_id: userId,
+      title: workSnapshot.name,
+      description: null,
+      status: 'draft',
+      word_count: 0,
+    },
+    { onConflict: 'id' }
+  )
+  throwPersistenceError(workError, '恢复作品失败');
+
+  const chapterNumberRef = { value: 1 };
+
+  // Restore all children (chapters, mindmaps, etc.)
+  // Pass restoreMode=true to regenerate IDs for default mindmaps
+  for (const child of workSnapshot.children || []) {
+    await persistNestedNodes(newWorkId, child, chapterNumberRef, true)
+  }
 }
 
 export const getMindMapTitleFromRoute = getDefaultMindMapTitle

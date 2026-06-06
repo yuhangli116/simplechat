@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, PenTool, Eye, EyeOff, User } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/useAuthStore';
+import { guestDemoFileStructure, useFileStore } from '@/store/useFileStore';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -11,9 +12,17 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [emailError, setEmailError] = useState('');
   const navigate = useNavigate();
-  const { setUser, setProfile, setDiamondBalance } = useAuthStore();
+  const { user, session, setUser, setSession, setProfile, setDiamondBalance, fetchProfile } = useAuthStore();
+  const { setFiles } = useFileStore();
   const canSubmit = email.trim().length > 0 && password.trim().length > 0;
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const defaultWorkspacePath = '/workspace';
+
+  useEffect(() => {
+    if (session?.user || user) {
+      navigate(defaultWorkspacePath, { replace: true });
+    }
+  }, [defaultWorkspacePath, navigate, session, user]);
 
   const handleGuestLogin = () => {
     // Manually set guest state
@@ -33,6 +42,7 @@ export default function Login() {
         diamond_balance: 9999
     });
     setDiamondBalance(9999);
+    setFiles(JSON.parse(JSON.stringify(guestDemoFileStructure)));
     
     alert('已进入访客体验模式');
     navigate('/workspace');
@@ -40,7 +50,10 @@ export default function Login() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!emailRegex.test(email)) {
+    if (loading) return;
+
+    const normalizedEmail = email.trim();
+    if (!emailRegex.test(normalizedEmail)) {
       setEmailError('请输入有效的邮箱地址');
       alert('请输入有效的邮箱地址');
       return;
@@ -48,19 +61,29 @@ export default function Login() {
     setLoading(true);
     
     try {
+      const signInStartedAt = performance.now();
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
+        email: normalizedEmail,
         password,
       });
+      console.log('[Auth Timing] signInWithPassword ms:', Math.round(performance.now() - signInStartedAt));
       if (error) throw error;
       
-      // Explicitly update store immediately to avoid delay
-      if (data.user) {
-          setUser(data.user);
-          // fetchProfile will be triggered by App.tsx subscription
+      const loggedInUser = data.user ?? data.session?.user ?? null;
+      if (data.session) {
+        setSession(data.session);
       }
-      
-      navigate('/workspace');
+      if (loggedInUser) {
+        setUser(loggedInUser);
+      }
+
+      // Fetch profile in the background so the page can enter workspace immediately.
+      const fetchProfileStartedAt = performance.now();
+      void fetchProfile().finally(() => {
+        console.log('[Auth Timing] login page fetchProfile total ms:', Math.round(performance.now() - fetchProfileStartedAt));
+      });
+
+      navigate(defaultWorkspacePath, { replace: true });
     } catch (error: any) {
       console.error('Error logging in:', error);
       

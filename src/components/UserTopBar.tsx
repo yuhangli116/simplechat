@@ -47,7 +47,8 @@ const UserTopBar = () => {
   }, []);
 
   const handleLogout = async () => {
-    await signOut();
+    setIsDropdownOpen(false);
+    void signOut();
     navigate('/login');
   };
 
@@ -76,7 +77,7 @@ const UserTopBar = () => {
   }
 
   return (
-    <div className="relative" ref={dropdownRef}>
+    <div className="relative z-[1100]" ref={dropdownRef}>
       <button 
         onClick={() => setIsDropdownOpen(!isDropdownOpen)}
         className="flex items-center gap-3 p-1 pl-4 rounded-full border border-gray-100 bg-white hover:bg-gray-50 hover:shadow-md transition-all duration-300 group"
@@ -116,7 +117,7 @@ const UserTopBar = () => {
 
       {/* Dropdown Menu */}
       {isDropdownOpen && (
-        <div className="absolute right-0 top-full mt-3 w-72 bg-white/90 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/50 overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-50 transform origin-top-right">
+        <div className="absolute right-0 top-full mt-3 w-72 bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-[1101] transform origin-top-right">
           {/* Header */}
           <div className="p-5 bg-gradient-to-br from-purple-50/80 to-indigo-50/80 border-b border-gray-100">
             <div className="flex items-center gap-4">
@@ -133,7 +134,7 @@ const UserTopBar = () => {
               </div>
             </div>
             
-            <div className="mt-4 bg-white/80 p-3 rounded-xl border border-purple-100 shadow-sm backdrop-blur-sm">
+            <div className="mt-4 bg-white p-3 rounded-xl border border-purple-100 shadow-sm">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-medium text-gray-700">我的钻石</span>
                 <span className="text-base font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600 flex items-center gap-1.5">

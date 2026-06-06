@@ -52,7 +52,7 @@ const getDefaultData = (type: string) => {
   const rootId = 'root';
   let rootLabel = '作品大纲';
   if (type === 'world') rootLabel = '世界设定';
-  if (type === 'character') rootLabel = '角色关系';
+  if (type === 'character') rootLabel = '角色塑造';
   if (type === 'event') rootLabel = '事件细纲';
 
   return {

@@ -5,6 +5,8 @@ import { getEffectiveProfileDiamonds } from '@/services/billing'
 
 const GUEST_BALANCE_KEY = 'guest-diamond-balance'
 const GUEST_DEFAULT_BALANCE = 9999
+let inflightProfileUserId: string | null = null
+let inflightProfilePromise: Promise<void> | null = null
 
 const getGuestBalance = (): number => {
   if (typeof window === 'undefined') return GUEST_DEFAULT_BALANCE
@@ -84,90 +86,107 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
         return;
     }
-    
-    // Try to fetch profile
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .maybeSingle();
-      
-    if (error) {
-        console.error('Error fetching profile:', error);
-        return;
+
+    if (inflightProfilePromise && inflightProfileUserId === user.id) {
+      return inflightProfilePromise
     }
-      
-    if (data) {
-      const effective = getEffectiveProfileDiamonds({
-        member_diamonds: data.member_diamonds,
-        permanent_diamonds:
-          data.permanent_diamonds !== undefined
-            ? Number(data.permanent_diamonds)
-            : data.diamond_balance !== undefined
-              ? Number(data.diamond_balance)
-              : Number(data.word_balance ?? 0),
-        membership_type: data.membership_type,
-        membership_expires_at: data.membership_expires_at,
-      });
-      
-      set({ 
-        profile: {
-            ...data,
-            membership_type: effective.membershipType as Profile['membership_type'],
-            membership_expires_at: effective.membershipExpiresAt,
-            member_diamonds: effective.memberDiamonds,
-            permanent_diamonds: effective.permanentDiamonds,
-            diamond_balance: effective.totalDiamonds
-        }, 
-        diamondBalance: effective.totalDiamonds || 0 
-      });
-    } else {
-      // Profile missing! Create it.
-      console.log('Profile missing, creating new profile for user:', user.id);
-      
-      const newProfile = {
-          id: user.id,
-          username: user.user_metadata?.name || user.email?.split('@')[0] || 'User',
-          avatar_url: user.user_metadata?.avatar_url || '',
-          membership_type: 'free',
-      };
-      
-      const { data: insertedData, error: insertError } = await supabase
-          .from('profiles')
-          .insert([newProfile])
-          .select()
-          .single();
-          
-      if (insertError) {
-          console.error('Error creating missing profile:', insertError);
-      } else if (insertedData) {
-           const effective = getEffectiveProfileDiamonds({
-             member_diamonds: insertedData.member_diamonds,
-             permanent_diamonds:
-               insertedData.permanent_diamonds !== undefined
-                 ? Number(insertedData.permanent_diamonds)
-                 : insertedData.diamond_balance !== undefined
-                   ? Number(insertedData.diamond_balance)
-                   : Number(insertedData.word_balance ?? 0),
-             membership_type: insertedData.membership_type,
-             membership_expires_at: insertedData.membership_expires_at,
-           });
-           set({ 
-             profile: {
-                 ...insertedData,
-                 membership_type: effective.membershipType as Profile['membership_type'],
-                 membership_expires_at: effective.membershipExpiresAt,
-                 member_diamonds: effective.memberDiamonds,
-                 permanent_diamonds: effective.permanentDiamonds,
-                 diamond_balance: effective.totalDiamonds
-             }, 
-             diamondBalance: effective.totalDiamonds || 0 
-           });
+
+    inflightProfileUserId = user.id
+    inflightProfilePromise = (async () => {
+      const profileFetchStartedAt = performance.now()
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .maybeSingle();
+      console.log('[Auth Timing] fetchProfile query ms:', Math.round(performance.now() - profileFetchStartedAt))
+        
+      if (error) {
+          console.error('Error fetching profile:', error);
+          return;
       }
-    }
+        
+      if (data) {
+        const effective = getEffectiveProfileDiamonds({
+          member_diamonds: data.member_diamonds,
+          permanent_diamonds:
+            data.permanent_diamonds !== undefined
+              ? Number(data.permanent_diamonds)
+              : data.diamond_balance !== undefined
+                ? Number(data.diamond_balance)
+                : Number(data.word_balance ?? 0),
+          membership_type: data.membership_type,
+          membership_expires_at: data.membership_expires_at,
+        });
+        
+        set({ 
+          profile: {
+              ...data,
+              membership_type: effective.membershipType as Profile['membership_type'],
+              membership_expires_at: effective.membershipExpiresAt,
+              member_diamonds: effective.memberDiamonds,
+              permanent_diamonds: effective.permanentDiamonds,
+              diamond_balance: effective.totalDiamonds
+          }, 
+          diamondBalance: effective.totalDiamonds || 0 
+        });
+      } else {
+        // Profile missing! Create it.
+        console.log('Profile missing, creating new profile for user:', user.id);
+        
+        const newProfile = {
+            id: user.id,
+            username: user.user_metadata?.name || user.email?.split('@')[0] || 'User',
+            avatar_url: user.user_metadata?.avatar_url || '',
+            membership_type: 'free',
+        };
+        
+        const { data: insertedData, error: insertError } = await supabase
+            .from('profiles')
+            .insert([newProfile])
+            .select()
+            .single();
+            
+        if (insertError) {
+            console.error('Error creating missing profile:', insertError);
+        } else if (insertedData) {
+             const effective = getEffectiveProfileDiamonds({
+               member_diamonds: insertedData.member_diamonds,
+               permanent_diamonds:
+                 insertedData.permanent_diamonds !== undefined
+                   ? Number(insertedData.permanent_diamonds)
+                   : insertedData.diamond_balance !== undefined
+                     ? Number(insertedData.diamond_balance)
+                     : Number(insertedData.word_balance ?? 0),
+               membership_type: insertedData.membership_type,
+               membership_expires_at: insertedData.membership_expires_at,
+             });
+             set({ 
+               profile: {
+                   ...insertedData,
+                   membership_type: effective.membershipType as Profile['membership_type'],
+                   membership_expires_at: effective.membershipExpiresAt,
+                   member_diamonds: effective.memberDiamonds,
+                   permanent_diamonds: effective.permanentDiamonds,
+                   diamond_balance: effective.totalDiamonds
+               }, 
+               diamondBalance: effective.totalDiamonds || 0 
+             });
+        }
+      }
+    })().finally(() => {
+      inflightProfileUserId = null
+      inflightProfilePromise = null
+    })
+
+    return inflightProfilePromise
   },
   signOut: async () => {
-    await supabase.auth.signOut()
     set({ user: null, session: null, profile: null, diamondBalance: 0 })
+    try {
+      await supabase.auth.signOut()
+    } catch {
+      return
+    }
   },
 }))

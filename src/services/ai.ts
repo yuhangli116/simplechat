@@ -63,7 +63,21 @@ const applyServerBalance = (response: AIResponse) => {
   }
 };
 
+const getStoreUserId = () => {
+  const storeUserId = useAuthStore.getState().user?.id;
+  return typeof storeUserId === 'string' ? storeUserId : '';
+};
+
+const resolveUserId = (userId?: string) => {
+  if (userId && isUuid(userId)) return userId;
+  const fallback = getStoreUserId();
+  if (fallback && isUuid(fallback)) return fallback;
+  return '';
+};
+
 const getAccessToken = async () => {
+  const token = useAuthStore.getState().session?.access_token;
+  if (token) return token;
   const { data } = await supabase.auth.getSession();
   return data.session?.access_token || '';
 };
@@ -150,7 +164,8 @@ export const aiService = {
     billingGroupId?: string
   ): Promise<AIResponse> {
     if (!context || context.length < 10) return { content: context };
-    if (!userId || !isUuid(userId)) {
+    const resolvedUserId = resolveUserId(userId);
+    if (!resolvedUserId) {
       return { content: '', error: '请先登录后再使用 AI 创作功能。' };
     }
 
@@ -160,7 +175,12 @@ export const aiService = {
     const config = MODEL_PRICING[modelKey];
 
     try {
-      const response = await callAIEndpoint('/api/ai/summarize', { context, model: modelKey, userId, billingGroupId });
+      const response = await callAIEndpoint('/api/ai/summarize', {
+        context,
+        model: modelKey,
+        userId: resolvedUserId,
+        billingGroupId,
+      });
       const content = response.content;
       const promptTokens = response.usage?.input_tokens ?? estimateTokens(context);
       const completionTokens = response.usage?.output_tokens ?? estimateTokens(content);
@@ -194,7 +214,8 @@ export const aiService = {
   },
 
   async generateText(request: AIRequest): Promise<AIResponse> {
-    if (!request.userId || !isUuid(request.userId)) {
+    const resolvedUserId = resolveUserId(request.userId);
+    if (!resolvedUserId) {
       return { content: '', error: '请先登录后再使用 AI 创作功能。' };
     }
 
@@ -207,7 +228,7 @@ export const aiService = {
         prompt: request.prompt,
         model: request.model,
         context: request.context,
-        userId: request.userId,
+        userId: resolvedUserId,
         billingGroupId: request.billingGroupId,
       });
       const content = response.content;

@@ -21,7 +21,6 @@ import {
   Box,
   Circle,
   Hexagon,
-  Download,
   Package
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -30,8 +29,10 @@ import CreateWorkDialog, { CreateWorkData } from './CreateWorkDialog';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useFileStore, FileNode, initialFileStructure } from '@/store/useFileStore';
 import { useTrashStore } from '@/store/useTrashStore';
-import { createTrashSnapshot, deleteWorkspaceNode, findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
+import { useToastStore } from '@/store/useToastStore';
+import { createTrashSnapshot, deleteWorkspaceNode, findWorkNodeForTarget, loadWorkspaceTree, loadWorkSnapshotForTrash, persistWorkTree } from '@/lib/workspacePersistence';
 import { createZip } from '@/lib/fileExport';
+import { supabase } from '@/lib/supabase';
 
 export type { FileNode };
 
@@ -50,6 +51,54 @@ type DragPayload = {
 };
 
 const DRAG_MIME = 'application/x-simplechat-filetree';
+
+const findFirstNavigablePath = (nodes: FileNode[] = []): string | null => {
+  for (const node of nodes) {
+    if (node.path) return node.path;
+    if (node.children?.length) {
+      const childPath = findFirstNavigablePath(node.children);
+      if (childPath) return childPath;
+    }
+  }
+
+  return null;
+};
+
+const getPreferredWorkPath = (workNode?: FileNode | null): string | null => {
+  if (!workNode) return null;
+
+  const metaFolder = workNode.children?.find((child) => child.id === `meta-${workNode.id}` || child.name === '作品相关');
+  const outlineNode = metaFolder?.children?.find((child) => child.path?.endsWith('/outline'));
+
+  if (outlineNode?.path) {
+    return outlineNode.path;
+  }
+
+  return findFirstNavigablePath(workNode.children || []);
+};
+
+const findNodeNameByPath = (nodes: FileNode[] = [], targetPath: string): string | null => {
+  for (const node of nodes) {
+    if (node.path === targetPath) return node.name;
+    if (node.children?.length) {
+      const child = findNodeNameByPath(node.children, targetPath);
+      if (child) return child;
+    }
+  }
+  return null;
+};
+
+const createDefaultMindMapContent = (label: string) => ({
+  nodes: [
+    {
+      id: 'root',
+      type: 'mindMap',
+      data: { label, isRoot: true },
+      position: { x: 250, y: 250 },
+    },
+  ],
+  edges: [],
+});
 
 const readDragPayload = (event: React.DragEvent): DragPayload | null => {
   const raw = event.dataTransfer.getData(DRAG_MIME) || event.dataTransfer.getData('text/plain');
@@ -432,14 +481,16 @@ const FileTreeNode = ({
 
 const FileTree = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuthStore();
+  const { addToast } = useToastStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [dragging, setDragging] = useState<DragPayload | null>(null);
   const [dragOver, setDragOver] = useState<{ targetId: string; position: 'before' | 'after' | 'append' } | null>(null);
   
-  const { files, setFiles, removeNode } = useFileStore();
-  const { addToTrash } = useTrashStore();
+  const { files, setFiles, setCreateWorkInProgress } = useFileStore();
+  const { addToTrash, addExistingItem } = useTrashStore();
 
   const refreshWorkspace = async () => {
     if (!user) return;
@@ -448,6 +499,31 @@ const FileTree = () => {
       setFiles(nextFiles as FileNode[]);
     } catch (error) {
       console.error('Failed to refresh workspace:', error);
+    }
+  };
+
+  const commitWorkTreeChange = async (nextFiles: FileNode[], targetId: string) => {
+    if (!user) {
+      setFiles(nextFiles);
+      return true;
+    }
+
+    const workNode = findWorkNodeForTarget(nextFiles as any, targetId);
+    if (!workNode) {
+      addToast('未找到对应作品，无法保存本次修改', 'error');
+      return false;
+    }
+
+    try {
+      await persistWorkTree(user.id, workNode as any);
+      setFiles(nextFiles);
+      await refreshWorkspace();
+      return true;
+    } catch (error) {
+      console.error('Failed to persist work tree:', error);
+      const message = error instanceof Error ? error.message : '保存作品树失败';
+      addToast(message, 'error');
+      return false;
     }
   };
 
@@ -501,15 +577,7 @@ const FileTree = () => {
     if (payload.parentId !== targetParentId) return;
 
     const nextFiles = reorderWithinParent(files, targetParentId, payload.nodeId, targetId, insertAfter);
-    setFiles(nextFiles);
-
-    if (user) {
-      const workNode = findWorkNodeForTarget(nextFiles as any, targetParentId);
-      if (workNode) {
-        await persistWorkTree(user.id, workNode as any);
-        await refreshWorkspace();
-      }
-    }
+    await commitWorkTreeChange(nextFiles, targetParentId);
   };
 
   const handleAddChapter = async (parentId: string) => {
@@ -535,9 +603,13 @@ const FileTree = () => {
     const newChapterId = uuidv4();
     // Assuming structure: /workspace/p/{workId}/story/{chapterId}
     // We need to find the workId. The parentId is typically 'chapters-{workId}'.
-    let workId = 'book-1'; // Default fallback
+    let workId: string | null = null;
     if (parentNode && parentNode.id.startsWith('chapters-')) {
        workId = parentNode.id.replace('chapters-', '');
+    }
+    if (!workId) {
+      addToast('未找到所属作品，创建章节失败', 'error');
+      return;
     }
 
     const newChapter: FileNode = {
@@ -566,14 +638,9 @@ const FileTree = () => {
     };
 
     const nextFiles = addNodeRecursive(files);
-    setFiles(nextFiles);
-
-    if (user) {
-      const workNode = findWorkNodeForTarget(nextFiles as any, parentId);
-      if (workNode) {
-        await persistWorkTree(user.id, workNode as any);
-        await refreshWorkspace();
-      }
+    const committed = await commitWorkTreeChange(nextFiles, parentId);
+    if (!committed && user) {
+      return;
     }
 
     navigate(newChapter.path!, { state: { fileName: newChapter.name } });
@@ -585,10 +652,14 @@ const FileTree = () => {
     const name = `新建大纲${childCount + 1}`;
     const newId = uuidv4();
     
-    let workId = 'book-1';
+    let workId: string | null = null;
     // parentId is like meta-{workId}
     if (parentNode && parentNode.id.startsWith('meta-')) {
         workId = parentNode.id.replace('meta-', '');
+    }
+    if (!workId) {
+      addToast('未找到所属作品，创建大纲失败', 'error');
+      return;
     }
 
     const newMindMap: FileNode = {
@@ -619,15 +690,7 @@ const FileTree = () => {
     };
 
     const nextFiles = addNodeRecursive(files);
-    setFiles(nextFiles);
-
-    if (user) {
-      const workNode = findWorkNodeForTarget(nextFiles as any, parentId);
-      if (workNode) {
-        await persistWorkTree(user.id, workNode as any);
-        await refreshWorkspace();
-      }
-    }
+    await commitWorkTreeChange(nextFiles, parentId);
   };
 
   // Helper to find a node by ID (for getting workId)
@@ -655,20 +718,49 @@ const FileTree = () => {
 
   const handleCreateWorkSubmit = async (data: CreateWorkData) => {
     const newWorkId = uuidv4();
+    setCreateWorkInProgress(true);
     
     // 1. Create Mind Map Nodes
     const mindMapNodes: FileNode[] = [];
     if (data.selectedPages.includes('outline')) {
-      mindMapNodes.push({ id: `mm-outline-${newWorkId}`, name: '作品大纲', type: 'mindmap', mindMapType: 'outline', path: `/workspace/p/${newWorkId}/outline` });
+      mindMapNodes.push({
+        id: `mm-outline-${newWorkId}`,
+        name: '作品大纲',
+        type: 'mindmap',
+        mindMapType: 'outline',
+        path: `/workspace/p/${newWorkId}/outline`,
+        savedMindMap: createDefaultMindMapContent('作品大纲'),
+      });
     }
     if (data.selectedPages.includes('world')) {
-      mindMapNodes.push({ id: `mm-world-${newWorkId}`, name: '世界设定', type: 'mindmap', mindMapType: 'world', path: `/workspace/p/${newWorkId}/world` });
+      mindMapNodes.push({
+        id: `mm-world-${newWorkId}`,
+        name: '世界设定',
+        type: 'mindmap',
+        mindMapType: 'world',
+        path: `/workspace/p/${newWorkId}/world`,
+        savedMindMap: createDefaultMindMapContent('世界设定'),
+      });
     }
     if (data.selectedPages.includes('character')) {
-      mindMapNodes.push({ id: `mm-char-${newWorkId}`, name: '角色塑造', type: 'mindmap', mindMapType: 'character', path: `/workspace/p/${newWorkId}/characters` });
+      mindMapNodes.push({
+        id: `mm-character-${newWorkId}`,
+        name: '角色塑造',
+        type: 'mindmap',
+        mindMapType: 'character',
+        path: `/workspace/p/${newWorkId}/characters`,
+        savedMindMap: createDefaultMindMapContent('角色塑造'),
+      });
     }
     if (data.selectedPages.includes('event')) {
-      mindMapNodes.push({ id: `mm-event-${newWorkId}`, name: '事件细纲', type: 'mindmap', mindMapType: 'event', path: `/workspace/p/${newWorkId}/events` });
+      mindMapNodes.push({
+        id: `mm-event-${newWorkId}`,
+        name: '事件细纲',
+        type: 'mindmap',
+        mindMapType: 'event',
+        path: `/workspace/p/${newWorkId}/events`,
+        savedMindMap: createDefaultMindMapContent('事件细纲'),
+      });
     }
 
     // 2. Create Chapter Nodes
@@ -714,12 +806,35 @@ const FileTree = () => {
     } else {
       newFiles[0].children = [newWork];
     }
-    setFiles(newFiles);
-
     if (user) {
-      await persistWorkTree(user.id, newWork as any);
-      await refreshWorkspace();
+      try {
+        await persistWorkTree(user.id, newWork as any);
+        setFiles(newFiles);
+        await refreshWorkspace();
+      } catch (error) {
+        console.error('Failed to create work:', error);
+        try {
+          await deleteWorkspaceNode(newWork as any);
+        } catch (rollbackError) {
+          console.error('Failed to rollback work creation:', rollbackError);
+        }
+        const message = error instanceof Error ? error.message : '创建作品失败';
+        addToast(message, 'error');
+        setCreateWorkInProgress(false);
+        return;
+      }
+    } else {
+      setFiles(newFiles);
     }
+
+    setShowCreateDialog(false);
+    const targetPath = getPreferredWorkPath(newWork) || '/workspace';
+    const fileName = findNodeNameByPath([newWork], targetPath);
+    navigate(targetPath, {
+      replace: true,
+      state: fileName ? { fileName } : undefined
+    });
+    setCreateWorkInProgress(false);
   };
 
   const handleRename = async (id: string, newName: string) => {
@@ -736,15 +851,7 @@ const FileTree = () => {
     };
 
     const nextFiles = updateNodeRecursive(files);
-    setFiles(nextFiles);
-
-    if (user) {
-      const workNode = findWorkNodeForTarget(nextFiles as any, id);
-      if (workNode) {
-        await persistWorkTree(user.id, workNode as any);
-        await refreshWorkspace();
-      }
-    }
+    await commitWorkTreeChange(nextFiles, id);
   };
 
   const handleDelete = async (targetNode: FileNode) => {
@@ -779,20 +886,20 @@ const FileTree = () => {
       workName = targetNode.name;
     }
 
-    const trashSnapshot = await createTrashSnapshot(targetNode as any);
+    const isDeletingWork = parentId === 'root';
+    const workIdForSnapshot = isDeletingWork ? targetNode.id : null;
+    const now = Date.now();
+    const expiresAt = now + 30 * 24 * 60 * 60 * 1000;
+    const trashId = uuidv4();
 
-    addToTrash({
-      originalId: targetNode.id,
-      type: targetNode.type === 'file' ? 'chapter' : targetNode.type === 'mindmap' ? 'mindmap' : targetNode.id === parentId ? 'work' : 'folder', // Approximate type mapping
-      title: targetNode.name,
-      content: trashSnapshot,
-      originalPath: targetNode.path,
-      parentId,
-      workName,
-      extra: {
-        isFullWork: parentId === 'root'
-      }
-    });
+    const trashSnapshot = isDeletingWork && user && workIdForSnapshot
+      ? await loadWorkSnapshotForTrash(workIdForSnapshot)
+      : await createTrashSnapshot(targetNode as any);
+
+    if (isDeletingWork && user && !trashSnapshot) {
+      addToast('未找到作品数据，无法移入回收站', 'error');
+      return;
+    }
 
     const deleteNodeRecursive = (nodes: FileNode[]): FileNode[] => {
       return nodes.filter(node => node.id !== targetNode.id).map(node => {
@@ -804,11 +911,99 @@ const FileTree = () => {
     };
 
     const nextFiles = deleteNodeRecursive(files);
+    const currentWorks = files?.[0]?.children || [];
+    const deletedWorkIndex = currentWorks.findIndex((node) => node.id === targetNode.id);
+
+    const fallbackWork = isDeletingWork
+      ? (() => {
+          const remainingWorks = nextFiles?.[0]?.children || [];
+          if (remainingWorks.length === 0) return null;
+          if (deletedWorkIndex > 0) {
+            return remainingWorks[deletedWorkIndex - 1] || remainingWorks[0];
+          }
+          return remainingWorks[0];
+        })()
+      : null;
+
+    const shouldRedirectAfterDelete =
+      isDeletingWork && (location.pathname.includes(`/workspace/p/${targetNode.id}/`) || location.pathname === '/workspace');
+    const redirectPath = shouldRedirectAfterDelete
+      ? getPreferredWorkPath(fallbackWork) || '/workspace'
+      : null;
+
+    if (user) {
+      try {
+        if (isDeletingWork) {
+          const { error } = await supabase.from('trash_items').insert({
+            id: trashId,
+            user_id: user.id,
+            original_id: targetNode.id,
+            type: 'work',
+            title: targetNode.name,
+            content: trashSnapshot,
+            deleted_at: now,
+            expires_at: expiresAt,
+            original_path: targetNode.path,
+            parent_id: parentId,
+            work_name: workName,
+            extra: { isFullWork: true }
+          });
+          if (error) {
+            const message = error?.message || '回收站写入失败';
+            addToast(message, 'error');
+            return;
+          }
+        }
+
+        await deleteWorkspaceNode(targetNode as any);
+      } catch (error) {
+        console.error('Failed to delete workspace node:', error);
+        const message = error instanceof Error ? error.message : '删除节点失败';
+        addToast(message, 'error');
+        if (isDeletingWork) {
+          await supabase.from('trash_items').delete().eq('id', trashId).eq('user_id', user.id);
+        }
+        return;
+      }
+    }
+
+    if (isDeletingWork && user) {
+      addExistingItem({
+        id: trashId,
+        originalId: targetNode.id,
+        type: 'work',
+        title: targetNode.name,
+        content: trashSnapshot,
+        deletedAt: now,
+        expiresAt,
+        originalPath: targetNode.path,
+        parentId,
+        workName,
+        extra: { isFullWork: true }
+      });
+    } else {
+      await addToTrash({
+        originalId: targetNode.id,
+        type: parentId === 'root' ? 'work' : targetNode.type === 'file' ? 'chapter' : targetNode.type === 'mindmap' ? 'mindmap' : 'folder',
+        title: targetNode.name,
+        content: trashSnapshot,
+        originalPath: targetNode.path,
+        parentId,
+        workName,
+        extra: {
+          isFullWork: parentId === 'root'
+        }
+      });
+    }
+
     setFiles(nextFiles);
 
     if (user) {
-      await deleteWorkspaceNode(targetNode as any);
       await refreshWorkspace();
+    }
+
+    if (redirectPath) {
+      navigate(redirectPath, { replace: true });
     }
   };
 

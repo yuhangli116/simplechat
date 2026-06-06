@@ -16,11 +16,11 @@ import { useFileStore, FileNode } from '@/store/useFileStore';
 import { usePromptStore, Prompt } from '@/store/usePromptStore';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
-import { findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
+import { findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree, restoreWorkFromTrash } from '@/lib/workspacePersistence';
 import Pagination from '@/components/Pagination';
 
 const Trash = () => {
-  const { items, restoreItem, permanentlyDelete, clearTrash, syncFromSupabase } = useTrashStore();
+  const { items, permanentlyDelete, clearTrash, syncFromSupabase } = useTrashStore();
   const { addNode, setFiles } = useFileStore();
   const { addPrompt } = usePromptStore();
   const { user } = useAuthStore();
@@ -117,36 +117,63 @@ const Trash = () => {
   };
 
   const restoreWorkspaceItem = async (item: TrashItem) => {
-    addNode(item.content as FileNode, item.parentId);
+    if (!user) {
+      // 未登录时只恢复到本地状态
+      addNode(item.content as FileNode, item.parentId);
+      return;
+    }
 
-    if (!user) return;
+    const isFullWork = item.extra?.isFullWork;
+    const workSnapshot = item.content as any;
 
-    const nextFiles = useFileStore.getState().files as FileNode[];
-    const targetId = (item.content as FileNode).id;
-    const workNode = findWorkNodeForTarget(nextFiles as any, targetId);
+    if (isFullWork && workSnapshot) {
+      // 恢复完整作品：从快照写入数据库
+      try {
+        await restoreWorkFromTrash(user.id, workSnapshot);
+        await syncWorkspace();
+      } catch (error) {
+        console.error('Failed to restore work from trash:', error);
+        throw error;
+      }
+    } else {
+      // 恢复单个节点
+      addNode(item.content as FileNode, item.parentId);
 
-    if (workNode) {
-      await persistWorkTree(user.id, workNode as any);
-      await syncWorkspace();
+      const nextFiles = useFileStore.getState().files as FileNode[];
+      const targetId = (item.content as FileNode).id;
+      const workNode = findWorkNodeForTarget(nextFiles as any, targetId);
+
+      if (workNode) {
+        await persistWorkTree(user.id, workNode as any);
+        await syncWorkspace();
+      }
     }
   };
 
   // Actions
   const handleRestore = async (id: string) => {
-    const item = await restoreItem(id);
+    const item = items.find((entry) => entry.id === id);
     if (!item) return;
 
-    if (item.type === 'prompt') {
-      addPrompt(item.content as Prompt);
-    } else {
-      await restoreWorkspaceItem(item);
-    }
-    
-    // Clear selection if restored
-    if (selectedIds.has(id)) {
-      const newSet = new Set(selectedIds);
-      newSet.delete(id);
-      setSelectedIds(newSet);
+    try {
+      if (item.type === 'prompt') {
+        addPrompt(item.content as Prompt);
+      } else {
+        await restoreWorkspaceItem(item);
+      }
+
+      // 恢复成功后才删除回收站记录
+      await permanentlyDelete(id);
+
+      // Clear selection if restored
+      if (selectedIds.has(id)) {
+        const newSet = new Set(selectedIds);
+        newSet.delete(id);
+        setSelectedIds(newSet);
+      }
+    } catch (error) {
+      console.error('Restore failed:', error);
+      // 恢复失败，不删除回收站记录，数据不会丢失
     }
   };
 
@@ -162,16 +189,38 @@ const Trash = () => {
   const handleBatchRestore = async () => {
     if (selectedIds.size === 0) return;
     if (confirm(`确定要恢复选中的 ${selectedIds.size} 项内容吗？`)) {
+      const restoredIds: string[] = [];
+      const failedIds: string[] = [];
+
       for (const id of Array.from(selectedIds)) {
-        const item = await restoreItem(id);
-        if (item) {
+        const item = items.find((entry) => entry.id === id);
+        if (!item) {
+          failedIds.push(id);
+          continue;
+        }
+
+        try {
           if (item.type === 'prompt') {
             addPrompt(item.content as Prompt);
           } else {
             await restoreWorkspaceItem(item);
           }
+          restoredIds.push(id);
+        } catch (error) {
+          console.error(`Failed to restore item ${id}:`, error);
+          failedIds.push(id);
         }
       }
+
+      // 只删除成功恢复的项目
+      for (const id of restoredIds) {
+        await permanentlyDelete(id);
+      }
+
+      if (failedIds.length > 0) {
+        alert(`成功恢复 ${restoredIds.length} 项，${failedIds.length} 项恢复失败，请稍后重试。`);
+      }
+
       setSelectedIds(new Set());
     }
   };

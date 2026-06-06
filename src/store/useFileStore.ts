@@ -17,8 +17,7 @@ export interface FileNode {
   } | null;
 }
 
-// Initial Structure (Copied from FileTree.tsx)
-export const initialFileStructure: FileNode[] = [
+export const guestDemoFileStructure: FileNode[] = [
   {
     id: 'root',
     name: '我的作品',
@@ -36,7 +35,7 @@ export const initialFileStructure: FileNode[] = [
             children: [
               { id: 'mm-outline', name: '作品大纲', type: 'mindmap', mindMapType: 'outline', path: '/workspace/p/book-1/outline' },
               { id: 'mm-world', name: '世界设定', type: 'mindmap', mindMapType: 'world', path: '/workspace/p/book-1/world' },
-              { id: 'mm-char', name: '角色塑造', type: 'mindmap', mindMapType: 'character', path: '/workspace/p/book-1/characters' },
+              { id: 'mm-character', name: '角色塑造', type: 'mindmap', mindMapType: 'character', path: '/workspace/p/book-1/characters' },
               { id: 'mm-event', name: '事件细纲', type: 'mindmap', mindMapType: 'event', path: '/workspace/p/book-1/events' },
             ]
           },
@@ -56,9 +55,20 @@ export const initialFileStructure: FileNode[] = [
   }
 ];
 
+export const initialFileStructure: FileNode[] = [
+  {
+    id: 'root',
+    name: '我的作品',
+    type: 'folder',
+    children: [],
+  }
+];
+
 interface FileState {
   files: FileNode[];
+  createWorkInProgress: boolean;
   setFiles: (files: FileNode[]) => void;
+  setCreateWorkInProgress: (value: boolean) => void;
   addNode: (node: FileNode, parentId?: string) => void;
   removeNode: (id: string) => void;
   updateNode: (id: string, updates: Partial<FileNode>) => void;
@@ -68,8 +78,10 @@ export const useFileStore = create<FileState>()(
   persist(
     (set, get) => ({
       files: initialFileStructure,
+      createWorkInProgress: false,
       
       setFiles: (files) => set({ files }),
+      setCreateWorkInProgress: (value) => set({ createWorkInProgress: value }),
       
       addNode: (newNode, parentId) => {
         const { files } = get();
