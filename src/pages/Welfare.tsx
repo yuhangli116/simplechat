@@ -12,7 +12,7 @@ import {
   Check,
   Sparkles
 } from 'lucide-react';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { Database } from '@/types/supabase';
@@ -64,6 +64,11 @@ const Welfare = () => {
   }, [showVideoModal]);
 
   const fetchWelfareData = async () => {
+    // 游客不加载福利数据
+    if (!user || isGuestUser(user)) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const { data, error } = await supabase
@@ -95,9 +100,10 @@ const Welfare = () => {
   };
 
   const handleCheckIn = async () => {
-    if (!user) {
-      addToast('请先登录后再签到', 'info');
-      navigate('/login');
+    if (!user || isGuestUser(user)) {
+      if (confirm('签到功能需要登录后才能使用，是否前往登录？')) {
+        navigate('/login');
+      }
       return;
     }
 
@@ -116,9 +122,10 @@ const Welfare = () => {
   };
 
   const handleVideoTask = async () => {
-    if (!user) {
-      addToast('请先登录', 'info');
-      navigate('/login');
+    if (!user || isGuestUser(user)) {
+      if (confirm('观看视频任务需要登录后才能使用，是否前往登录？')) {
+        navigate('/login');
+      }
       return;
     }
 
@@ -189,7 +196,12 @@ const Welfare = () => {
   };
 
   const claimTask = async (taskId: string) => {
-    if (!user) return;
+    if (!user || isGuestUser(user)) {
+      if (confirm('领取任务奖励需要登录后才能使用，是否前往登录？')) {
+        navigate('/login');
+      }
+      return;
+    }
 
     try {
       const { data, error } = await supabase.rpc('claim_welfare_task', { p_task_id: taskId });

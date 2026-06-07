@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useToastStore } from '@/store/useToastStore';
+import { createLogger } from '@/lib/logger';
 import Pagination from '@/components/Pagination';
 import { Receipt, Sparkles, Loader2 } from 'lucide-react';
+
+const log = createLogger('Records');
 
 type TabKey = 'usage' | 'recharge';
 
@@ -137,7 +140,8 @@ const Records: React.FC = () => {
   }, [usageLogs]);
 
   useEffect(() => {
-    if (!user || didCleanup) return;
+    if (!user || isGuestUser(user) || didCleanup) return;
+    log.info('Running cleanup_expired_diamond_logs', { userId: user.id });
     supabase
       .rpc('cleanup_expired_diamond_logs')
       .then((res: { error: unknown | null }) => {
@@ -148,7 +152,11 @@ const Records: React.FC = () => {
   }, [user, didCleanup]);
 
   const fetchUsage = async (page: number) => {
-    if (!user) return;
+    if (!user || isGuestUser(user)) {
+      log.info('fetchUsage skipped: guest or no user', { isGuest: isGuestUser(user), hasUser: !!user });
+      return;
+    }
+    log.info('fetchUsage called', { userId: user.id, page });
     setLoading(true);
     try {
       const from = (page - 1) * PAGE_SIZE;
@@ -171,6 +179,7 @@ const Records: React.FC = () => {
       setUsageLogs((data || []) as UsageLog[]);
       setUsageTotal(count || 0);
     } catch (e) {
+      log.error('fetchUsage failed', { error: e });
       const message = e instanceof Error ? e.message : '加载消费记录失败';
       addToast(message, 'error');
     } finally {
@@ -179,7 +188,11 @@ const Records: React.FC = () => {
   };
 
   const fetchRecharge = async (page: number) => {
-    if (!user) return;
+    if (!user || isGuestUser(user)) {
+      log.info('fetchRecharge skipped: guest or no user', { isGuest: isGuestUser(user), hasUser: !!user });
+      return;
+    }
+    log.info('fetchRecharge called', { userId: user.id, page });
     setLoading(true);
     try {
       const from = (page - 1) * PAGE_SIZE;
@@ -202,6 +215,7 @@ const Records: React.FC = () => {
       setRechargeLogs((data || []) as RechargeLog[]);
       setRechargeTotal(count || 0);
     } catch (e) {
+      log.error('fetchRecharge failed', { error: e });
       const message = e instanceof Error ? e.message : '加载充值记录失败';
       addToast(message, 'error');
     } finally {
@@ -210,11 +224,15 @@ const Records: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || isGuestUser(user)) {
+      log.info('Data fetch useEffect skipped: guest or no user', { isGuest: isGuestUser(user), hasUser: !!user });
+      return;
+    }
     if (activeTab === 'usage') fetchUsage(usagePage);
     if (activeTab === 'recharge') fetchRecharge(rechargePage);
   }, [user, activeTab, usagePage, rechargePage]);
 
+  // 只有当完全没有用户并且不是游客模式时，才显示登录提示
   if (!user) {
     return (
       <div className="flex-1 h-full bg-gray-50 flex items-center justify-center">
@@ -231,6 +249,9 @@ const Records: React.FC = () => {
       </div>
     );
   }
+
+  // 游客模式：展示页面框架但不查数据库，显示暂无记录
+  const isGuest = isGuestUser(user);
 
   return (
     <div className="flex-1 h-full bg-gray-50 overflow-y-auto p-8">
@@ -276,7 +297,7 @@ const Records: React.FC = () => {
             </div>
           ) : activeTab === 'usage' ? (
             <div className="p-6">
-              {mergedUsageLogs.length === 0 ? (
+              {isGuest || mergedUsageLogs.length === 0 ? (
                 <div className="text-center text-gray-500 py-12">暂无消费记录</div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-gray-200">
@@ -332,7 +353,7 @@ const Records: React.FC = () => {
             </div>
           ) : (
             <div className="p-6">
-              {rechargeLogs.length === 0 ? (
+              {isGuest || rechargeLogs.length === 0 ? (
                 <div className="text-center text-gray-500 py-12">暂无充值记录</div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-gray-200">

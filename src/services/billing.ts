@@ -1,4 +1,7 @@
 import { supabase } from '@/lib/supabase';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('Billing');
 
 export const PRICING_VERSION = 'v4.1';
 
@@ -242,7 +245,7 @@ export const syncModelPricingFromDb = async (force = false): Promise<Record<Mode
 
       const pricingVersion = configRows?.find((row: { key: string; value: string }) => row.key === 'pricing_version')?.value;
       if (pricingVersion && pricingVersion !== PRICING_VERSION) {
-        console.warn(`[billing] pricing_version mismatch: db=${pricingVersion}, local=${PRICING_VERSION}`);
+        log.warn('Pricing version mismatch', { dbVersion: pricingVersion, localVersion: PRICING_VERSION });
       }
 
       const runtimePricing: Partial<Record<ModelKey, ModelPricingConfig>> = {};
@@ -266,8 +269,9 @@ export const syncModelPricingFromDb = async (force = false): Promise<Record<Mode
 
       applyRuntimePricing(runtimePricing);
       lastPricingSyncAt = Date.now();
+      log.success('Model pricing synced from DB', { modelCount: Object.keys(runtimePricing).length });
     } catch (error) {
-      console.warn('[billing] Failed to sync pricing from database, using local defaults.', error);
+      log.warn('Failed to sync pricing from database, using local defaults', {}, error);
       applyRuntimePricing({});
       lastPricingSyncAt = Date.now();
     }
@@ -335,9 +339,12 @@ export async function deductDiamondsV4(params: {
     p_cache_tokens: params.cacheTokens ?? 0,
   });
 
-  if (error) return { success: false, error: error.message };
+  if (error) {
+    log.error('Deduct diamonds V4 RPC error', { userId: params.userId, modelKey: params.modelKey, error: error.message });
+    return { success: false, error: error.message };
+  }
 
-  return {
+  const result = {
     success: Boolean(data?.success),
     error: data?.error,
     diamondsConsumed: data?.diamonds_consumed,
@@ -345,6 +352,14 @@ export async function deductDiamondsV4(params: {
     needed: data?.needed,
     available: data?.available,
   };
+
+  if (result.success) {
+    log.info('Deduct diamonds V4 success', { userId: params.userId, modelKey: params.modelKey, diamondsConsumed: result.diamondsConsumed, totalRemaining: result.totalRemaining });
+  } else {
+    log.warn('Deduct diamonds V4 rejected', { userId: params.userId, modelKey: params.modelKey, error: result.error, needed: result.needed, available: result.available });
+  }
+
+  return result;
 }
 
 export async function getUserBalance(userId: string): Promise<{
@@ -361,6 +376,7 @@ export async function getUserBalance(userId: string): Promise<{
     .single();
 
   if (error || !data) {
+    log.warn('Failed to fetch user balance', { userId, error: error?.message });
     return { memberDiamonds: 0, permanentDiamonds: 0, totalDiamonds: 0 };
   }
 

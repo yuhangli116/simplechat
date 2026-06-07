@@ -1,15 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
+import { createServerLogger } from './logger.js';
+
+const log = createServerLogger('AIProxy');
 
 const normalizeApiKey = (apiKey) => apiKey?.trim().replace(/^['"`]|['"`]$/g, '');
 
 const getEnvValue = (...names) => {
   for (const name of names) {
-    // 先试不带前缀的
     let value = process.env[name];
     if (value) {
       return normalizeApiKey(value);
     }
-    // 再试带 VITE_ 前缀的
     const viteName = `VITE_${name}`;
     value = process.env[viteName];
     if (value) {
@@ -25,7 +26,6 @@ const PRECHECK_OUTPUT_TOKENS = Number(process.env.AI_PRECHECK_OUTPUT_TOKENS || 9
 const PRECHECK_REASONING_TOKENS = Number(process.env.AI_PRECHECK_REASONING_TOKENS || 600);
 const ANOMALY_HOURLY_DIAMONDS = Number(process.env.AI_ANOMALY_HOURLY_DIAMONDS || 800000);
 const ANOMALY_LOOKBACK_DAYS = Number(process.env.AI_ANOMALY_LOOKBACK_DAYS || 7);
-// 注意：不要在模块加载时读取 SUPABASE_URL/ANON_KEY，改成在 getSupabaseClientForRequest 里实时读取
 const SUMMARIZE_FETCH_TIMEOUT_MS = Number(process.env.AI_SUMMARIZE_FETCH_TIMEOUT_MS || 60000);
 
 const estimateTokens = (text = '') => {
@@ -220,16 +220,21 @@ export const getRequestContext = (req) => {
 };
 
 const getSupabaseClientForRequest = (accessToken) => {
-  // 每次调用都实时读取，确保 vite.config.ts 里已经加载了 env
   const SUPABASE_URL_RUNTIME = getEnvValue('SUPABASE_URL', 'VITE_SUPABASE_URL');
   const SUPABASE_ANON_KEY_RUNTIME = getEnvValue('SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY');
-  
-  console.log('[debug getSupabaseClientForRequest] SUPABASE_URL:', SUPABASE_URL_RUNTIME ? '✅ 已加载' : '❌ 未加载', SUPABASE_URL_RUNTIME?.slice(0, 30) || '');
-  console.log('[debug getSupabaseClientForRequest] SUPABASE_ANON_KEY:', SUPABASE_ANON_KEY_RUNTIME ? '✅ 已加载' : '❌ 未加载', SUPABASE_ANON_KEY_RUNTIME?.slice(0, 20) || '');
-  console.log('[debug getSupabaseClientForRequest] accessToken:', accessToken ? '✅ 已提供' : '❌ 未提供', accessToken?.slice(0, 20) || '');
+
+  log.info('Creating Supabase client for request', {
+    hasUrl: !!SUPABASE_URL_RUNTIME,
+    hasKey: !!SUPABASE_ANON_KEY_RUNTIME,
+    hasToken: !!accessToken,
+  });
 
   if (!SUPABASE_URL_RUNTIME || !SUPABASE_ANON_KEY_RUNTIME || !accessToken) {
-    console.log('[debug getSupabaseClientForRequest] ❌ 缺少必要参数，返回 null');
+    log.warn('Supabase client creation skipped: missing required params', {
+      hasUrl: !!SUPABASE_URL_RUNTIME,
+      hasKey: !!SUPABASE_ANON_KEY_RUNTIME,
+      hasToken: !!accessToken,
+    });
     return null;
   }
 
@@ -248,24 +253,18 @@ const getSupabaseClientForRequest = (accessToken) => {
 };
 
 const getAuthenticatedUser = async (supabase, accessToken) => {
-  console.log('[debug getAuthenticatedUser] 开始验证用户');
-  
+  log.info('Authenticating user');
+
   // 方案一：先用 supabase.auth.getUser 验证
   const { data, error } = await supabase.auth.getUser({ jwt: accessToken });
-  
-  console.log('[debug getAuthenticatedUser] getUser 结果:', {
-    error: error?.message || '无错误',
-    user: data?.user ? '✅' : '❌',
-    userId: data?.user?.id || '无'
-  });
 
   if (!error && data?.user) {
-    console.log('[debug getAuthenticatedUser] getUser 验证成功 ✅');
+    log.info('User authenticated via getUser', { userId: data.user.id });
     return data.user;
   }
 
-  // 方案二：如果 getUser 失败，尝试直接解析 JWT（备用方案，确保不阻塞）
-  console.log('[debug getAuthenticatedUser] getUser 失败，尝试解析 JWT');
+  // 方案二：如果 getUser 失败，尝试直接解析 JWT（备用方案）
+  log.warn('getUser failed, falling back to JWT parsing', { error: error?.message });
   const safeBase64UrlDecode = (str) => {
     const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
     const pad = base64.length % 4 ? "=".repeat(4 - (base64.length % 4)) : "";
@@ -276,25 +275,24 @@ const getAuthenticatedUser = async (supabase, accessToken) => {
     if (parts.length !== 3) return null;
     try {
       const payload = JSON.parse(safeBase64UrlDecode(parts[1]).toString('utf8'));
-      console.log('[debug getAuthenticatedUser] JWT payload:', payload);
       return payload;
     } catch (e) {
-      console.error('[debug getAuthenticatedUser] JWT 解析失败:', e);
+      log.error('JWT parsing failed', null, e);
       return null;
     }
   };
 
   const payload = parseJwt(accessToken);
   if (!payload?.sub) {
-    console.log('[debug getAuthenticatedUser] JWT 解析也失败 ❌');
+    log.error('JWT parsing also failed, user cannot be authenticated');
     return null;
   }
-  console.log('[debug getAuthenticatedUser] JWT 解析成功 ✅，userId:', payload.sub);
+  log.info('User authenticated via JWT fallback', { userId: payload.sub });
   return { id: payload.sub };
 };
 
 const getModelPricingFromDb = async (supabase, modelKey) => {
-  console.log('[debug getModelPricingFromDb] 开始读取模型定价，modelKey:', modelKey);
+  log.info('Fetching model pricing from DB', { modelKey });
 
   const { data, error } = await supabase
     .from('model_pricing')
@@ -305,18 +303,14 @@ const getModelPricingFromDb = async (supabase, modelKey) => {
     .eq('is_active', true)
     .single();
 
-  console.log('[debug getModelPricingFromDb] 读取结果:', { 
-    error: error?.message || null, 
-    data: data ? { model_key: data.model_key, input_multiplier: data.input_multiplier } : null 
-  });
-
   if (error || !data) {
     const code = error?.code ? ` (${error.code})` : '';
     const detail = error?.message ? `：${error.message}` : '';
-    console.error('[debug getModelPricingFromDb] ❌ 读取失败:', error?.message || '无数据');
+    log.error('Model pricing not found in DB', { modelKey, errorCode: error?.code, errorMsg: error?.message });
     throw new Error(`模型定价配置不存在(${modelKey})${code}${detail}`);
   }
 
+  log.info('Model pricing fetched', { modelKey, inputMult: data.input_multiplier, outputMult: data.output_multiplier });
   return {
     ...data,
     input_multiplier: Number(data.input_multiplier ?? 0),
@@ -327,21 +321,16 @@ const getModelPricingFromDb = async (supabase, modelKey) => {
 };
 
 const getEffectiveBalance = async (supabase, userId) => {
-  console.log('[debug getEffectiveBalance] 开始读取用户余额，userId:', userId);
-  
+  log.info('Fetching user balance', { userId });
+
   const { data, error } = await supabase
     .from('profiles')
     .select('member_diamonds, permanent_diamonds, membership_type, membership_expires_at')
     .eq('id', userId)
     .single();
 
-  console.log('[debug getEffectiveBalance] 读取结果:', { 
-    error: error ? error.message : null, 
-    data: data ? { ...data, member_diamonds: data.member_diamonds, permanent_diamonds: data.permanent_diamonds } : null 
-  });
-
   if (error || !data) {
-    console.error('[debug getEffectiveBalance] ❌ 读取失败:', error?.message || '无数据');
+    log.error('Failed to fetch user balance', { userId }, error);
     throw new Error('读取用户余额失败');
   }
 
@@ -349,6 +338,15 @@ const getEffectiveBalance = async (supabase, userId) => {
   const expired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt < Date.now();
   const memberDiamonds = expired ? 0 : Number(data.member_diamonds ?? 0);
   const permanentDiamonds = Number(data.permanent_diamonds ?? 0);
+
+  log.info('User balance fetched', {
+    userId,
+    memberDiamonds,
+    permanentDiamonds,
+    totalRemaining: memberDiamonds + permanentDiamonds,
+    membershipType: expired ? 'free' : data.membership_type,
+    expired,
+  });
 
   return {
     expired,
@@ -418,6 +416,7 @@ const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, co
       host = '';
     }
 
+    log.error('Budget preflight failed: pricing not found', { model, userId, host });
     throw createUserFacingError(
       `${error?.message || `模型定价配置不存在(${model})`}。请确认已在当前 Supabase 项目${host ? ` (${host})` : ''} 执行模型定价迁移，并确保 model_pricing 中该模型 is_active=true。`,
       {
@@ -429,7 +428,21 @@ const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, co
   const estimatedUsage = estimateUsageForPrecheck({ kind, prompt, context, pricing });
   const estimatedDiamonds = calculateDiamondCost(pricing, estimatedUsage);
 
+  log.info('Budget preflight check', {
+    userId,
+    model,
+    estimatedDiamonds,
+    available: balance.totalRemaining,
+    kind,
+  });
+
   if (estimatedDiamonds > SINGLE_CALL_DIAMOND_CAP) {
+    log.warn('Budget preflight rejected: exceeds single call cap', {
+      userId,
+      model,
+      estimatedDiamonds,
+      cap: SINGLE_CALL_DIAMOND_CAP,
+    });
     throw createUserFacingError(
       `本次请求预估需要 ${estimatedDiamonds} 钻石，超过单次上限 ${SINGLE_CALL_DIAMOND_CAP}，请缩短上下文或拆分生成。`,
       { estimatedRequired: estimatedDiamonds, available: balance.totalRemaining }
@@ -437,6 +450,12 @@ const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, co
   }
 
   if (balance.totalRemaining < estimatedDiamonds) {
+    log.warn('Budget preflight rejected: insufficient balance', {
+      userId,
+      model,
+      estimatedDiamonds,
+      available: balance.totalRemaining,
+    });
     throw createUserFacingError(
       `钻石不足（预计至少需要 ${estimatedDiamonds}，当前 ${balance.totalRemaining}），请充值或缩短输入后重试。`,
       { estimatedRequired: estimatedDiamonds, available: balance.totalRemaining }
@@ -468,10 +487,21 @@ const detectAbnormalUsage = async ({ supabase, userId, latestDiamonds }) => {
   const projectedHourTotal = lastHour;
 
   if (projectedHourTotal >= Math.max(ANOMALY_HOURLY_DIAMONDS, dailyAverage * 3)) {
+    log.warn('Abnormal usage detected: hourly consumption too high', {
+      userId,
+      lastHourConsumption: projectedHourTotal,
+      dailyAverage,
+      threshold: ANOMALY_HOURLY_DIAMONDS,
+    });
     return `风险提醒：你最近 1 小时已消耗 ${projectedHourTotal.toLocaleString()} 钻石，显著高于平时，请确认当前模型与上下文长度是否符合预期。`;
   }
 
   if (latestDiamonds >= SINGLE_CALL_DIAMOND_CAP * 0.5) {
+    log.warn('Abnormal usage detected: single call near cap', {
+      userId,
+      latestDiamonds,
+      cap: SINGLE_CALL_DIAMOND_CAP,
+    });
     return `风险提醒：本次调用消耗 ${latestDiamonds.toLocaleString()} 钻石，已接近单次上限，请留意模型选择与上下文长度。`;
   }
 
@@ -479,6 +509,17 @@ const detectAbnormalUsage = async ({ supabase, userId, latestDiamonds }) => {
 };
 
 const deductUsageOnServer = async ({ supabase, userId, model, usage, billingGroupId, billingStep }) => {
+  log.info('Deducting usage on server', {
+    userId,
+    model,
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    reasoningTokens: usage.reasoning_tokens,
+    cacheTokens: usage.cache_hit_tokens,
+    billingGroupId,
+    billingStep,
+  });
+
   const { data, error } = await supabase.rpc('deduct_diamonds_v4', {
     p_user_id: userId,
     p_model_key: model,
@@ -491,10 +532,18 @@ const deductUsageOnServer = async ({ supabase, userId, model, usage, billingGrou
   });
 
   if (error) {
+    log.error('Deduct diamonds RPC failed', { userId, model, error: error.message }, error);
     throw new Error(error.message || '扣费失败');
   }
 
   if (!data?.success) {
+    log.warn('Deduct diamonds rejected by RPC', {
+      userId,
+      model,
+      rpcError: data?.error,
+      needed: data?.needed,
+      available: data?.available,
+    });
     throw createUserFacingError(
       data?.error === '钻石不足'
         ? `钻石不足（需要 ${data?.needed ?? '-'}，当前 ${data?.available ?? '-'}），请充值后继续使用。`
@@ -506,11 +555,19 @@ const deductUsageOnServer = async ({ supabase, userId, model, usage, billingGrou
     );
   }
 
+  log.info('Deduct diamonds success', {
+    userId,
+    model,
+    diamondsConsumed: data.diamonds_consumed,
+    totalRemaining: data.total_remaining,
+  });
+
   return data;
 };
 
 const requestOpenAICompatible = async ({ config, messages, temperature }) => {
   if (!config.apiKey) {
+    log.error('API Key missing for OpenAI-compatible provider', { provider: config.provider });
     throw new Error(`${config.provider} API Key is missing`);
   }
 
@@ -522,6 +579,12 @@ const requestOpenAICompatible = async ({ config, messages, temperature }) => {
     max_tokens: config.maxOutputTokens || MAX_OUTPUT_TOKENS,
     stream: false,
   };
+
+  log.info('Requesting OpenAI-compatible API', {
+    provider: config.provider,
+    model: config.modelName,
+    baseURL: config.baseURL,
+  });
 
   let lastError;
   const maxAttempts = Math.max(1, Number(config.retries || 0) + 1);
@@ -550,8 +613,23 @@ const requestOpenAICompatible = async ({ config, messages, temperature }) => {
           data?.error?.message ||
           data?.message ||
           `${response.status} ${response.statusText}`;
+        log.warn('OpenAI-compatible API returned error', {
+          provider: config.provider,
+          model: config.modelName,
+          status: response.status,
+          errorMsg: message?.slice(0, 200),
+          attempt: attempt + 1,
+        });
         throw new Error(message);
       }
+
+      log.info('OpenAI-compatible API success', {
+        provider: config.provider,
+        model: config.modelName,
+        inputTokens: normalizeUsage(data?.usage).input_tokens,
+        outputTokens: normalizeUsage(data?.usage).output_tokens,
+        contentLength: data?.choices?.[0]?.message?.content?.length || 0,
+      });
 
       return {
         content: data?.choices?.[0]?.message?.content || '',
@@ -561,6 +639,7 @@ const requestOpenAICompatible = async ({ config, messages, temperature }) => {
     } catch (error) {
       lastError = error;
       if (attempt < maxAttempts - 1 && shouldRetryFetchError(error)) {
+        log.info('Retrying OpenAI-compatible request', { provider: config.provider, attempt: attempt + 1 });
         await sleep(250 * (attempt + 1));
         continue;
       }
@@ -571,16 +650,20 @@ const requestOpenAICompatible = async ({ config, messages, temperature }) => {
   }
 
   const suffix = config.provider ? ` (${config.provider})` : '';
+  log.error('OpenAI-compatible request failed after all attempts', { provider: config.provider, model: config.modelName }, lastError);
   throw new Error(`${lastError?.message || 'fetch failed'}${suffix}`);
 };
 
 const requestAnthropic = async ({ config, messages, temperature }) => {
   if (!config.apiKey) {
+    log.error('Anthropic API Key missing');
     throw new Error('Anthropic API Key is missing');
   }
 
   const systemMessage = messages.find((message) => message.role === 'system')?.content || '';
   const userMessages = messages.filter((message) => message.role !== 'system');
+
+  log.info('Requesting Anthropic API', { model: config.modelName });
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -605,8 +688,20 @@ const requestAnthropic = async ({ config, messages, temperature }) => {
       data?.error?.message ||
       data?.message ||
       `${response.status} ${response.statusText}`;
+    log.warn('Anthropic API returned error', {
+      model: config.modelName,
+      status: response.status,
+      errorMsg: message?.slice(0, 200),
+    });
     throw new Error(message);
   }
+
+  log.info('Anthropic API success', {
+    model: config.modelName,
+    inputTokens: normalizeUsage(data?.usage).input_tokens,
+    outputTokens: normalizeUsage(data?.usage).output_tokens,
+    contentLength: extractMessageContent(data?.content).length,
+  });
 
   return {
     content: extractMessageContent(data?.content),
@@ -620,6 +715,7 @@ const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig 
   const config = modelRegistry[model];
 
   if (!config) {
+    log.error('Model not found in registry', { model });
     throw new Error(`Model ${model} not supported`);
   }
 
@@ -633,25 +729,26 @@ const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig 
 };
 
 const executeAiTask = async ({ kind, prompt = '', context = '', model, messages, temperature, requestContext, billingGroupId, billingStep }) => {
-  console.log('[debug executeAiTask] 开始执行，requestContext:', {
-    ...requestContext,
-    accessToken: requestContext?.accessToken ? requestContext.accessToken.slice(0, 20) + '...' : null
+  log.info('Executing AI task', {
+    kind,
+    model,
+    hasPrompt: !!prompt,
+    contextLength: context?.length || 0,
+    ip: requestContext?.ip,
   });
 
   const accessToken = requestContext?.accessToken || '';
   const supabase = getSupabaseClientForRequest(accessToken);
   if (!supabase) {
-    console.log('[debug executeAiTask] ❌ getSupabaseClientForRequest 返回 null');
+    log.warn('AI task rejected: Supabase client unavailable');
     return { content: '', error: '请先登录后再使用 AI 创作功能。' };
   }
 
   const user = await getAuthenticatedUser(supabase, accessToken);
   if (!user) {
-    console.log('[debug executeAiTask] ❌ getAuthenticatedUser 返回 null');
+    log.warn('AI task rejected: user authentication failed');
     return { content: '', error: '请先登录后再使用 AI 创作功能。' };
   }
-
-  console.log('[debug executeAiTask] ✅ 用户验证通过，userId:', user.id);
 
   let finalModel = model;
   if (finalModel === undefined) {
@@ -659,6 +756,7 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
   }
 
   if (typeof finalModel !== 'string' || finalModel.trim() === '') {
+    log.warn('AI task rejected: invalid model', { model });
     return { content: '', error: '请先选择一个具体的模型。' };
   }
   finalModel = finalModel.trim();
@@ -703,6 +801,12 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
 
     const actualDiamonds = calculateDiamondCost(preflight.pricing, usage);
     if (actualDiamonds > SINGLE_CALL_DIAMOND_CAP) {
+      log.warn('AI task result exceeds diamond cap after generation', {
+        userId: user.id,
+        model: finalModel,
+        actualDiamonds,
+        cap: SINGLE_CALL_DIAMOND_CAP,
+      });
       return {
         content: '',
         error: `本次请求实际消耗已达到 ${actualDiamonds} 钻石，超过单次上限 ${SINGLE_CALL_DIAMOND_CAP}，系统已阻止扣费，请缩短上下文后重试。`,
@@ -728,6 +832,19 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
       latestDiamonds: billing?.diamonds_consumed ?? actualDiamonds,
     });
 
+    log.info('AI task completed successfully', {
+      kind,
+      model: finalModel,
+      userId: user.id,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      reasoningTokens: usage.reasoning_tokens,
+      cacheHitTokens: usage.cache_hit_tokens,
+      actualDiamonds,
+      totalRemaining: billing?.total_remaining,
+      hasWarning: !!warning,
+    });
+
     return {
       content: result.content,
       usage: {
@@ -743,6 +860,12 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
     };
   } catch (error) {
     if (error?.isUserFacing) {
+      log.warn('AI task returned user-facing error', {
+        kind,
+        model: finalModel,
+        userId: user.id,
+        errorMsg: error.message?.slice(0, 200),
+      });
       return {
         content: '',
         error: error.message,
@@ -753,6 +876,7 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
         },
       };
     }
+    log.error('AI task unhandled error', { kind, model: finalModel, userId: user.id }, error);
     throw error;
   }
 };
@@ -787,7 +911,7 @@ export const summarizeContextServer = async ({ context, model = 'deepseek-v4-fla
     {
       role: 'system',
       content:
-        '你是一个专业的剧情与设定提炼助手。你的目标是为“下一次续写/补全”提供高密度、可直接使用的背景摘要。\n\n硬性要求：\n- 总长度控制在 300–450 个中文字符左右（宁可更短，不要更长）。\n- 输出必须是纯文本，不要 Markdown 标题、不要代码块、不要引用原文句子。\n- 只保留对续写有用的信息：人物状态、关键关系、动机、已发生事件的因果链、当前局面、未解决冲突/悬念。\n- 删除细枝末节、重复描写、修辞性句子、无关对话。\n- 不要补写新剧情，不要臆测未给出的设定。\n\n输出格式（严格遵循）：\n1) 一句话总览（不超过 40 字）\n2) 要点（最多 12 条，每条不超过 30 字，用“• ”开头）\n3) 续写重点（1–3 条，用“→ ”开头，指出下一段最该推进的矛盾/目标）',
+        '你是一个专业的剧情与设定提炼助手。你的目标是为"下一次续写/补全"提供高密度、可直接使用的背景摘要。\n\n硬性要求：\n- 总长度控制在 300–450 个中文字符左右（宁可更短，不要更长）。\n- 输出必须是纯文本，不要 Markdown 标题、不要代码块、不要引用原文句子。\n- 只保留对续写有用的信息：人物状态、关键关系、动机、已发生事件的因果链、当前局面、未解决冲突/悬念。\n- 删除细枝末节、重复描写、修辞性句子、无关对话。\n- 不要补写新剧情，不要臆测未给出的设定。\n\n输出格式（严格遵循）：\n1) 一句话总览（不超过 40 字）\n2) 要点（最多 12 条，每条不超过 30 字，用"• "开头）\n3) 续写重点（1–3 条，用"→ "开头，指出下一段最该推进的矛盾/目标）',
     },
     {
       role: 'user',

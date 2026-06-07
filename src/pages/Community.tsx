@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, Eye, CheckCircle, Sparkles, BookOpen, Star, User, X, Folder, FileText, ChevronRight, ChevronDown, PlusCircle, Plus, Trash2, Pencil } from 'lucide-react';
-import { useFileStore, FileNode } from '@/store/useFileStore';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useFileStore, FileNode, GUEST_LIMITS } from '@/store/useFileStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { usePromptStore } from '@/store/usePromptStore';
 import { useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
@@ -45,9 +45,23 @@ const Community = () => {
   const navigate = useNavigate();
   const [resources, setResources] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
-  const [collectedSkills, setCollectedSkills] = useState<string[]>([]);
+  const [collectedSkills, setCollectedSkills] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('collectedSkills');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [userSkills, setUserSkills] = useState<Skill[]>([]);
-  const [likedTemplateIds, setLikedTemplateIds] = useState<string[]>([]);
+  const [likedTemplateIds, setLikedTemplateIds] = useState<string[]>(() => {
+    try {
+      const saved = window.localStorage.getItem('likedTemplates');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [likedSkillIds, setLikedSkillIds] = useState<string[]>([]);
   const [likedOfficialSkillIds, setLikedOfficialSkillIds] = useState<string[]>(() => {
     try {
@@ -65,7 +79,23 @@ const Community = () => {
       return {};
     }
   });
-  const [collectedTemplateIds, setCollectedTemplateIds] = useState<string[]>([]);
+  const [collectedTemplateIds, setCollectedTemplateIds] = useState<string[]>(() => {
+    try {
+      const saved = window.localStorage.getItem('collectedTemplates');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  // 存储游客对模板 likes 的修改：key是模板id（string），value是修改量（+1或-1）
+  const [guestTemplateLikesDelta, setGuestTemplateLikesDelta] = useState<Record<string, number>>(() => {
+    try {
+      const saved = window.localStorage.getItem('guestTemplateLikesDelta');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
   const [previewTemplate, setPreviewTemplate] = useState<Template | null>(null);
   const [previewStructure, setPreviewStructure] = useState<any>(null);
   const [selectedPreviewNodeId, setSelectedPreviewNodeId] = useState<string | null>(null);
@@ -203,7 +233,16 @@ const Community = () => {
         if (error) {
           console.error('Error fetching templates:', error);
         } else {
-          setResources(data || []);
+          // 如果是游客，根据本地存储的 delta 调整 likes
+          let finalData = data || [];
+          if (isGuestUser(user)) {
+            finalData = finalData.map((t) => {
+              const templateId = String(t.id);
+              const delta = guestTemplateLikesDelta[templateId] || 0;
+              return { ...t, likes: Math.max(0, Number(t.likes || 0) + delta) };
+            });
+          }
+          setResources(finalData);
         }
       } catch (err) {
         console.error('Unexpected error:', err);
@@ -1333,7 +1372,7 @@ const Community = () => {
   const mineSkills = user?.id ? sortByOfficialAndLikes(userSkills.filter((s) => !s.is_official && s.creator_id === user.id)) : [];
 
   const ensureLogin = () => {
-    if (user?.id) return true;
+    if (user?.id && !isGuestUser(user)) return true;
     if (confirm('需要登录后才能使用该功能，是否前往登录？')) {
       navigate('/login');
     }
@@ -1943,10 +1982,32 @@ const Community = () => {
 
   const handleToggleTemplateLike = async (template: Template, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!ensureLogin()) return;
     if (String(template.id).startsWith('mock-')) return;
+    const templateId = String(template.id); // 统一转成 string 处理
+    const isLiked = likedTemplateIds.includes(templateId);
 
-    const isLiked = likedTemplateIds.includes(template.id);
+    // 游客模式：只更新本地状态，不写数据库，但保存到localStorage
+    if (isGuestUser(user)) {
+      let nextLikedIds;
+      let nextDelta;
+      if (isLiked) {
+        nextLikedIds = likedTemplateIds.filter((id) => id !== templateId);
+        nextDelta = { ...guestTemplateLikesDelta, [templateId]: (guestTemplateLikesDelta[templateId] || 0) - 1 };
+        setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes: Math.max((t.likes || 0) - 1, 0) } : t)));
+      } else {
+        nextLikedIds = [...likedTemplateIds, templateId];
+        nextDelta = { ...guestTemplateLikesDelta, [templateId]: (guestTemplateLikesDelta[templateId] || 0) + 1 };
+        setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes: (t.likes || 0) + 1 } : t)));
+      }
+      setLikedTemplateIds(nextLikedIds);
+      setGuestTemplateLikesDelta(nextDelta);
+      window.localStorage.setItem('likedTemplates', JSON.stringify(nextLikedIds));
+      window.localStorage.setItem('guestTemplateLikesDelta', JSON.stringify(nextDelta));
+      return;
+    }
+
+    if (!ensureLogin()) return;
+
     if (isLiked) {
       const { error } = await supabase
         .from('template_likes')
@@ -1991,10 +2052,25 @@ const Community = () => {
 
   const handleToggleTemplateCollect = async (template: Template, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!ensureLogin()) return;
     if (String(template.id).startsWith('mock-')) return;
+    const templateId = String(template.id); // 统一转成 string 处理
+    const isCollected = collectedTemplateIds.includes(templateId);
 
-    const isCollected = collectedTemplateIds.includes(template.id);
+    // 游客模式：只更新本地状态，不写数据库，但保存到localStorage
+    if (isGuestUser(user)) {
+      let nextCollectedIds;
+      if (isCollected) {
+        nextCollectedIds = collectedTemplateIds.filter((id) => id !== templateId);
+      } else {
+        nextCollectedIds = [...collectedTemplateIds, templateId];
+      }
+      setCollectedTemplateIds(nextCollectedIds);
+      window.localStorage.setItem('collectedTemplates', JSON.stringify(nextCollectedIds));
+      return;
+    }
+
+    if (!ensureLogin()) return;
+
     if (isCollected) {
       const { error } = await supabase
         .from('user_templates')
@@ -2045,6 +2121,7 @@ const Community = () => {
 
   const incrementTemplateViews = async (template: Template) => {
     if (!isDbTemplate(template)) return;
+    if (isGuestUser(user)) return; // 游客不更新浏览量
     const { error } = await supabase.rpc('increment_template_views', { template_id: template.id } as any);
     if (error) return;
   };
@@ -2122,6 +2199,10 @@ const Community = () => {
       });
       return;
     }
+    if (isGuestUser(user)) {
+      setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, uses: (s.uses ?? 0) + 1 } : s)));
+      return; // 游客不更新数据库使用次数
+    }
     const { error } = await supabase.rpc('increment_skill_template_uses', { skill_template_id: skill.id } as any);
     if (error) return;
     setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, uses: (s.uses ?? 0) + 1 } : s)));
@@ -2151,8 +2232,24 @@ const Community = () => {
       return;
     }
 
-    if (!ensureLogin()) return;
     const isLiked = likedSkillIds.includes(skill.id);
+
+    // 游客模式：只更新本地状态，不写数据库
+    if (isGuestUser(user)) {
+      if (isLiked) {
+        setLikedSkillIds((prev) => prev.filter((id) => id !== skill.id));
+        setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, likes: Math.max((s.likes ?? 0) - 1, 0) } : s)));
+        setPreviewSkill((prev) => (prev && prev.id === skill.id ? { ...prev, likes: Math.max((prev.likes ?? 0) - 1, 0) } : prev));
+      } else {
+        setLikedSkillIds((prev) => [...prev, skill.id]);
+        setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, likes: (s.likes ?? 0) + 1 } : s)));
+        setPreviewSkill((prev) => (prev && prev.id === skill.id ? { ...prev, likes: (prev.likes ?? 0) + 1 } : prev));
+      }
+      return;
+    }
+
+    if (!ensureLogin()) return;
+
     if (isLiked) {
       const { error } = await supabase
         .from('skill_template_likes')
@@ -2242,11 +2339,14 @@ const Community = () => {
   };
 
   const handleUseTemplate = async (template: Template) => {
-    // Dev Mode: Allow template use without login
-    // if (!user) {
-    //     if(confirm('请先登录')) navigate('/login');
-    //     return;
-    // }
+    // 游客限制：最多创建10个作品
+    if (isGuestUser(user)) {
+      const currentWorks = files[0]?.children?.filter(c => c.type === 'folder') || [];
+      if (currentWorks.length >= GUEST_LIMITS.MAX_WORKS) {
+        addToast(`访客最多可创建 ${GUEST_LIMITS.MAX_WORKS} 个作品，登录后无限制`, 'warning');
+        return;
+      }
+    }
 
     if (confirm(`确定要使用模板 "${template.title}" 吗？\n这将复制模板文件到你的工作区。`)) {
         // We will assign a single workId for the top level work created from this template
@@ -2323,7 +2423,10 @@ const Community = () => {
               if (node.type === 'mindmap' && node.savedMindMap) {
                 try {
                   const key = node.mindMapType ? `mindmap-${workId}-${node.mindMapType}` : `mindmap-${node.id}`;
-                  window.localStorage.setItem(key, JSON.stringify(node.savedMindMap));
+                  // 游客不写入 localStorage，数据仅保存在内存中
+                  if (!isGuestUser(user)) {
+                    window.localStorage.setItem(key, JSON.stringify(node.savedMindMap));
+                  }
                 } catch {
                   return;
                 }
@@ -2334,15 +2437,15 @@ const Community = () => {
             };
 
             persistMindMapSeedsToLocal(newNode as any);
-            if (user && newNode.type === 'folder') {
+            if (user && !isGuestUser(user) && newNode.type === 'folder') {
                 await persistWorkTree(user.id, newNode as any);
                 const nextFiles = await loadWorkspaceTree(user.id);
                 setFiles(nextFiles as FileNode[]);
             }
             alert('模板已应用到工作区！');
             
-            // Update download count in DB
-            if (template.id && typeof template.id === 'string' && !template.id.startsWith('mock-')) {
+            // Update download count in DB (guests don't update DB)
+            if (!isGuestUser(user) && template.id && typeof template.id === 'string' && !template.id.startsWith('mock-')) {
               const { error } = await supabase.rpc('increment_downloads', { template_id: template.id } as any);
               if (!error) {
                 setResources((prev) =>
@@ -2985,10 +3088,10 @@ const Community = () => {
                             <button
                               onClick={(e) => handleToggleTemplateLike(item, e)}
                               className={`flex items-center transition-colors ${
-                                likedTemplateIds.includes(item.id) ? 'text-red-500' : 'hover:text-red-500'
+                                likedTemplateIds.includes(String(item.id)) ? 'text-red-500' : 'hover:text-red-500'
                               }`}
                             >
-                              <Heart className={`w-3 h-3 mr-1 ${likedTemplateIds.includes(item.id) ? 'fill-red-500' : ''}`} />
+                              <Heart className={`w-3 h-3 mr-1 ${likedTemplateIds.includes(String(item.id)) ? 'fill-red-500' : ''}`} />
                               {item.likes || 0}
                             </button>
                             <span className="flex items-center">
@@ -2999,10 +3102,10 @@ const Community = () => {
                           <button
                             onClick={(e) => handleToggleTemplateCollect(item, e)}
                             className={`p-1 rounded hover:bg-gray-100 transition-colors ${
-                              collectedTemplateIds.includes(item.id) ? 'text-purple-600' : 'text-gray-400'
+                              collectedTemplateIds.includes(String(item.id)) ? 'text-purple-600' : 'text-gray-400'
                             }`}
                           >
-                            <Star className={`w-4 h-4 ${collectedTemplateIds.includes(item.id) ? 'fill-purple-600' : ''}`} />
+                            <Star className={`w-4 h-4 ${collectedTemplateIds.includes(String(item.id)) ? 'fill-purple-600' : ''}`} />
                           </button>
                         </div>
 
@@ -3170,10 +3273,10 @@ const Community = () => {
                               <button
                                 onClick={(e) => handleToggleTemplateLike(item, e)}
                                 className={`flex items-center transition-colors ${
-                                  likedTemplateIds.includes(item.id) ? 'text-red-500' : 'hover:text-red-500'
+                                  likedTemplateIds.includes(String(item.id)) ? 'text-red-500' : 'hover:text-red-500'
                                 }`}
                               >
-                                <Heart className={`w-3 h-3 mr-1 ${likedTemplateIds.includes(item.id) ? 'fill-red-500' : ''}`} />
+                                <Heart className={`w-3 h-3 mr-1 ${likedTemplateIds.includes(String(item.id)) ? 'fill-red-500' : ''}`} />
                                 {item.likes || 0}
                               </button>
                               <span className="flex items-center">
@@ -3184,10 +3287,10 @@ const Community = () => {
                             <button
                               onClick={(e) => handleToggleTemplateCollect(item, e)}
                               className={`p-1 rounded hover:bg-gray-100 transition-colors ${
-                                collectedTemplateIds.includes(item.id) ? 'text-purple-600' : 'text-gray-400'
+                                collectedTemplateIds.includes(String(item.id)) ? 'text-purple-600' : 'text-gray-400'
                               }`}
                             >
-                              <Star className={`w-4 h-4 ${collectedTemplateIds.includes(item.id) ? 'fill-purple-600' : ''}`} />
+                              <Star className={`w-4 h-4 ${collectedTemplateIds.includes(String(item.id)) ? 'fill-purple-600' : ''}`} />
                             </button>
                           </div>
 
@@ -3355,10 +3458,10 @@ const Community = () => {
                             <button
                               onClick={(e) => handleToggleTemplateLike(item, e)}
                               className={`flex items-center transition-colors ${
-                                likedTemplateIds.includes(item.id) ? 'text-red-500' : 'hover:text-red-500'
+                                likedTemplateIds.includes(String(item.id)) ? 'text-red-500' : 'hover:text-red-500'
                               }`}
                             >
-                              <Heart className={`w-3 h-3 mr-1 ${likedTemplateIds.includes(item.id) ? 'fill-red-500' : ''}`} />
+                              <Heart className={`w-3 h-3 mr-1 ${likedTemplateIds.includes(String(item.id)) ? 'fill-red-500' : ''}`} />
                               {item.likes || 0}
                             </button>
                             <span className="flex items-center">

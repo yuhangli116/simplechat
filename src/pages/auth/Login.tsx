@@ -2,8 +2,57 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, PenTool, Eye, EyeOff, User } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { guestDemoFileStructure, useFileStore } from '@/store/useFileStore';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('Login')
+
+// 清理游客数据的辅助函数
+const clearAllGuestData = () => {
+  if (typeof window === 'undefined') return
+  
+  log.info('Clearing ALL guest data before new guest login...')
+
+  const keyPrefixesToRemove = [
+    'mindmap-',
+    'mindmap-theme-',
+    'story-',
+    'view-',
+  ]
+  const exactKeysToRemove = [
+    'collectedSkills',
+    'likedOfficialSkills',
+    'officialSkillMetrics',
+    'likedTemplates',
+    'collectedTemplates',
+    'guestTemplateLikesDelta',
+    'guest-diamond-balance',
+    'guest-storage-key',
+    'my-works-tree',
+    'my-prompts',
+  ]
+
+  const allKeys: string[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)
+    if (key) {
+      allKeys.push(key)
+    }
+  }
+
+  const keysToRemove = allKeys.filter(key => 
+    exactKeysToRemove.includes(key) || 
+    keyPrefixesToRemove.some(prefix => key.startsWith(prefix))
+  )
+  
+  for (const key of keysToRemove) {
+    localStorage.removeItem(key)
+    log.info('Removed localStorage key for new guest', { key })
+  }
+  sessionStorage.removeItem('guest-storage-key')
+  log.info('All previous guest data cleared')
+}
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -19,15 +68,22 @@ export default function Login() {
   const defaultWorkspacePath = '/workspace';
 
   useEffect(() => {
-    if (session?.user || user) {
+    // 只有真正登录的用户（不是游客）才跳转到 workspace
+    if ((session?.user || user) && !isGuestUser(user)) {
       navigate(defaultWorkspacePath, { replace: true });
     }
   }, [defaultWorkspacePath, navigate, session, user]);
 
   const handleGuestLogin = () => {
-    // Manually set guest state
+    // 先清理之前的游客数据，确保新的游客会话是干净的！
+    clearAllGuestData()
+    
+    // 为游客会话生成唯一标识，确保并发隔离
+    const guestId = 'guest-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    log.info('Guest login', { guestId });
+    
     const guestUser: any = {
-        id: 'guest-' + Date.now(),
+        id: guestId,
         email: 'guest@simplechat.ai',
         aud: 'authenticated',
         role: 'authenticated',
@@ -35,16 +91,16 @@ export default function Login() {
     
     setUser(guestUser);
     setProfile({
-        id: guestUser.id,
+        id: guestId,
         username: '访客体验',
         avatar_url: '',
         membership_type: 'free',
-        diamond_balance: 9999
+        diamond_balance: 0
     });
-    setDiamondBalance(9999);
+    setDiamondBalance(0);
     setFiles(JSON.parse(JSON.stringify(guestDemoFileStructure)));
+    log.info('Guest login completed, files set to demo structure');
     
-    alert('已进入访客体验模式');
     navigate('/workspace');
   };
 

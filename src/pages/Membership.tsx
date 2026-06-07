@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Check, Zap, Crown } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useToastStore } from '@/store/useToastStore';
 import { PRICING_CONFIG, formatDiamonds } from '@/services/billing';
 
@@ -13,9 +13,10 @@ const Membership = () => {
   const { addToast } = useToastStore();
 
   const handlePurchase = async (params: { orderType: 'membership' | 'fuel_pack'; productKey: string }) => {
-    if (!user) {
-      addToast('请先登录后再购买', 'info');
-      navigate('/login');
+    if (!user || isGuestUser(user)) {
+      if (confirm('购买功能需要登录后才能使用，是否前往登录？')) {
+        navigate('/login');
+      }
       return;
     }
 

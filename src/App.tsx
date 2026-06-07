@@ -1,10 +1,11 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Outlet, useParams } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useParams, useLocation } from 'react-router-dom';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useTrashStore } from '@/store/useTrashStore';
 import { type FileNode, guestDemoFileStructure, useFileStore } from '@/store/useFileStore';
+import { isGuestUser } from '@/store/useAuthStore';
 import Login from '@/pages/auth/Login';
 import Register from '@/pages/auth/Register';
 import ForgotPassword from '@/pages/auth/ForgotPassword';
@@ -46,18 +47,27 @@ const findFirstWorkspacePath = (nodes: FileNode[]): string | null => {
 
 const WorkspaceIndexRoute = () => {
   const { user } = useAuthStore();
-  const { setFiles, createWorkInProgress } = useFileStore();
+  const { setFiles, files, createWorkInProgress } = useFileStore();
   const [targetPath, setTargetPath] = React.useState<string | null>(null);
   const [resolved, setResolved] = React.useState(false);
+
+  // 游客模式：同步设置，避免闪烁
+  const isGuest = !user || isGuestUser(user);
 
   useEffect(() => {
     let cancelled = false;
 
     const resolveTarget = async () => {
-      if (!user) {
-        setFiles(JSON.parse(JSON.stringify(guestDemoFileStructure)));
+      // 游客模式：只在文件树为空时加载 demo 数据，避免覆盖游客新建的作品
+      if (isGuest) {
+        const currentFiles = useFileStore.getState().files;
+        const hasWorks = currentFiles[0]?.children && currentFiles[0].children.length > 0;
+        if (!hasWorks) {
+          setFiles(JSON.parse(JSON.stringify(guestDemoFileStructure)));
+        }
         if (!cancelled) {
-          setTargetPath('/workspace/p/book-1/story/1');
+          const existingPath = findFirstWorkspacePath(useFileStore.getState().files);
+          setTargetPath(existingPath || '/workspace/p/book-1/story/1');
           setResolved(true);
         }
         return;
@@ -86,13 +96,29 @@ const WorkspaceIndexRoute = () => {
     return () => {
       cancelled = true;
     };
-  }, [setFiles, user]);
+  }, [setFiles, user, isGuest]);
 
   if (targetPath) {
     return <Navigate to={targetPath} replace />;
   }
 
   if (!resolved) {
+    // 游客模式不应看到加载提示，直接显示欢迎信息
+    if (isGuest) {
+      return (
+        <div className="flex items-center justify-center h-full">
+          <div className="text-center max-w-md p-8">
+            <div className="w-16 h-16 mx-auto mb-4 bg-amber-100 rounded-full flex items-center justify-center">
+              <span className="text-2xl">👋</span>
+            </div>
+            <h2 className="text-xl font-semibold text-foreground mb-3">欢迎体验简单写作</h2>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              当前正以游客身份访问网站，仅支持部分功能，注册登录后解锁全部功能，请开始体验吧！
+            </p>
+          </div>
+        </div>
+      );
+    }
     return <div className="p-6 text-sm text-muted-foreground">正在加载工作区...</div>;
   }
 
@@ -106,6 +132,26 @@ const WorkspaceIndexRoute = () => {
       <p className="mt-2 text-sm text-muted-foreground">请在左侧点击新建作品，创建后会自动进入对应页面。</p>
     </div>
   );
+};
+
+// Auth guard: redirect unauthenticated users to login
+const RequireAuth = () => {
+  const { user } = useAuthStore();
+  const location = useLocation();
+
+  if (!user) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  return <Outlet />;
+};
+
+// Guest guard: allow access for guests with demo content, redirect logged-in users to workspace
+const GuestOrAuthGuard = () => {
+  const { user } = useAuthStore();
+
+  // Both guests and logged-in users can access workspace
+  return <Outlet />;
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -122,13 +168,14 @@ const WorkAccessGuard = () => {
     let cancelled = false;
 
     const resolve = async () => {
-      if (!user) {
-        setAllowed(true);
+      // 游客直接放行，不做数据库权限检查
+      if (!user || isGuestUser(user)) {
+        if (!cancelled) setAllowed(true);
         return;
       }
 
       if (!isUuid(workId)) {
-        setAllowed(false);
+        if (!cancelled) setAllowed(false);
         return;
       }
 
@@ -221,10 +268,10 @@ function App() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         
-        {/* Redirect root to workspace */}
-        <Route path="/" element={<Navigate to="/workspace" replace />} />
+        {/* Redirect root to login for unauthenticated users */}
+        <Route path="/" element={<Navigate to="/login" replace />} />
         
-        {/* Main Layout Routes */}
+        {/* Main Layout Routes - accessible to both guests and logged-in users */}
         <Route element={<WorkspaceLayout />}>
           {/* Workspace (with FileTree) */}
           <Route path="/workspace">
@@ -247,7 +294,7 @@ function App() {
             </Route>
           </Route>
 
-          {/* Other Sections (No FileTree) */}
+          {/* Other Sections - accessible to guests (data saved locally only) */}
           <Route path="/community" element={<Community />} />
           <Route path="/welfare" element={<Welfare />} />
           <Route path="/guide" element={<Guide />} />

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Plus, Edit2, Trash2, X, Info, ChevronDown, Copy, CheckCircle } from 'lucide-react';
 import { usePromptStore, Prompt } from '@/store/usePromptStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useTrashStore } from '@/store/useTrashStore';
 import { useToastStore } from '@/store/useToastStore';
 import Pagination from '@/components/Pagination';
@@ -33,7 +34,8 @@ const PRESET_TAGS: Record<string, string[]> = {
 };
 
 const Prompts = () => {
-  const { prompts, addPrompt, updatePrompt, removePrompt } = usePromptStore();
+  const { prompts, addPrompt, updatePrompt, removePrompt, setPrompts } = usePromptStore();
+  const { user } = useAuthStore();
   const { addToTrash } = useTrashStore();
   const addToast = useToastStore((state) => state.addToast);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -57,6 +59,48 @@ const Prompts = () => {
   
   // Copy state
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // 监听用户状态变化，加载预设提示词（只在非游客模式且没有提示词时）
+  useEffect(() => {
+    if (!user) return;
+    const isGuest = isGuestUser(user);
+    // 导入 initialPrompts 从 usePromptStore
+    // 让我们先在这里创建一个引用！让我修改一下，直接在这里定义初始提示词
+    const DEFAULT_PROMPTS: any[] = [
+      {
+        id: '1',
+        index: '作家',
+        title: '角色设定',
+        tags: ['职业'],
+        content: '你是一个经验丰富的作家，擅长描写细腻的情感和宏大的场面。请帮我构思一个...'
+      },
+      {
+        id: '2',
+        index: '短篇小说作家',
+        title: '短篇',
+        tags: ['快节奏'],
+        content: '请以欧·亨利的风格写一篇反转结局的短篇小说，主题是...'
+      },
+      {
+        id: '3',
+        index: '创建一个角色',
+        title: '角色卡',
+        tags: ['详细设定'],
+        content: '请详细设计一个反派角色，包含姓名、外貌、性格缺陷、核心动机和不为人知的秘密...'
+      },
+      {
+        id: '4',
+        index: '对标',
+        title: '风格模仿',
+        tags: ['练笔'],
+        content: '请模仿鲁迅的笔触，描写一段关于...'
+      }
+    ];
+    
+    if (!isGuest && prompts.length === 0) {
+      setPrompts(DEFAULT_PROMPTS);
+    }
+  }, [user, prompts.length, setPrompts]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

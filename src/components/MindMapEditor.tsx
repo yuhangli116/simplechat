@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useMemo } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import ReactFlow, {
   ReactFlowProvider,
   addEdge,
@@ -18,7 +18,7 @@ import '@/styles/reactflow.css';
 import { v4 as uuidv4 } from 'uuid';
 import { aiService } from '@/services/ai';
 import type { ModelKey } from '@/services/billing';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
 import { useToastStore } from '@/store/useToastStore';
 import { Plus, Trash2, GitMerge, RotateCcw, RotateCw, Sparkles, Palette, Maximize, Check, AlignLeft, AlignRight, ZoomIn, ZoomOut, Lock, Unlock, Download, FileText, Image as ImageIcon, FileJson } from 'lucide-react';
@@ -151,6 +151,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const { addToast } = useToastStore();
   const { files } = useFileStore();
   const location = useLocation();
+  const navigate = useNavigate();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [multiSelectedNodeIds, setMultiSelectedNodeIds] = useState<string[]>([]);
   const [isRightDraggingSelection, setIsRightDraggingSelection] = useState(false);
@@ -638,7 +639,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         }
       }
 
-      if (user && workId) {
+      if (user && workId && !isGuestUser(user)) {
         try {
           const remoteRecord = await loadMindMapRecord({ workId, id, type: id ? undefined : type });
           if (remoteRecord?.content) {
@@ -662,7 +663,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       }
 
       if (localUpdatedAt >= 0) {
-        if (user && workId && Array.isArray(localParsed?.nodes) && localParsed.nodes.length > 0) {
+        if (user && workId && !isGuestUser(user) && Array.isArray(localParsed?.nodes) && localParsed.nodes.length > 0) {
           saveMindMapContent({
             workId,
             nodeId: id || `mm-${type}-${workId}`,
@@ -696,12 +697,11 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       const updatedAt = new Date(now).toISOString();
       const payload = { nodes, edges, updated_at: updatedAt };
       localStorage.setItem(storageKey, JSON.stringify(payload));
-      if (!user || !workId) {
+      if (!user || !workId || isGuestUser(user)) {
         setSaveState('saved');
         setLastSavedAt(now);
         return;
       }
-
 
       setSaveState('saving');
       const seq = ++saveSeqRef.current;
@@ -937,7 +937,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     const payloadWithMeta = { ...payload, updated_at: updatedAt };
     localStorage.setItem(storageKey, JSON.stringify(payloadWithMeta));
 
-    if (!user || !workId) {
+    if (!user || !workId || isGuestUser(user)) {
       setSaveState('saved');
       setLastSavedAt(now);
       return;
@@ -1304,6 +1304,15 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const handleAiSubmit = async (model: ModelKey, userPrompt: string) => {
     if (isLocked) {
       showLockedHint();
+      return;
+    }
+
+    // 游客模式下禁止使用 AI 功能
+    if (isGuestUser(user)) {
+      if (confirm('AI 生成功能需要登录后才能使用，是否前往登录？')) {
+        navigate('/login');
+        setShowAIDialog(false);
+      }
       return;
     }
 

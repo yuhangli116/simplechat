@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { 
   LogOut, 
   Crown, 
   Settings, 
   ChevronDown,
   CreditCard,
-  UserCircle
+  UserCircle,
+  Eye
 } from 'lucide-react';
 import { getUserProfile, getRandomAvatar } from '@/utils/randomProfile';
 import { EditProfileModal } from '@/components/EditProfileModal';
@@ -23,8 +24,17 @@ const UserTopBar = () => {
   const [isAboutUsModalOpen, setIsAboutUsModalOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  const isGuest = isGuestUser(user);
+
   // Generate random profile for current user or use store profile
   const profile = useMemo(() => {
+    if (isGuest) {
+      return {
+        name: '访客体验',
+        avatar: '',
+        isVip: false
+      };
+    }
     if (!user) return null;
     const randomProf = getUserProfile(user);
     
@@ -33,7 +43,7 @@ const UserTopBar = () => {
       avatar: storeProfile?.avatar_url || randomProf?.avatar,
       isVip: (storeProfile?.membership_type && storeProfile.membership_type !== 'free') || randomProf?.isVip
     };
-  }, [user, storeProfile]);
+  }, [user, storeProfile, isGuest]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -48,7 +58,18 @@ const UserTopBar = () => {
 
   const handleLogout = async () => {
     setIsDropdownOpen(false);
-    void signOut();
+    // 等待 signOut 完成后再跳转，确保数据清理完毕
+    await signOut();
+    navigate('/login', { replace: true });
+  };
+
+  // 处理登录按钮点击：确保不管什么状态都能正确跳转到登录页面
+  const handleLoginClick = async () => {
+    if (isGuest) {
+      // 如果是游客，先清理数据
+      await signOut();
+    }
+    // 然后跳转到登录页
     navigate('/login');
   };
 
@@ -66,6 +87,33 @@ const UserTopBar = () => {
         >
           登录
         </Link>
+        <Link 
+          to="/register" 
+          className="px-5 py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 rounded-full shadow-lg shadow-purple-500/30 transition-all transform hover:scale-105 active:scale-95"
+        >
+          注册
+        </Link>
+      </div>
+    );
+  }
+
+  // 游客模式：显示提示文字、访客标识和登录/注册按钮
+  if (isGuest) {
+    return (
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-muted-foreground hidden sm:inline">
+          体验模式下数据不会保存，退出或刷新后将清除
+        </span>
+        <span className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded-full font-medium border border-amber-200">
+          <Eye className="w-3.5 h-3.5" />
+          访客体验模式
+        </span>
+        <button 
+          onClick={handleLoginClick}
+          className="px-5 py-2 text-sm font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-full transition-colors"
+        >
+          登录
+        </button>
         <Link 
           to="/register" 
           className="px-5 py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 rounded-full shadow-lg shadow-purple-500/30 transition-all transform hover:scale-105 active:scale-95"

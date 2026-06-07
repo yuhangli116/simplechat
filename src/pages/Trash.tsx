@@ -14,7 +14,7 @@ import {
 import { useTrashStore, TrashItem } from '@/store/useTrashStore';
 import { useFileStore, FileNode } from '@/store/useFileStore';
 import { usePromptStore, Prompt } from '@/store/usePromptStore';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
 import { findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree, restoreWorkFromTrash } from '@/lib/workspacePersistence';
 import Pagination from '@/components/Pagination';
@@ -32,9 +32,10 @@ const Trash = () => {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
-    // Sync with Supabase on mount
+    // 游客不同步 Supabase 回收站数据
+    if (!user || isGuestUser(user)) return;
     syncFromSupabase();
-  }, [syncFromSupabase]);
+  }, [syncFromSupabase, user]);
 
   // Login check - REMOVED for Dev Mode/User Request
   // if (!user) {
@@ -107,7 +108,7 @@ const Trash = () => {
   };
 
   const syncWorkspace = async () => {
-    if (!user) return;
+    if (!user || isGuestUser(user)) return;
     try {
       const nextFiles = await loadWorkspaceTree(user.id);
       setFiles(nextFiles as FileNode[]);
@@ -117,8 +118,8 @@ const Trash = () => {
   };
 
   const restoreWorkspaceItem = async (item: TrashItem) => {
-    if (!user) {
-      // 未登录时只恢复到本地状态
+    if (!user || isGuestUser(user)) {
+      // 游客/未登录时只恢复到本地状态
       addNode(item.content as FileNode, item.parentId);
       return;
     }

@@ -25,7 +25,7 @@ import FileTree from '@/components/FileTree';
 import UserTopBar from '@/components/UserTopBar';
 import RewardConfirmDialog from '@/components/RewardConfirmDialog';
 import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useToastStore } from '@/store/useToastStore';
 
 const WorkspaceLayout = () => {
@@ -33,6 +33,7 @@ const WorkspaceLayout = () => {
   const location = useLocation();
   const { user, fetchProfile } = useAuthStore();
   const { addToast } = useToastStore();
+  const isGuest = isGuestUser(user);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
   const [isFileTreeCollapsed, setIsFileTreeCollapsed] = React.useState(false);

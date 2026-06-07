@@ -20,7 +20,7 @@ import {
 import { aiService, MODEL_PRICING } from '@/services/ai';
 import { syncModelPricingFromDb } from '@/services/billing';
 import ModelSelector from '@/components/ModelSelector';
-import { useAuthStore } from '@/store/useAuthStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
 import { useParams } from 'react-router-dom';
 import ContextSelectorDialog from '@/components/ContextSelectorDialog';
@@ -178,7 +178,7 @@ const StoryEditor = () => {
     };
 
     const loadContent = async () => {
-      if (user) {
+      if (user && !isGuestUser(user)) {
         try {
           const remoteContent = await loadChapterContent(chapterId);
           if (remoteContent) {
@@ -202,7 +202,7 @@ const StoryEditor = () => {
       const key = `story-${workId}-${chapterId}`;
       const content = editor.getHTML();
       localStorage.setItem(key, content);
-      if (user) {
+      if (user && !isGuestUser(user)) {
         try {
           await saveChapterContent(workId, chapterId, currentChapterName, content);
         } catch (error) {
@@ -382,6 +382,14 @@ const StoryEditor = () => {
   const handleAiContinue = async () => {
     if (!editor) return;
 
+    // 游客模式下禁止使用 AI 功能
+    if (isGuestUser(user)) {
+      if (confirm('AI 创作功能需要登录后才能使用，是否前往登录？')) {
+        navigate('/login');
+      }
+      return;
+    }
+
     if (!selectedModel || !(selectedModel in MODEL_PRICING)) {
       alert('请先选择一个具体的模型');
       setShowModelSelector(true);
@@ -445,7 +453,7 @@ const StoryEditor = () => {
         if (workId && chapterId) {
           const content = editor.getHTML();
           localStorage.setItem(`story-${workId}-${chapterId}`, content);
-          if (user) {
+          if (user && !isGuestUser(user)) {
             try {
               setAiPhase('正在保存');
               await saveChapterContent(workId, chapterId, currentChapterName, content);
@@ -455,7 +463,7 @@ const StoryEditor = () => {
           }
         }
         
-        if (user) fetchBalance();
+        if (user && !isGuestUser(user)) fetchBalance();
         
         if (response.usage) {
           const totalCost = response.usage.total_cost + (summarizationUsage ? summarizationUsage.total_cost : 0);

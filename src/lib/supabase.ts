@@ -1,5 +1,8 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { Database } from '@/types/supabase'
+import { createLogger } from '@/lib/logger'
+
+const log = createLogger('Supabase')
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -7,7 +10,7 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 let supabaseInstance: SupabaseClient<Database> | any;
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Missing or invalid Supabase URL/Key. Using mock client.')
+  log.warn('Missing Supabase URL/Key, using mock client')
   
   // Mock Chainable Implementation for Database Queries
   const createMockChain = (table?: string) => {
@@ -74,6 +77,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
     }
   }
 } else {
+  log.info('Supabase client initialized', { url: supabaseUrl?.slice(0, 30) })
   supabaseInstance = createClient<Database>(supabaseUrl, supabaseAnonKey)
 }
 

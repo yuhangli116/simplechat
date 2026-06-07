@@ -1,6 +1,9 @@
 import { supabase } from '@/lib/supabase'
 import type { Edge, Node } from 'reactflow'
 import { v4 as uuidv4 } from 'uuid'
+import { createLogger } from '@/lib/logger'
+
+const log = createLogger('Workspace')
 
 export interface WorkspaceFileNode {
   id: string
@@ -358,6 +361,7 @@ const persistNestedNodes = async (
 }
 
 export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNode[]> => {
+  log.info('Loading workspace tree', { userId })
   const canUseMindMaps = getMindMapsCapability() !== false
   const mindMapsRequest = canUseMindMaps
     ? supabase.from('mind_maps').select('*').order('created_at', { ascending: true })
@@ -375,6 +379,7 @@ export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNo
   if (mindMapsError && !isMissingRelationError(mindMapsError)) throw mindMapsError
   if (mindMapsError && isMissingRelationError(mindMapsError)) {
     setMindMapsCapability(false)
+    log.warn('mind_maps table missing, degraded mode enabled')
   } else if (canUseMindMaps) {
     setMindMapsCapability(true)
   }
@@ -382,6 +387,8 @@ export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNo
   const works = (worksData || []) as WorkRow[]
   const chapters = (chaptersData || []) as ChapterRow[]
   const mindMaps = (mindMapsError && isMissingRelationError(mindMapsError) ? [] : (mindMapsData || [])) as MindMapRow[]
+
+  log.success('Workspace tree loaded', { userId, workCount: works.length, chapterCount: chapters.length, mindMapCount: mindMaps.length })
 
   const children: WorkspaceFileNode[] = works.map((work) => {
     const workChapters = chapters
@@ -449,6 +456,8 @@ export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNo
 export const persistWorkTree = async (userId: string, workNode: WorkspaceFileNode) => {
   if (!isUuid(workNode.id)) return
 
+  log.info('Persisting work tree', { userId, workId: workNode.id, workName: workNode.name })
+
   const { error } = await supabase.from('works').upsert(
     {
       id: workNode.id,
@@ -466,9 +475,13 @@ export const persistWorkTree = async (userId: string, workNode: WorkspaceFileNod
   for (const child of workNode.children || []) {
     await persistNestedNodes(workNode.id, child, chapterNumberRef)
   }
+
+  log.success('Work tree persisted', { userId, workId: workNode.id, chapterCount: chapterNumberRef.value - 1 })
 }
 
 export const deleteWorkspaceNode = async (node: WorkspaceFileNode) => {
+  log.info('Deleting workspace node', { nodeId: node.id, nodeType: node.type, nodeName: node.name })
+
   if (node.type === 'file') {
     const chapterId = getChapterIdFromPath(node.path)
     if (chapterId) {
@@ -489,6 +502,8 @@ export const deleteWorkspaceNode = async (node: WorkspaceFileNode) => {
     const { error } = await supabase.from('works').delete().eq('id', node.id)
     throwPersistenceError(error, '删除作品失败')
   }
+
+  log.success('Workspace node deleted', { nodeId: node.id, nodeType: node.type })
 }
 
 export const loadChapterContent = async (chapterId: string) => {
@@ -507,6 +522,8 @@ export const loadChapterContent = async (chapterId: string) => {
 export const saveChapterContent = async (workId: string, chapterId: string, title: string, content: string) => {
   if (!isUuid(workId) || !isUuid(chapterId)) return
 
+  log.info('Saving chapter content', { workId, chapterId, title, contentLength: content?.length })
+
   const { error } = await supabase.from('chapters').upsert(
     {
       id: chapterId,
@@ -519,6 +536,7 @@ export const saveChapterContent = async (workId: string, chapterId: string, titl
     { onConflict: 'id' }
   )
   throwPersistenceError(error, '保存正文失败')
+  log.success('Chapter content saved', { workId, chapterId, title })
 }
 
 export const loadMindMapContent = async (params: { workId: string; id?: string; type?: EditorType }) => {
@@ -619,6 +637,7 @@ export const saveMindMapContent = async (params: {
   content: { nodes: Node[]; edges: Edge[] }
 }) => {
   const { workId, nodeId, title, type, isDefault, customIcon, content } = params
+  log.info('Saving mind map content', { workId, nodeId, title, type, isDefault })
   if (getMindMapsCapability() === false) {
     throw new Error('数据库缺少 public.mind_maps 表，思维导图云端保存不可用，请先执行修复 SQL。')
   }
@@ -637,6 +656,7 @@ export const saveMindMapContent = async (params: {
   )
   throwPersistenceError(error, '保存思维导图失败')
   setMindMapsCapability(true)
+  log.success('Mind map content saved', { workId, nodeId, title })
 }
 
 export const createTrashSnapshot = async (node: WorkspaceFileNode) => enrichNodeForTrash(node)
@@ -669,6 +689,8 @@ export const findWorkNodeForTarget = (nodes: WorkspaceFileNode[], targetId: stri
 export const restoreWorkFromTrash = async (userId: string, workSnapshot: WorkspaceFileNode): Promise<void> => {
   if (!isUuid(workSnapshot.id)) return;
 
+  log.info('Restoring work from trash', { userId, originalWorkId: workSnapshot.id, workName: workSnapshot.name })
+
   // Generate new ID for the restored work to avoid conflicts
   const newWorkId = uuidv4();
 
@@ -693,6 +715,8 @@ export const restoreWorkFromTrash = async (userId: string, workSnapshot: Workspa
   for (const child of workSnapshot.children || []) {
     await persistNestedNodes(newWorkId, child, chapterNumberRef, true)
   }
+
+  log.success('Work restored from trash', { userId, newWorkId, originalWorkId: workSnapshot.id })
 }
 
 export const getMindMapTitleFromRoute = getDefaultMindMapTitle

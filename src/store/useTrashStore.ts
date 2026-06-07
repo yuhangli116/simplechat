@@ -2,7 +2,10 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
 import { supabase } from '../lib/supabase';
-import { useAuthStore } from './useAuthStore';
+import { useAuthStore, isGuestUser } from './useAuthStore';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('Trash');
 
 export interface TrashItem {
   id: string; // Unique ID for the trash item
@@ -39,11 +42,11 @@ const handleTrashSyncError = (error: any, action: string) => {
 
   if (isMissingTrashTableError(error)) {
     setTrashSyncCapability(false);
-    console.warn('Supabase trash sync disabled because public.trash_items is missing.');
+    log.warn('Supabase trash sync disabled: trash_items table missing');
     return true;
   }
 
-  console.error(`Failed to ${action}:`, error);
+  log.error(`Failed to ${action}`, { error: error?.message });
   return true;
 };
 
@@ -72,6 +75,7 @@ export const useTrashStore = create<TrashState>()(
       },
       
       addToTrash: async (item) => {
+        log.info('Adding item to trash', { type: item.type, title: item.title });
         const now = Date.now();
         const expiresAt = now + (EXPIRATION_DAYS * 24 * 60 * 60 * 1000);
         const id = uuidv4();
@@ -90,7 +94,7 @@ export const useTrashStore = create<TrashState>()(
         // Try to sync with Supabase
         try {
           const user = useAuthStore.getState().user;
-          if (user && canSyncTrash()) {
+          if (user && !isGuestUser(user) && canSyncTrash()) {
             const { error } = await supabase.from('trash_items').insert({
               id: newItem.id,
               user_id: user.id,
@@ -120,7 +124,7 @@ export const useTrashStore = create<TrashState>()(
         if (!item) {
           try {
             const user = useAuthStore.getState().user;
-            if (user && canSyncTrash()) {
+            if (user && !isGuestUser(user) && canSyncTrash()) {
               const { data, error } = await supabase
                 .from('trash_items')
                 .select('*')
@@ -161,13 +165,14 @@ export const useTrashStore = create<TrashState>()(
       },
 
       permanentlyDelete: async (id) => {
+        log.info('Permanently deleting trash item', { id });
         set((state) => ({
           items: state.items.filter(i => i.id !== id)
         }));
         
         try {
           const user = useAuthStore.getState().user;
-          if (user && canSyncTrash()) {
+          if (user && !isGuestUser(user) && canSyncTrash()) {
             const { error } = await supabase.from('trash_items').delete().eq('id', id).eq('user_id', user.id);
             handleTrashSyncError(error, 'delete trash item from Supabase');
           }
@@ -177,11 +182,12 @@ export const useTrashStore = create<TrashState>()(
       },
 
       clearTrash: async () => {
+        log.info('Clearing all trash items');
         set({ items: [] });
         
         try {
           const user = useAuthStore.getState().user;
-          if (user && canSyncTrash()) {
+          if (user && !isGuestUser(user) && canSyncTrash()) {
             const { error } = await supabase.from('trash_items').delete().eq('user_id', user.id);
             handleTrashSyncError(error, 'clear trash from Supabase');
           }
@@ -196,13 +202,14 @@ export const useTrashStore = create<TrashState>()(
         const expiredIds = state.items.filter(i => i.expiresAt <= now).map(i => i.id);
         
         if (expiredIds.length > 0) {
+          log.info('Clearing expired trash items', { count: expiredIds.length });
           set((state) => ({
             items: state.items.filter(i => i.expiresAt > now)
           }));
           
           try {
             const user = useAuthStore.getState().user;
-            if (user && canSyncTrash()) {
+            if (user && !isGuestUser(user) && canSyncTrash()) {
               const { error } = await supabase.from('trash_items').delete().in('id', expiredIds).eq('user_id', user.id);
               handleTrashSyncError(error, 'clear expired trash from Supabase');
             }
@@ -214,9 +221,10 @@ export const useTrashStore = create<TrashState>()(
       
       // Sync from Supabase on load
       syncFromSupabase: async () => {
+        log.info('Syncing trash items from Supabase');
         try {
           const user = useAuthStore.getState().user;
-          if (user && shouldProbeTrashSync()) {
+          if (user && !isGuestUser(user) && shouldProbeTrashSync()) {
             const { data, error } = await supabase
               .from('trash_items')
               .select('*')

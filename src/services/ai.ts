@@ -1,6 +1,9 @@
 import { useAuthStore } from '@/store/useAuthStore';
 import { supabase } from '@/lib/supabase';
 import { calculateDiamonds, MODEL_PRICING, syncModelPricingFromDb, type ModelKey } from '@/services/billing';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('AIService');
 
 interface AIResponse {
   content: string;
@@ -61,6 +64,7 @@ const applyServerBalance = (response: AIResponse) => {
   if (profile) {
     setProfile({ ...profile, diamond_balance: totalRemaining });
   }
+  log.info('Server balance synced', { totalRemaining });
 };
 
 const getStoreUserId = () => {
@@ -87,6 +91,8 @@ const callAIEndpoint = async (
   payload: Record<string, unknown>
 ): Promise<AIResponse> => {
   const accessToken = await getAccessToken();
+  log.info('Calling AI endpoint', { endpoint, model: payload.model as string, hasToken: !!accessToken });
+
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
@@ -100,6 +106,7 @@ const callAIEndpoint = async (
 
   if (!response.ok) {
     const message = result?.error || `HTTP ${response.status}`;
+    log.error('AI endpoint returned error', { endpoint, status: response.status, error: message?.slice(0, 200) });
     throw new Error(message);
   }
 
@@ -166,9 +173,11 @@ export const aiService = {
     if (!context || context.length < 10) return { content: context };
     const resolvedUserId = resolveUserId(userId);
     if (!resolvedUserId) {
+      log.warn('Summarize rejected: user not authenticated');
       return { content: '', error: '请先登录后再使用 AI 创作功能。' };
     }
 
+    log.info('Summarize context started', { model, contextLength: context.length });
     await syncModelPricingFromDb();
 
     const modelKey: ModelKey = model;
@@ -195,6 +204,12 @@ export const aiService = {
         window.dispatchEvent(new CustomEvent('welfare:ai_used'));
       }
 
+      if (response.error) {
+        log.warn('Summarize context returned error', { model, error: response.error?.slice(0, 200) });
+      } else {
+        log.success('Summarize context completed', { model, promptTokens, completionTokens, totalCost });
+      }
+
       return {
         content,
         error: response.error,
@@ -208,7 +223,7 @@ export const aiService = {
         },
       };
     } catch (error: any) {
-      console.error('Summarization Error:', error);
+      log.error('Summarize context failed', { model }, error);
       return { content: '', error: '总结上下文失败：' + (error.message || '未知错误') };
     }
   },
@@ -216,12 +231,18 @@ export const aiService = {
   async generateText(request: AIRequest): Promise<AIResponse> {
     const resolvedUserId = resolveUserId(request.userId);
     if (!resolvedUserId) {
+      log.warn('Generate text rejected: user not authenticated');
       return { content: '', error: '请先登录后再使用 AI 创作功能。' };
     }
 
     await syncModelPricingFromDb();
     const config = MODEL_PRICING[request.model];
-    if (!config) return { content: '', error: `Model ${request.model} not supported` };
+    if (!config) {
+      log.warn('Generate text rejected: model not supported', { model: request.model });
+      return { content: '', error: `Model ${request.model} not supported` };
+    }
+
+    log.info('Generate text started', { model: request.model, promptLength: request.prompt?.length, contextLength: request.context?.length });
 
     try {
       const response = await callAIEndpoint('/api/ai/generate', {
@@ -247,6 +268,18 @@ export const aiService = {
         window.dispatchEvent(new CustomEvent('welfare:ai_used'));
       }
 
+      if (response.error) {
+        log.warn('Generate text returned error', { model: request.model, error: response.error?.slice(0, 200) });
+      } else {
+        log.success('Generate text completed', {
+          model: request.model,
+          promptTokens,
+          completionTokens,
+          totalCost,
+          contentLength: content?.length,
+        });
+      }
+
       return {
         content,
         error: response.error,
@@ -261,8 +294,8 @@ export const aiService = {
       };
 
     } catch (error: any) {
-      console.error('AI Generation Error:', error);
       const friendlyMsg = getFriendlyErrorMessage(error, config.provider);
+      log.error('Generate text failed', { model: request.model, provider: config.provider }, error);
       return { 
         content: '', 
         error: friendlyMsg 
@@ -275,6 +308,7 @@ export const aiService = {
     userId?: string,
     model: ModelKey = 'deepseek-v4-flash'
   ): Promise<{ nodes: Array<{ id: string; label: string }> }> {
+    log.info('Generate outline started', { model, promptLength: prompt?.length });
     try {
       const response = await this.generateText({
         model,
@@ -290,9 +324,10 @@ export const aiService = {
       const text = response.content || '';
       const nodes = JSON.parse(text.match(/\[.*\]/s)?.[0] || '[]');
 
+      log.success('Generate outline completed', { nodeCount: nodes.length });
       return { nodes };
     } catch (error) {
-      console.error('Outline Generation Error:', error);
+      log.error('Generate outline failed, using fallback', { model }, error);
       return {
         nodes: [
           { id: '1', label: 'Chapter 1 (Fallback)' },

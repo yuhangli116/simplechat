@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
+import { isGuestUser } from './useAuthStore';
 
 export interface FileNode {
   id: string;
@@ -16,6 +17,13 @@ export interface FileNode {
     edges: Array<Record<string, unknown>>;
   } | null;
 }
+
+// 游客限制常量
+export const GUEST_LIMITS = {
+  MAX_WORKS: 10,
+  MAX_CHAPTERS_PER_WORK: 10,
+  MAX_MINDMAPS_PER_WORK: 10,
+} as const;
 
 export const guestDemoFileStructure: FileNode[] = [
   {
@@ -64,6 +72,37 @@ export const initialFileStructure: FileNode[] = [
   }
 ];
 
+// 动态存储：游客模式下不持久化（数据仅内存），登录用户使用 localStorage
+const dynamicStorage = {
+  getItem: (name: string) => {
+    try {
+      const user = useAuthStore?.getState?.()?.user;
+      if (isGuestUser(user)) return null;
+      return localStorage.getItem(name);
+    } catch {
+      return localStorage.getItem(name);
+    }
+  },
+  setItem: (name: string, value: string) => {
+    try {
+      const user = useAuthStore?.getState?.()?.user;
+      if (isGuestUser(user)) return; // 游客不写入任何存储
+      localStorage.setItem(name, value);
+    } catch {
+      // ignore
+    }
+  },
+  removeItem: (name: string) => {
+    try {
+      const user = useAuthStore?.getState?.()?.user;
+      if (isGuestUser(user)) return;
+      localStorage.removeItem(name);
+    } catch {
+      // ignore
+    }
+  },
+};
+
 interface FileState {
   files: FileNode[];
   createWorkInProgress: boolean;
@@ -79,13 +118,13 @@ export const useFileStore = create<FileState>()(
     (set, get) => ({
       files: initialFileStructure,
       createWorkInProgress: false,
-      
+
       setFiles: (files) => set({ files }),
       setCreateWorkInProgress: (value) => set({ createWorkInProgress: value }),
-      
+
       addNode: (newNode, parentId) => {
         const { files } = get();
-        
+
         // If no parentId provided, add to root's children (default behavior for restoring works)
         if (!parentId) {
            let newFiles = [...files];
@@ -120,10 +159,10 @@ export const useFileStore = create<FileState>()(
             return node;
           });
         };
-        
+
         // Try to add to specific parent
         let newFiles = addNodeRecursive(files);
-        
+
         // If parent not found (maybe parent was deleted?), fallback to root
         if (!nodeAdded) {
           if (newFiles.length === 0) {
@@ -135,7 +174,7 @@ export const useFileStore = create<FileState>()(
             newFiles[0].children = [newNode];
           }
         }
-        
+
         set({ files: newFiles });
       },
 
@@ -169,7 +208,10 @@ export const useFileStore = create<FileState>()(
       }
     }),
     {
-      name: 'my-works-tree', // Use same key as FileTree.tsx to pick up existing data!
+      name: 'my-works-tree',
+      // 游客模式：动态存储不写入（数据仅内存），刷新即清理
+      // 登录用户：数据持久化到 localStorage
+      storage: dynamicStorage as any,
     }
   )
 );

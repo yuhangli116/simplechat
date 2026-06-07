@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, PenTool, Eye, EyeOff, CheckCircle, XCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { getRandomName, getRandomAvatar } from '@/utils/randomProfile';
 
 export default function Register() {
+  const { user, session } = useAuthStore();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -27,6 +29,14 @@ export default function Register() {
   const strengthLabel = strengthScore <= 1 ? '弱' : strengthScore === 2 ? '中' : '强';
   const [passwordFocused, setPasswordFocused] = useState(false);
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const defaultWorkspacePath = '/workspace';
+
+  useEffect(() => {
+    // 只有真正登录的用户（不是游客）才跳转到 workspace
+    if ((session?.user || user) && !isGuestUser(user)) {
+      navigate(defaultWorkspacePath, { replace: true });
+    }
+  }, [defaultWorkspacePath, navigate, session, user]);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();

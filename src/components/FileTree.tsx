@@ -26,8 +26,8 @@ import {
 import { useNavigate, useLocation } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import CreateWorkDialog, { CreateWorkData } from './CreateWorkDialog';
-import { useAuthStore } from '@/store/useAuthStore';
-import { useFileStore, FileNode, initialFileStructure } from '@/store/useFileStore';
+import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
+import { useFileStore, FileNode, initialFileStructure, GUEST_LIMITS } from '@/store/useFileStore';
 import { useTrashStore } from '@/store/useTrashStore';
 import { useToastStore } from '@/store/useToastStore';
 import { createTrashSnapshot, deleteWorkspaceNode, findWorkNodeForTarget, loadWorkspaceTree, loadWorkSnapshotForTrash, persistWorkTree } from '@/lib/workspacePersistence';
@@ -493,7 +493,7 @@ const FileTree = () => {
   const { addToTrash, addExistingItem } = useTrashStore();
 
   const refreshWorkspace = async () => {
-    if (!user) return;
+    if (!user || isGuestUser(user)) return;
     try {
       const nextFiles = await loadWorkspaceTree(user.id);
       setFiles(nextFiles as FileNode[]);
@@ -503,7 +503,7 @@ const FileTree = () => {
   };
 
   const commitWorkTreeChange = async (nextFiles: FileNode[], targetId: string) => {
-    if (!user) {
+    if (!user || isGuestUser(user)) {
       setFiles(nextFiles);
       return true;
     }
@@ -581,14 +581,15 @@ const FileTree = () => {
   };
 
   const handleAddChapter = async (parentId: string) => {
-    // Dev Mode: Allow adding chapter without login
-    // if (!user) {
-    //   if (confirm('请先登录以创建章节')) {
-    //     // navigate('/login'); // Can't navigate from here easily without hook
-    //     window.location.href = '/login';
-    //   }
-    //   return;
-    // }
+    // 游客限制：每个作品最多10个章节
+    if (isGuestUser(user)) {
+      const parentNode = findNode(files, parentId);
+      const chapterCount = parentNode?.children?.filter(c => c.type === 'file').length || 0;
+      if (chapterCount >= GUEST_LIMITS.MAX_CHAPTERS_PER_WORK) {
+        addToast(`访客每个作品最多可创建 ${GUEST_LIMITS.MAX_CHAPTERS_PER_WORK} 个章节，登录后无限制`, 'warning');
+        return;
+      }
+    }
 
     // Generate default name: "未命名章节" + count
     // To be precise, we could count existing children, but a timestamp or random suffix is safer/easier
@@ -647,6 +648,16 @@ const FileTree = () => {
   };
 
   const handleAddMindMap = async (parentId: string) => {
+    // 游客限制：每个作品最多10个思维导图
+    if (isGuestUser(user)) {
+      const parentNode = findNode(files, parentId);
+      const mindmapCount = parentNode?.children?.filter(c => c.type === 'mindmap').length || 0;
+      if (mindmapCount >= GUEST_LIMITS.MAX_MINDMAPS_PER_WORK) {
+        addToast(`访客每个作品最多可创建 ${GUEST_LIMITS.MAX_MINDMAPS_PER_WORK} 个思维导图，登录后无限制`, 'warning');
+        return;
+      }
+    }
+
     const parentNode = findNode(files, parentId);
     const childCount = parentNode?.children?.length || 0;
     const name = `新建大纲${childCount + 1}`;
@@ -717,6 +728,15 @@ const FileTree = () => {
   };
 
   const handleCreateWorkSubmit = async (data: CreateWorkData) => {
+    // 游客限制：最多创建10个作品
+    if (isGuestUser(user)) {
+      const currentWorks = files[0]?.children?.filter(c => c.type === 'folder') || [];
+      if (currentWorks.length >= GUEST_LIMITS.MAX_WORKS) {
+        addToast(`访客最多可创建 ${GUEST_LIMITS.MAX_WORKS} 个作品，登录后无限制`, 'warning');
+        return;
+      }
+    }
+
     const newWorkId = uuidv4();
     setCreateWorkInProgress(true);
     
@@ -806,7 +826,7 @@ const FileTree = () => {
     } else {
       newFiles[0].children = [newWork];
     }
-    if (user) {
+    if (user && !isGuestUser(user)) {
       try {
         await persistWorkTree(user.id, newWork as any);
         setFiles(newFiles);
@@ -824,6 +844,7 @@ const FileTree = () => {
         return;
       }
     } else {
+      // 游客模式：仅前端保存
       setFiles(newFiles);
     }
 
@@ -892,11 +913,11 @@ const FileTree = () => {
     const expiresAt = now + 30 * 24 * 60 * 60 * 1000;
     const trashId = uuidv4();
 
-    const trashSnapshot = isDeletingWork && user && workIdForSnapshot
+    const trashSnapshot = isDeletingWork && user && !isGuestUser(user) && workIdForSnapshot
       ? await loadWorkSnapshotForTrash(workIdForSnapshot)
       : await createTrashSnapshot(targetNode as any);
 
-    if (isDeletingWork && user && !trashSnapshot) {
+    if (isDeletingWork && user && !isGuestUser(user) && !trashSnapshot) {
       addToast('未找到作品数据，无法移入回收站', 'error');
       return;
     }
@@ -931,7 +952,7 @@ const FileTree = () => {
       ? getPreferredWorkPath(fallbackWork) || '/workspace'
       : null;
 
-    if (user) {
+    if (user && !isGuestUser(user)) {
       try {
         if (isDeletingWork) {
           const { error } = await supabase.from('trash_items').insert({
@@ -967,7 +988,7 @@ const FileTree = () => {
       }
     }
 
-    if (isDeletingWork && user) {
+    if (isDeletingWork && user && !isGuestUser(user)) {
       addExistingItem({
         id: trashId,
         originalId: targetNode.id,
@@ -998,7 +1019,7 @@ const FileTree = () => {
 
     setFiles(nextFiles);
 
-    if (user) {
+    if (user && !isGuestUser(user)) {
       await refreshWorkspace();
     }
 
