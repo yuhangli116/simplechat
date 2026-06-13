@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { isGuestUser, useAuthStore } from './useAuthStore';
 
 export interface Prompt {
@@ -45,7 +45,6 @@ export const initialPrompts: Prompt[] = [
 const dynamicPromptStorage = {
   getItem: (name: string) => {
     try {
-      const user = useAuthStore?.getState?.()?.user;
       // 游客和登录用户都可以读取 localStorage 中的提示词
       return localStorage.getItem(name);
     } catch {
@@ -102,7 +101,7 @@ export const usePromptStore = create<PromptState>()(
     },
     {
       name: 'my-prompts',
-      storage: dynamicPromptStorage as any,
+      storage: createJSONStorage(() => dynamicPromptStorage),
       // 只有当 localStorage 中没有数据时才使用初始化值
       merge: (persistedState, currentState) => {
         if (persistedState && (persistedState as any).prompts && (persistedState as any).prompts.length > 0) {

@@ -3,9 +3,9 @@
  *
  * 功能：
  *   - 结构化日志输出（控制台 + 文件持久化）
- *   - 日志文件自动轮转（单文件最大 1GB）
- *   - 日志目录自动清理（总大小上限 5GB，超出删除最老文件）
- *   - 日志文件命名：simplechat.log.YYYYMMDD_HHmmss
+ *   - 启动时续写 log/simplechat.log
+ *   - simplechat.log 达到 1GB 后轮转为 simplechat.log.YYYYMMDD_HHmmss
+ *   - log 目录总大小最大 5GB，超出后删除最老的轮转日志
  *   - 支持批量接收前端日志并持久化
  */
 
@@ -18,12 +18,14 @@ import { fileURLToPath } from 'url';
 const MAX_FILE_SIZE = 1 * 1024 * 1024 * 1024; // 1GB
 const MAX_DIR_SIZE = 5 * 1024 * 1024 * 1024;   // 5GB
 const LOG_DIR_NAME = 'log';
-const LOG_FILE_PREFIX = 'simplechat.log.';
+const ACTIVE_LOG_FILE = 'simplechat.log';
+const ROTATED_LOG_PREFIX = 'simplechat.log.';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const LOG_DIR = path.resolve(PROJECT_ROOT, LOG_DIR_NAME);
+const ACTIVE_LOG_PATH = path.join(LOG_DIR, ACTIVE_LOG_FILE);
 
 // ─── 日志级别 ───
 
@@ -42,8 +44,7 @@ function formatDateTimestamp(date = new Date()) {
   const d = String(date.getDate()).padStart(2, '0');
   const h = String(date.getHours()).padStart(2, '0');
   const min = String(date.getMinutes()).padStart(2, '0');
-  const s = String(date.getSeconds()).padStart(2, '0');
-  return `${y}${m}${d}_${h}${min}${s}`;
+  return `${y}${m}${d}_${h}${min}`;
 }
 
 function ensureLogDir() {
@@ -52,57 +53,87 @@ function ensureLogDir() {
   }
 }
 
-// ─── 日志文件管理 ───
-
-let currentLogFile = null;
-let currentLogStream = null;
+function getFileSize(filePath) {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+}
 
 function getLogFiles() {
   ensureLogDir();
   try {
     return fs.readdirSync(LOG_DIR)
-      .filter(f => f.startsWith(LOG_FILE_PREFIX))
-      .sort();
+      .filter((name) => name === ACTIVE_LOG_FILE || name.startsWith(ROTATED_LOG_PREFIX));
   } catch {
     return [];
   }
 }
 
-function getCurrentLogFile() {
-  const files = getLogFiles();
-  if (files.length === 0) return null;
-  return files[files.length - 1];
+function getUniqueRotatedPath(date = new Date()) {
+  const baseName = `${ACTIVE_LOG_FILE}.${formatDateTimestamp(date)}`;
+  let candidate = path.join(LOG_DIR, baseName);
+  let index = 1;
+
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(LOG_DIR, `${baseName}_${index}`);
+    index += 1;
+  }
+
+  return candidate;
 }
 
-function getCurrentLogStream() {
-  const logFile = getCurrentLogFile();
+// ─── 日志文件管理 ───
 
-  if (logFile && currentLogFile === logFile && currentLogStream) {
-    // 检查当前文件大小
-    try {
-      const stats = fs.statSync(path.join(LOG_DIR, logFile));
-      if (stats.size < MAX_FILE_SIZE) {
-        return currentLogStream;
-      }
-    } catch {
-      // 文件可能被删除，重新创建
-    }
+let currentLogStream = null;
+let currentLogSize = 0;
+
+function closeCurrentLogStream() {
+  if (!currentLogStream) return;
+
+  try {
+    currentLogStream.end();
+  } catch {
+    // ignore
   }
+  currentLogStream = null;
+}
 
-  // 关闭旧流
-  if (currentLogStream) {
-    try { currentLogStream.end(); } catch { /* ignore */ }
-    currentLogStream = null;
-  }
-
-  // 创建新日志文件
+function openActiveLogStream() {
   ensureLogDir();
-  const newFileName = `${LOG_FILE_PREFIX}${formatDateTimestamp()}`;
-  const newFilePath = path.join(LOG_DIR, newFileName);
-  currentLogFile = newFileName;
-  currentLogStream = fs.createWriteStream(newFilePath, { flags: 'a' });
+
+  if (!currentLogStream) {
+    currentLogSize = getFileSize(ACTIVE_LOG_PATH);
+    currentLogStream = fs.createWriteStream(ACTIVE_LOG_PATH, { flags: 'a' });
+  }
 
   return currentLogStream;
+}
+
+function rotateActiveLog() {
+  closeCurrentLogStream();
+  ensureLogDir();
+
+  if (fs.existsSync(ACTIVE_LOG_PATH) && getFileSize(ACTIVE_LOG_PATH) > 0) {
+    fs.renameSync(ACTIVE_LOG_PATH, getUniqueRotatedPath());
+  }
+
+  currentLogSize = 0;
+  currentLogStream = fs.createWriteStream(ACTIVE_LOG_PATH, { flags: 'a' });
+  cleanupOldLogs();
+}
+
+function ensureCapacityFor(bytesToWrite) {
+  ensureLogDir();
+
+  if (currentLogSize === 0) {
+    currentLogSize = getFileSize(ACTIVE_LOG_PATH);
+  }
+
+  if (currentLogSize >= MAX_FILE_SIZE || currentLogSize + bytesToWrite > MAX_FILE_SIZE) {
+    rotateActiveLog();
+  }
 }
 
 function cleanupOldLogs() {
@@ -112,29 +143,28 @@ function cleanupOldLogs() {
   let totalSize = 0;
   const fileStats = [];
 
-  for (const f of files) {
+  for (const name of files) {
+    const filePath = path.join(LOG_DIR, name);
     try {
-      const stats = fs.statSync(path.join(LOG_DIR, f));
-      fileStats.push({ name: f, size: stats.size, mtime: stats.mtimeMs });
+      const stats = fs.statSync(filePath);
+      fileStats.push({ name, path: filePath, size: stats.size, mtime: stats.mtimeMs });
       totalSize += stats.size;
     } catch {
       // 文件可能已被删除
     }
   }
 
-  // 按修改时间排序（最老的在前）
   fileStats.sort((a, b) => a.mtime - b.mtime);
 
-  // 删除最老的日志直到总大小低于阈值
-  while (totalSize > MAX_DIR_SIZE && fileStats.length > 1) {
-    const oldest = fileStats.shift();
-    if (!oldest) break;
+  while (totalSize > MAX_DIR_SIZE && fileStats.length > 0) {
+    const oldestRotatedIndex = fileStats.findIndex((file) => file.name !== ACTIVE_LOG_FILE);
+    if (oldestRotatedIndex === -1) break;
 
+    const [oldest] = fileStats.splice(oldestRotatedIndex, 1);
     try {
-      fs.unlinkSync(path.join(LOG_DIR, oldest.name));
+      fs.unlinkSync(oldest.path);
       totalSize -= oldest.size;
     } catch {
-      // 删除失败，跳过
       break;
     }
   }
@@ -144,9 +174,16 @@ function cleanupOldLogs() {
 
 function writeToFile(formattedLine) {
   try {
-    const stream = getCurrentLogStream();
-    if (stream) {
-      stream.write(formattedLine + '\n');
+    const line = formattedLine + '\n';
+    const bytesToWrite = Buffer.byteLength(line, 'utf8');
+
+    ensureCapacityFor(bytesToWrite);
+    const stream = openActiveLogStream();
+    stream.write(line);
+    currentLogSize += bytesToWrite;
+
+    if (currentLogSize >= MAX_FILE_SIZE) {
+      rotateActiveLog();
     }
   } catch (err) {
     // 日志写入失败不应影响业务逻辑
@@ -257,13 +294,19 @@ function stopCleanupTimer() {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
   }
+  closeCurrentLogStream();
 }
 
 // ─── 初始化 ───
 
 function initLogger() {
   ensureLogDir();
+  currentLogSize = getFileSize(ACTIVE_LOG_PATH);
+  if (currentLogSize >= MAX_FILE_SIZE) {
+    rotateActiveLog();
+  }
   cleanupOldLogs();
+  openActiveLogStream();
   startCleanupTimer();
 }
 

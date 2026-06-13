@@ -17,8 +17,8 @@
  *
  * 服务端持久化：
  *   日志自动批量发送到 /api/log 端点，由服务端写入 simplechat/log/ 目录
- *   日志文件命名：simplechat.log.日期_时间戳
- *   单文件最大 1GB，目录总大小最大 5GB，超出自动清理最老的日志
+ *   运行中始终续写 simplechat.log，达到 1GB 后轮转为 simplechat.log.YYYYMMDD_HHmm
+ *   目录总大小最大 5GB，超出自动清理最老的轮转日志
  */
 
 type LogLevel = 'info' | 'success' | 'warn' | 'error'

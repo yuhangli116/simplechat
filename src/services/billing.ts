@@ -271,7 +271,9 @@ export const syncModelPricingFromDb = async (force = false): Promise<Record<Mode
       lastPricingSyncAt = Date.now();
       log.success('Model pricing synced from DB', { modelCount: Object.keys(runtimePricing).length });
     } catch (error) {
-      log.warn('Failed to sync pricing from database, using local defaults', {}, error);
+      log.warn('Failed to sync pricing from database, using local defaults', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       applyRuntimePricing({});
       lastPricingSyncAt = Date.now();
     }

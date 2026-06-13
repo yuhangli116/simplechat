@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
 import { supabase } from '../lib/supabase';
 import { useAuthStore, isGuestUser } from './useAuthStore';
@@ -62,6 +62,35 @@ interface TrashState {
 }
 
 const EXPIRATION_DAYS = 30;
+
+const getTrashStorageKey = (name: string) => {
+  const user = useAuthStore?.getState?.()?.user;
+  return isGuestUser(user) ? `guest-${name}` : name;
+};
+
+const dynamicTrashStorage = {
+  getItem: (name: string) => {
+    try {
+      return localStorage.getItem(getTrashStorageKey(name));
+    } catch {
+      return localStorage.getItem(name);
+    }
+  },
+  setItem: (name: string, value: string) => {
+    try {
+      localStorage.setItem(getTrashStorageKey(name), value);
+    } catch {
+      // ignore local persistence failures
+    }
+  },
+  removeItem: (name: string) => {
+    try {
+      localStorage.removeItem(getTrashStorageKey(name));
+    } catch {
+      // ignore local persistence failures
+    }
+  },
+};
 
 export const useTrashStore = create<TrashState>()(
   persist(
@@ -259,6 +288,7 @@ export const useTrashStore = create<TrashState>()(
     }),
     {
       name: 'trash-store',
+      storage: createJSONStorage(() => dynamicTrashStorage),
     }
   )
 );

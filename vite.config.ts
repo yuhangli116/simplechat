@@ -60,7 +60,7 @@ export default defineConfig(({ mode }) => {
               }
               sendJson(res, 200, result)
             } catch (error) {
-              log.error('AI generate unhandled error (dev)', { model: req.body?.model }, error)
+              log.error('AI generate unhandled error (dev)', {}, error)
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI request failed' })
             }
           })
@@ -81,7 +81,7 @@ export default defineConfig(({ mode }) => {
               }
               sendJson(res, 200, result)
             } catch (error) {
-              log.error('AI summarize unhandled error (dev)', { model: req.body?.model }, error)
+              log.error('AI summarize unhandled error (dev)', {}, error)
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI summarize failed' })
             }
           })

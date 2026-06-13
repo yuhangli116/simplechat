@@ -7,6 +7,7 @@ import { createLogger } from '@/lib/logger'
 const log = createLogger('Auth')
 
 const GUEST_BALANCE_KEY = 'guest-diamond-balance'
+const GUEST_SESSION_KEY = 'simplechat-guest-session'
 const GUEST_DEFAULT_BALANCE = 0 // 游客不分配钻石
 const NEW_USER_DIAMOND_BONUS = 50000 // 新用户注册赠送5w钻石
 let inflightProfileUserId: string | null = null
@@ -23,6 +24,47 @@ const getGuestBalance = (): number => {
 export const isGuestUser = (user: User | null): boolean => {
   if (!user) return true
   return typeof user.id === 'string' && user.id.startsWith('guest-')
+}
+
+export const createGuestUser = (guestId: string): User => ({
+  id: guestId,
+  email: 'guest@simplechat.ai',
+  aud: 'authenticated',
+  role: 'authenticated',
+} as User)
+
+export const createGuestProfile = (guestId: string): Profile => ({
+  id: guestId,
+  username: '访客体验',
+  avatar_url: '',
+  membership_type: 'free',
+  membership_expires_at: null,
+  member_diamonds: 0,
+  permanent_diamonds: 0,
+  diamond_balance: 0,
+})
+
+export const saveGuestSession = (guestId: string) => {
+  if (typeof window === 'undefined') return
+  sessionStorage.setItem(GUEST_SESSION_KEY, JSON.stringify({ guestId, createdAt: Date.now() }))
+}
+
+export const loadGuestSession = (): { guestId: string; createdAt: number } | null => {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = sessionStorage.getItem(GUEST_SESSION_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed?.guestId || typeof parsed.guestId !== 'string' || !parsed.guestId.startsWith('guest-')) return null
+    return { guestId: parsed.guestId, createdAt: Number(parsed.createdAt) || Date.now() }
+  } catch {
+    return null
+  }
+}
+
+export const clearGuestSession = () => {
+  if (typeof window === 'undefined') return
+  sessionStorage.removeItem(GUEST_SESSION_KEY)
 }
 
 // 清理游客数据：重置文件树和清理所有 localStorage 缓存
@@ -44,10 +86,16 @@ const clearGuestData = () => {
     'likedTemplates',        // 作品模板点赞
     'collectedTemplates',    // 作品模板收藏
     'guestTemplateLikesDelta', // 游客对模板 likes 的修改量
+    'guestTemplateViewsDelta', // 游客对模板 views 的修改量
+    'likedSkillTemplates',    // 游客对数据库提示词模板的点赞
     'guest-diamond-balance', // 游客钻石余额
     'guest-storage-key',     // 游客存储标识
+    'simplechat-guest-session', // 兼容误写入 localStorage 的游客会话
     'my-works-tree',         // useFileStore Zustand persist key
+    'guest-my-works-tree',   // 游客 useFileStore Zustand persist key
     'my-prompts',            // usePromptStore Zustand persist key
+    'trash-store',           // useTrashStore Zustand persist key
+    'guest-trash-store',     // 游客 useTrashStore Zustand persist key
   ]
 
   let removedCount = 0
@@ -79,6 +127,7 @@ const clearGuestData = () => {
   // 清理可能残留的 sessionStorage
   try {
     sessionStorage.removeItem('guest-storage-key')
+    clearGuestSession()
   } catch {}
 
   log.info('Guest data cleared', { removedCount })
@@ -265,8 +314,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const { useFileStore, initialFileStructure } = await import('./useFileStore')
       const { usePromptStore } = await import('./usePromptStore')
+      const { useTrashStore } = await import('./useTrashStore')
       useFileStore.setState({ files: initialFileStructure, createWorkInProgress: false })
       usePromptStore.setState({ prompts: [] })
+      useTrashStore.setState({ items: [] })
+      if (wasGuest) {
+        usePromptStore.persist?.clearStorage?.()
+        useTrashStore.persist?.clearStorage?.()
+      }
       log.info('Stores reset completed', { wasGuest })
     } catch (e) {
       log.error('Failed to reset stores', { error: e })

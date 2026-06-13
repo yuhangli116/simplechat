@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabase';
 import { loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
 import { Database } from '@/types/supabase';
 import Pagination from '@/components/Pagination';
+import { useToastStore } from '@/store/useToastStore';
 
 type Template = Database['public']['Tables']['community_templates']['Row'];
 
@@ -35,67 +36,55 @@ type OutlineTreeNode = {
   children: OutlineTreeNode[];
 };
 
+const readJsonFromStorage = <T,>(key: string, fallback: T): T => {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const saved = window.localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const writeJsonToStorage = (key: string, value: unknown) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore local persistence failures
+  }
+};
+
+const toIdList = (value: unknown): string[] => {
+  return Array.isArray(value) ? value.map((id) => String(id)).filter(Boolean) : [];
+};
+
+const readIdListFromStorage = (key: string): string[] => {
+  return toIdList(readJsonFromStorage<unknown>(key, []));
+};
+
 const Community = () => {
   const [mainTab, setMainTab] = useState<'templates' | 'skills' | 'mine' | 'favorites'>('templates');
   const [templateTab, setTemplateTab] = useState('webnovel');
   const [skillTab, setSkillTab] = useState('ai_role');
-  const { addNode, setFiles } = useFileStore();
+  const { addNode, setFiles, files } = useFileStore();
   const { prompts, addPrompt, updatePrompt } = usePromptStore();
+  const addToast = useToastStore((state) => state.addToast);
   const { user, profile } = useAuthStore();
+  const isActiveGuest = Boolean(user?.id && isGuestUser(user));
   const navigate = useNavigate();
   const [resources, setResources] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
-  const [collectedSkills, setCollectedSkills] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('collectedSkills');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [collectedSkills, setCollectedSkills] = useState<string[]>(() => readIdListFromStorage('collectedSkills'));
   const [userSkills, setUserSkills] = useState<Skill[]>([]);
-  const [likedTemplateIds, setLikedTemplateIds] = useState<string[]>(() => {
-    try {
-      const saved = window.localStorage.getItem('likedTemplates');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [likedSkillIds, setLikedSkillIds] = useState<string[]>([]);
-  const [likedOfficialSkillIds, setLikedOfficialSkillIds] = useState<string[]>(() => {
-    try {
-      const saved = window.localStorage.getItem('likedOfficialSkills');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [officialSkillMetrics, setOfficialSkillMetrics] = useState<Record<string, { likes: number; uses: number }>>(() => {
-    try {
-      const saved = window.localStorage.getItem('officialSkillMetrics');
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
-  });
-  const [collectedTemplateIds, setCollectedTemplateIds] = useState<string[]>(() => {
-    try {
-      const saved = window.localStorage.getItem('collectedTemplates');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  // 存储游客对模板 likes 的修改：key是模板id（string），value是修改量（+1或-1）
-  const [guestTemplateLikesDelta, setGuestTemplateLikesDelta] = useState<Record<string, number>>(() => {
-    try {
-      const saved = window.localStorage.getItem('guestTemplateLikesDelta');
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
-  });
+  const [likedTemplateIds, setLikedTemplateIds] = useState<string[]>(() => readIdListFromStorage('likedTemplates'));
+  const [likedSkillIds, setLikedSkillIds] = useState<string[]>(() => readIdListFromStorage('likedSkillTemplates'));
+  const [likedOfficialSkillIds, setLikedOfficialSkillIds] = useState<string[]>(() => readIdListFromStorage('likedOfficialSkills'));
+  const [officialSkillMetrics, setOfficialSkillMetrics] = useState<Record<string, { likes: number; uses: number }>>(() => readJsonFromStorage('officialSkillMetrics', {}));
+  const [collectedTemplateIds, setCollectedTemplateIds] = useState<string[]>(() => readIdListFromStorage('collectedTemplates'));
+  // 存储游客对模板 likes/views 的本地修改：key 是模板 id（string），value 是修改量
+  const [guestTemplateLikesDelta, setGuestTemplateLikesDelta] = useState<Record<string, number>>(() => readJsonFromStorage('guestTemplateLikesDelta', {}));
+  const [guestTemplateViewsDelta, setGuestTemplateViewsDelta] = useState<Record<string, number>>(() => readJsonFromStorage('guestTemplateViewsDelta', {}));
   const [previewTemplate, setPreviewTemplate] = useState<Template | null>(null);
   const [previewStructure, setPreviewStructure] = useState<any>(null);
   const [selectedPreviewNodeId, setSelectedPreviewNodeId] = useState<string | null>(null);
@@ -233,14 +222,23 @@ const Community = () => {
         if (error) {
           console.error('Error fetching templates:', error);
         } else {
-          // 如果是游客，根据本地存储的 delta 调整 likes
-          let finalData = data || [];
-          if (isGuestUser(user)) {
+          // 如果是游客，根据本地存储的 delta 调整 likes/views
+          let finalData: Template[] = data || [];
+          if (isActiveGuest) {
+            const storedLikesDelta = readJsonFromStorage<Record<string, number>>('guestTemplateLikesDelta', {});
+            const storedViewsDelta = readJsonFromStorage<Record<string, number>>('guestTemplateViewsDelta', {});
             finalData = finalData.map((t) => {
               const templateId = String(t.id);
-              const delta = guestTemplateLikesDelta[templateId] || 0;
-              return { ...t, likes: Math.max(0, Number(t.likes || 0) + delta) };
+              const likesDelta = storedLikesDelta[templateId] || 0;
+              const viewsDelta = storedViewsDelta[templateId] || 0;
+              return {
+                ...t,
+                likes: Math.max(0, Number(t.likes || 0) + likesDelta),
+                views: Math.max(0, Number(t.views || 0) + viewsDelta),
+              };
             });
+            setGuestTemplateLikesDelta(storedLikesDelta);
+            setGuestTemplateViewsDelta(storedViewsDelta);
           }
           setResources(finalData);
         }
@@ -251,41 +249,62 @@ const Community = () => {
       }
     };
 
-    const loadCollectedSkills = () => {
-      const saved = localStorage.getItem('collectedSkills');
-      if (saved) {
-        setCollectedSkills(JSON.parse(saved));
-      }
-    };
-
-    const persistLikedOfficialSkills = () => {
-      try {
-        window.localStorage.setItem('likedOfficialSkills', JSON.stringify(likedOfficialSkillIds));
-      } catch {
-        return;
-      }
+    const loadGuestCommunityState = () => {
+      setCollectedSkills(readIdListFromStorage('collectedSkills'));
+      setLikedTemplateIds(readIdListFromStorage('likedTemplates'));
+      setCollectedTemplateIds(readIdListFromStorage('collectedTemplates'));
+      setLikedSkillIds(readIdListFromStorage('likedSkillTemplates'));
+      setLikedOfficialSkillIds(readIdListFromStorage('likedOfficialSkills'));
+      setOfficialSkillMetrics(readJsonFromStorage('officialSkillMetrics', {}));
+      setGuestTemplateLikesDelta(readJsonFromStorage('guestTemplateLikesDelta', {}));
+      setGuestTemplateViewsDelta(readJsonFromStorage('guestTemplateViewsDelta', {}));
     };
 
     fetchTemplates();
-    loadCollectedSkills();
-    persistLikedOfficialSkills();
-  }, []);
+    if (isActiveGuest) {
+      loadGuestCommunityState();
+    } else if (user?.id) {
+      setCollectedSkills(readIdListFromStorage('collectedSkills'));
+    }
+  }, [isActiveGuest, user?.id]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem('likedOfficialSkills', JSON.stringify(likedOfficialSkillIds));
-    } catch {
-      return;
-    }
+    writeJsonToStorage('likedOfficialSkills', likedOfficialSkillIds);
   }, [likedOfficialSkillIds]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem('officialSkillMetrics', JSON.stringify(officialSkillMetrics));
-    } catch {
-      return;
-    }
+    writeJsonToStorage('officialSkillMetrics', officialSkillMetrics);
   }, [officialSkillMetrics]);
+
+  useEffect(() => {
+    if (isActiveGuest) {
+      writeJsonToStorage('likedSkillTemplates', likedSkillIds);
+    }
+  }, [likedSkillIds, isActiveGuest]);
+
+  useEffect(() => {
+    if (isActiveGuest) {
+      writeJsonToStorage('likedTemplates', likedTemplateIds);
+    }
+  }, [likedTemplateIds, isActiveGuest]);
+
+  useEffect(() => {
+    if (isActiveGuest) {
+      writeJsonToStorage('collectedTemplates', collectedTemplateIds);
+    }
+  }, [collectedTemplateIds, isActiveGuest]);
+
+  useEffect(() => {
+    if (isActiveGuest) {
+      writeJsonToStorage('guestTemplateLikesDelta', guestTemplateLikesDelta);
+    }
+  }, [guestTemplateLikesDelta, isActiveGuest]);
+
+  useEffect(() => {
+    if (isActiveGuest) {
+      writeJsonToStorage('guestTemplateViewsDelta', guestTemplateViewsDelta);
+    }
+  }, [guestTemplateViewsDelta, isActiveGuest]);
 
   useEffect(() => {
     if (likedOfficialSkillIds.length === 0) return;
@@ -313,6 +332,10 @@ const Community = () => {
       setLikedSkillIds([]);
       return;
     }
+    if (isActiveGuest) {
+      setLikedSkillIds(readIdListFromStorage('likedSkillTemplates'));
+      return;
+    }
     const run = async () => {
       const { data, error } = await supabase
         .from('skill_template_likes')
@@ -322,7 +345,7 @@ const Community = () => {
       setLikedSkillIds((data || []).map((r: any) => r.skill_template_id));
     };
     run();
-  }, [user?.id]);
+  }, [user, isActiveGuest]);
 
   useEffect(() => {
     if (!subTabsRef.current) return;
@@ -390,8 +413,14 @@ const Community = () => {
   useEffect(() => {
     const loadTemplateInteractions = async () => {
       if (!user?.id) {
-        setLikedTemplateIds([]);
-        setCollectedTemplateIds([]);
+        return;
+      }
+
+      if (isActiveGuest) {
+        setLikedTemplateIds(readIdListFromStorage('likedTemplates'));
+        setCollectedTemplateIds(readIdListFromStorage('collectedTemplates'));
+        setGuestTemplateLikesDelta(readJsonFromStorage('guestTemplateLikesDelta', {}));
+        setGuestTemplateViewsDelta(readJsonFromStorage('guestTemplateViewsDelta', {}));
         return;
       }
 
@@ -408,12 +437,12 @@ const Community = () => {
           .then((res: any) => (res.error ? { data: [] } : res))
       ]);
 
-      setLikedTemplateIds((likesData || []).map((r: any) => r.template_id));
-      setCollectedTemplateIds((collectedData || []).map((r: any) => r.template_id));
+      setLikedTemplateIds((likesData || []).map((r: any) => String(r.template_id)));
+      setCollectedTemplateIds((collectedData || []).map((r: any) => String(r.template_id)));
     };
 
     loadTemplateInteractions();
-  }, [user?.id]);
+  }, [user, isActiveGuest]);
 
   const getNormalizedTemplateStructure = (template: Template) => {
     let structure: any = template.content;
@@ -1947,8 +1976,8 @@ const Community = () => {
     }
 
     setResources((prev) => prev.filter((t) => t.id !== template.id));
-    setLikedTemplateIds((prev) => prev.filter((id) => id !== template.id));
-    setCollectedTemplateIds((prev) => prev.filter((id) => id !== template.id));
+    setLikedTemplateIds((prev) => prev.filter((id) => id !== String(template.id)));
+    setCollectedTemplateIds((prev) => prev.filter((id) => id !== String(template.id)));
     if (previewTemplate?.id === template.id) {
       closeTemplatePreview();
     }
@@ -1987,7 +2016,7 @@ const Community = () => {
     const isLiked = likedTemplateIds.includes(templateId);
 
     // 游客模式：只更新本地状态，不写数据库，但保存到localStorage
-    if (isGuestUser(user)) {
+    if (isActiveGuest) {
       let nextLikedIds;
       let nextDelta;
       if (isLiked) {
@@ -2001,8 +2030,8 @@ const Community = () => {
       }
       setLikedTemplateIds(nextLikedIds);
       setGuestTemplateLikesDelta(nextDelta);
-      window.localStorage.setItem('likedTemplates', JSON.stringify(nextLikedIds));
-      window.localStorage.setItem('guestTemplateLikesDelta', JSON.stringify(nextDelta));
+      writeJsonToStorage('likedTemplates', nextLikedIds);
+      writeJsonToStorage('guestTemplateLikesDelta', nextDelta);
       return;
     }
 
@@ -2016,8 +2045,8 @@ const Community = () => {
         .eq('user_id', user!.id);
       if (error) return;
 
-      setLikedTemplateIds((prev) => prev.filter((id) => id !== template.id));
-      setResources((prev) => prev.map((t) => (t.id === template.id ? { ...t, likes: Math.max((t.likes || 0) - 1, 0) } : t)));
+      setLikedTemplateIds((prev) => prev.filter((id) => id !== templateId));
+      setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes: Math.max((t.likes || 0) - 1, 0) } : t)));
 
       const { data: latest, error: latestError } = await supabase
         .from('community_templates')
@@ -2026,7 +2055,7 @@ const Community = () => {
         .single();
       if (!latestError) {
         const likes = Number((latest as any)?.likes ?? 0);
-        setResources((prev) => prev.map((t) => (t.id === template.id ? { ...t, likes } : t)));
+        setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes } : t)));
       }
     } else {
       const { error } = await supabase.from('template_likes').insert({
@@ -2035,8 +2064,8 @@ const Community = () => {
       } as any);
       if (error) return;
 
-      setLikedTemplateIds((prev) => [...prev, template.id]);
-      setResources((prev) => prev.map((t) => (t.id === template.id ? { ...t, likes: (t.likes || 0) + 1 } : t)));
+      setLikedTemplateIds((prev) => [...prev, templateId]);
+      setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes: (t.likes || 0) + 1 } : t)));
 
       const { data: latest, error: latestError } = await supabase
         .from('community_templates')
@@ -2045,7 +2074,7 @@ const Community = () => {
         .single();
       if (!latestError) {
         const likes = Number((latest as any)?.likes ?? 0);
-        setResources((prev) => prev.map((t) => (t.id === template.id ? { ...t, likes } : t)));
+        setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes } : t)));
       }
     }
   };
@@ -2057,7 +2086,7 @@ const Community = () => {
     const isCollected = collectedTemplateIds.includes(templateId);
 
     // 游客模式：只更新本地状态，不写数据库，但保存到localStorage
-    if (isGuestUser(user)) {
+    if (isActiveGuest) {
       let nextCollectedIds;
       if (isCollected) {
         nextCollectedIds = collectedTemplateIds.filter((id) => id !== templateId);
@@ -2065,7 +2094,7 @@ const Community = () => {
         nextCollectedIds = [...collectedTemplateIds, templateId];
       }
       setCollectedTemplateIds(nextCollectedIds);
-      window.localStorage.setItem('collectedTemplates', JSON.stringify(nextCollectedIds));
+      writeJsonToStorage('collectedTemplates', nextCollectedIds);
       return;
     }
 
@@ -2079,7 +2108,7 @@ const Community = () => {
         .eq('user_id', user!.id);
       if (error) return;
 
-      setCollectedTemplateIds((prev) => prev.filter((id) => id !== template.id));
+      setCollectedTemplateIds((prev) => prev.filter((id) => id !== templateId));
     } else {
       const { error } = await supabase.from('user_templates').insert({
         template_id: template.id,
@@ -2087,7 +2116,7 @@ const Community = () => {
       } as any);
       if (error) return;
 
-      setCollectedTemplateIds((prev) => [...prev, template.id]);
+      setCollectedTemplateIds((prev) => [...prev, templateId]);
     }
   };
 
@@ -2121,7 +2150,7 @@ const Community = () => {
 
   const incrementTemplateViews = async (template: Template) => {
     if (!isDbTemplate(template)) return;
-    if (isGuestUser(user)) return; // 游客不更新浏览量
+    if (isActiveGuest) return; // 游客不更新浏览量
     const { error } = await supabase.rpc('increment_template_views', { template_id: template.id } as any);
     if (error) return;
   };
@@ -2133,7 +2162,13 @@ const Community = () => {
     setPreviewStructure(normalized);
 
     if (isDbTemplate(template)) {
-      setResources((prev) => prev.map((t) => (t.id === template.id ? { ...t, views: (t.views ?? 0) + 1 } : t)));
+      setResources((prev) => prev.map((t) => (String(t.id) === String(template.id) ? { ...t, views: (t.views ?? 0) + 1 } : t)));
+      if (isActiveGuest) {
+        const templateId = String(template.id);
+        const nextDelta = { ...guestTemplateViewsDelta, [templateId]: (guestTemplateViewsDelta[templateId] || 0) + 1 };
+        setGuestTemplateViewsDelta(nextDelta);
+        writeJsonToStorage('guestTemplateViewsDelta', nextDelta);
+      }
       void incrementTemplateViews(template);
     }
 
@@ -2166,7 +2201,7 @@ const Community = () => {
   };
 
   const favoriteTemplates = sortByOfficialAndLikes(
-    displayResources.filter((t) => collectedTemplateIds.includes(t.id) && !String(t.id).startsWith('mock-'))
+    displayResources.filter((t) => collectedTemplateIds.includes(String(t.id)) && !String(t.id).startsWith('mock-'))
   );
 
   const favoriteSkills = sortByOfficialAndLikes(allSkills.filter((s) => collectedSkills.includes(s.id)));
@@ -2341,9 +2376,9 @@ const Community = () => {
   const handleUseTemplate = async (template: Template) => {
     // 游客限制：最多创建10个作品
     if (isGuestUser(user)) {
-      const currentWorks = files[0]?.children?.filter(c => c.type === 'folder') || [];
+      const currentWorks = files[0]?.children?.filter((c: FileNode) => c.type === 'folder') || [];
       if (currentWorks.length >= GUEST_LIMITS.MAX_WORKS) {
-        addToast(`访客最多可创建 ${GUEST_LIMITS.MAX_WORKS} 个作品，登录后无限制`, 'warning');
+        addToast(`访客最多可创建 ${GUEST_LIMITS.MAX_WORKS} 个作品，登录后无限制`, 'info');
         return;
       }
     }
@@ -3425,9 +3460,7 @@ const Community = () => {
             })()
           )
         ) : favoritesTab === 'templates' ? (
-          !user?.id ? (
-            <div className="col-span-full text-center py-20 text-gray-500">需要登录后才能查看你收藏的作品模板</div>
-          ) : favoriteTemplates.length === 0 ? (
+          favoriteTemplates.length === 0 ? (
             <div className="col-span-full text-center py-20 text-gray-500">你还没有收藏任何作品模板</div>
           ) : (
             (() => {

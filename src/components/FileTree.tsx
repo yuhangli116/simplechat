@@ -586,7 +586,7 @@ const FileTree = () => {
       const parentNode = findNode(files, parentId);
       const chapterCount = parentNode?.children?.filter(c => c.type === 'file').length || 0;
       if (chapterCount >= GUEST_LIMITS.MAX_CHAPTERS_PER_WORK) {
-        addToast(`访客每个作品最多可创建 ${GUEST_LIMITS.MAX_CHAPTERS_PER_WORK} 个章节，登录后无限制`, 'warning');
+        addToast(`访客每个作品最多可创建 ${GUEST_LIMITS.MAX_CHAPTERS_PER_WORK} 个章节，登录后无限制`, 'info');
         return;
       }
     }
@@ -653,7 +653,7 @@ const FileTree = () => {
       const parentNode = findNode(files, parentId);
       const mindmapCount = parentNode?.children?.filter(c => c.type === 'mindmap').length || 0;
       if (mindmapCount >= GUEST_LIMITS.MAX_MINDMAPS_PER_WORK) {
-        addToast(`访客每个作品最多可创建 ${GUEST_LIMITS.MAX_MINDMAPS_PER_WORK} 个思维导图，登录后无限制`, 'warning');
+        addToast(`访客每个作品最多可创建 ${GUEST_LIMITS.MAX_MINDMAPS_PER_WORK} 个思维导图，登录后无限制`, 'info');
         return;
       }
     }
@@ -732,7 +732,7 @@ const FileTree = () => {
     if (isGuestUser(user)) {
       const currentWorks = files[0]?.children?.filter(c => c.type === 'folder') || [];
       if (currentWorks.length >= GUEST_LIMITS.MAX_WORKS) {
-        addToast(`访客最多可创建 ${GUEST_LIMITS.MAX_WORKS} 个作品，登录后无限制`, 'warning');
+        addToast(`访客最多可创建 ${GUEST_LIMITS.MAX_WORKS} 个作品，登录后无限制`, 'info');
         return;
       }
     }

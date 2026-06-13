@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
-import { isGuestUser } from './useAuthStore';
+import { isGuestUser, useAuthStore } from './useAuthStore';
 
 export interface FileNode {
   id: string;
@@ -72,31 +72,30 @@ export const initialFileStructure: FileNode[] = [
   }
 ];
 
-// 动态存储：游客模式下不持久化（数据仅内存），登录用户使用 localStorage
+const getFileStorageKey = (name: string) => {
+  const user = useAuthStore?.getState?.()?.user;
+  return isGuestUser(user) ? `guest-${name}` : name;
+};
+
+// 动态存储：游客模式下持久化到可清理的本地 key，登录用户使用原 key
 const dynamicStorage = {
   getItem: (name: string) => {
     try {
-      const user = useAuthStore?.getState?.()?.user;
-      if (isGuestUser(user)) return null;
-      return localStorage.getItem(name);
+      return localStorage.getItem(getFileStorageKey(name));
     } catch {
       return localStorage.getItem(name);
     }
   },
   setItem: (name: string, value: string) => {
     try {
-      const user = useAuthStore?.getState?.()?.user;
-      if (isGuestUser(user)) return; // 游客不写入任何存储
-      localStorage.setItem(name, value);
+      localStorage.setItem(getFileStorageKey(name), value);
     } catch {
       // ignore
     }
   },
   removeItem: (name: string) => {
     try {
-      const user = useAuthStore?.getState?.()?.user;
-      if (isGuestUser(user)) return;
-      localStorage.removeItem(name);
+      localStorage.removeItem(getFileStorageKey(name));
     } catch {
       // ignore
     }
@@ -209,9 +208,8 @@ export const useFileStore = create<FileState>()(
     }),
     {
       name: 'my-works-tree',
-      // 游客模式：动态存储不写入（数据仅内存），刷新即清理
-      // 登录用户：数据持久化到 localStorage
-      storage: dynamicStorage as any,
+      // 游客模式写入 guest-my-works-tree，退出/重新游客登录时清理；登录用户使用 my-works-tree。
+      storage: createJSONStorage(() => dynamicStorage),
     }
   )
 );

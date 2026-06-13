@@ -102,7 +102,7 @@ const UserTopBar = () => {
     return (
       <div className="flex items-center gap-3">
         <span className="text-xs text-muted-foreground hidden sm:inline">
-          体验模式下数据不会保存，退出或刷新后将清除
+          体验模式数据将在退出或重新登录后清除
         </span>
         <span className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded-full font-medium border border-amber-200">
           <Eye className="w-3.5 h-3.5" />

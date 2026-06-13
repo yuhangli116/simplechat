@@ -1028,15 +1028,13 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         exportMindMap(nodes, edges, title);
         break;
       case 'image':
-        if (reactFlowWrapper.current) {
-          await exportMindMapAsImage(reactFlowWrapper.current, title);
-        }
+        await exportMindMapAsImage(nodes, edges, title, theme);
         break;
       case 'text':
         exportMindMapAsText(nodes, edges, title);
         break;
     }
-  }, [nodes, edges, mindMapTitle, reactFlowWrapper]);
+  }, [nodes, edges, mindMapTitle, theme]);
 
   const exportOptions = [
     {

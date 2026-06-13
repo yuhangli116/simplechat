@@ -99,11 +99,21 @@ const Welfare = () => {
     }
   };
 
+  const confirmLoginForGuest = (message: string) => {
+    if (user && !isGuestUser(user)) return false;
+    if (confirm(message)) {
+      navigate('/login');
+    }
+    return true;
+  };
+
+  const handleGuestTaskNavigate = (path: string) => {
+    if (confirmLoginForGuest('完成任务需要登录后才能使用，是否前往登录？')) return;
+    navigate(path);
+  };
+
   const handleCheckIn = async () => {
-    if (!user || isGuestUser(user)) {
-      if (confirm('签到功能需要登录后才能使用，是否前往登录？')) {
-        navigate('/login');
-      }
+    if (confirmLoginForGuest('签到功能需要登录后才能使用，是否前往登录？')) {
       return;
     }
 
@@ -122,10 +132,7 @@ const Welfare = () => {
   };
 
   const handleVideoTask = async () => {
-    if (!user || isGuestUser(user)) {
-      if (confirm('观看视频任务需要登录后才能使用，是否前往登录？')) {
-        navigate('/login');
-      }
+    if (confirmLoginForGuest('观看视频任务需要登录后才能使用，是否前往登录？')) {
       return;
     }
 
@@ -196,10 +203,7 @@ const Welfare = () => {
   };
 
   const claimTask = async (taskId: string) => {
-    if (!user || isGuestUser(user)) {
-      if (confirm('领取任务奖励需要登录后才能使用，是否前往登录？')) {
-        navigate('/login');
-      }
+    if (confirmLoginForGuest('领取任务奖励需要登录后才能使用，是否前往登录？')) {
       return;
     }
 
@@ -234,7 +238,7 @@ const Welfare = () => {
       icon: <Rocket className="w-5 h-5 text-indigo-600" />,
       type: 'once',
       desc: '完成一次 AI 生成后即可领取',
-      handler: () => navigate('/'),
+      handler: () => handleGuestTaskNavigate('/'),
     },
     {
       id: 'first_template_create',
@@ -243,7 +247,7 @@ const Welfare = () => {
       icon: <LayoutGrid className="w-5 h-5 text-emerald-600" />,
       type: 'once',
       desc: '创建作品模板或提示词模板后即可领取',
-      handler: () => navigate('/community'),
+      handler: () => handleGuestTaskNavigate('/community'),
     },
     {
       id: 'ad',

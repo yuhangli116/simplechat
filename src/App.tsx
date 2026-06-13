@@ -2,10 +2,9 @@ import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useParams, useLocation } from 'react-router-dom';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/store/useAuthStore';
+import { clearGuestSession, createGuestProfile, createGuestUser, isGuestUser, loadGuestSession, useAuthStore } from '@/store/useAuthStore';
 import { useTrashStore } from '@/store/useTrashStore';
 import { type FileNode, guestDemoFileStructure, useFileStore } from '@/store/useFileStore';
-import { isGuestUser } from '@/store/useAuthStore';
 import Login from '@/pages/auth/Login';
 import Register from '@/pages/auth/Register';
 import ForgotPassword from '@/pages/auth/ForgotPassword';
@@ -48,16 +47,29 @@ const findFirstWorkspacePath = (nodes: FileNode[]): string | null => {
 const WorkspaceIndexRoute = () => {
   const { user } = useAuthStore();
   const { setFiles, files, createWorkInProgress } = useFileStore();
+  const [fileStoreHydrated, setFileStoreHydrated] = React.useState(() => useFileStore.persist.hasHydrated());
   const [targetPath, setTargetPath] = React.useState<string | null>(null);
   const [resolved, setResolved] = React.useState(false);
 
   // 游客模式：同步设置，避免闪烁
   const isGuest = !user || isGuestUser(user);
 
+  React.useEffect(() => {
+    if (useFileStore.persist.hasHydrated()) {
+      setFileStoreHydrated(true);
+      return;
+    }
+    return useFileStore.persist.onFinishHydration(() => {
+      setFileStoreHydrated(true);
+    });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
     const resolveTarget = async () => {
+      if (isGuest && !fileStoreHydrated) return;
+
       // 游客模式：只在文件树为空时加载 demo 数据，避免覆盖游客新建的作品
       if (isGuest) {
         const currentFiles = useFileStore.getState().files;
@@ -96,7 +108,7 @@ const WorkspaceIndexRoute = () => {
     return () => {
       cancelled = true;
     };
-  }, [setFiles, user, isGuest]);
+  }, [setFiles, user, isGuest, fileStoreHydrated]);
 
   if (targetPath) {
     return <Navigate to={targetPath} replace />;
@@ -228,16 +240,32 @@ const WorkAccessGuard = () => {
 
 // Placeholder Pages
 function App() {
-  const { setUser, setSession, fetchProfile } = useAuthStore();
+  const { setUser, setSession, setProfile, setDiamondBalance, fetchProfile } = useAuthStore();
   const clearExpired = useTrashStore(state => state.clearExpired);
 
   useEffect(() => {
+    const restoreGuestSession = () => {
+      const guestSession = loadGuestSession();
+      if (!guestSession) return false;
+      setSession(null);
+      setUser(createGuestUser(guestSession.guestId));
+      setProfile(createGuestProfile(guestSession.guestId));
+      setDiamondBalance(0);
+      return true;
+    };
+
     // Check active sessions and sets the user
     supabase.auth.getSession().then(({ data: { session } }: { data: { session: Session | null } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
       if (session?.user) {
+        clearGuestSession();
+        setSession(session);
+        setUser(session.user);
         fetchProfile();
+        return;
+      }
+      if (!restoreGuestSession()) {
+        setSession(null);
+        setUser(null);
       }
     });
 
@@ -245,10 +273,16 @@ function App() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
-      setSession(session);
-      setUser(session?.user ?? null);
       if (session?.user) {
+        clearGuestSession();
+        setSession(session);
+        setUser(session.user);
         fetchProfile();
+        return;
+      }
+      if (!restoreGuestSession()) {
+        setSession(null);
+        setUser(null);
       }
     });
 
@@ -256,7 +290,7 @@ function App() {
     void clearExpired();
 
     return () => subscription.unsubscribe();
-  }, [setUser, setSession, fetchProfile, clearExpired]);
+  }, [setUser, setSession, setProfile, setDiamondBalance, fetchProfile, clearExpired]);
 
   return (
     <>

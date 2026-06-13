@@ -22,7 +22,7 @@ import { syncModelPricingFromDb } from '@/services/billing';
 import ModelSelector from '@/components/ModelSelector';
 import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useFileStore } from '@/store/useFileStore';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import ContextSelectorDialog from '@/components/ContextSelectorDialog';
 import ExportDialog from '@/components/ExportDialog';
 import { exportHtml, exportMarkdown, htmlToMarkdown } from '@/lib/fileExport';
@@ -33,6 +33,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 const StoryEditor = () => {
   const { workId, chapterId } = useParams();
+  const navigate = useNavigate();
   const { user, diamondBalance, fetchBalance } = useAuthStore();
   const { files } = useFileStore();
   type LocalModelKey = keyof typeof MODEL_PRICING;

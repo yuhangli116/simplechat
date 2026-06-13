@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, PenTool, Eye, EyeOff, User } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
+import { createGuestProfile, createGuestUser, saveGuestSession, useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { guestDemoFileStructure, useFileStore } from '@/store/useFileStore';
+import { usePromptStore } from '@/store/usePromptStore';
+import { useTrashStore } from '@/store/useTrashStore';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('Login')
@@ -27,10 +29,16 @@ const clearAllGuestData = () => {
     'likedTemplates',
     'collectedTemplates',
     'guestTemplateLikesDelta',
+    'guestTemplateViewsDelta',
+    'likedSkillTemplates',
     'guest-diamond-balance',
     'guest-storage-key',
+    'simplechat-guest-session',
     'my-works-tree',
+    'guest-my-works-tree',
     'my-prompts',
+    'trash-store',
+    'guest-trash-store',
   ]
 
   const allKeys: string[] = []
@@ -51,6 +59,18 @@ const clearAllGuestData = () => {
     log.info('Removed localStorage key for new guest', { key })
   }
   sessionStorage.removeItem('guest-storage-key')
+  sessionStorage.removeItem('simplechat-guest-session')
+
+  try {
+    usePromptStore.setState({ prompts: [] })
+    usePromptStore.persist?.clearStorage?.()
+    useTrashStore.setState({ items: [] })
+    useTrashStore.persist?.clearStorage?.()
+    log.info('Guest in-memory stores cleared')
+  } catch (error) {
+    log.error('Failed to clear guest in-memory stores', { error })
+  }
+
   log.info('All previous guest data cleared')
 }
 
@@ -82,21 +102,11 @@ export default function Login() {
     const guestId = 'guest-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     log.info('Guest login', { guestId });
     
-    const guestUser: any = {
-        id: guestId,
-        email: 'guest@simplechat.ai',
-        aud: 'authenticated',
-        role: 'authenticated',
-    };
+    const guestUser = createGuestUser(guestId);
+    saveGuestSession(guestId);
     
     setUser(guestUser);
-    setProfile({
-        id: guestId,
-        username: '访客体验',
-        avatar_url: '',
-        membership_type: 'free',
-        diamond_balance: 0
-    });
+    setProfile(createGuestProfile(guestId));
     setDiamondBalance(0);
     setFiles(JSON.parse(JSON.stringify(guestDemoFileStructure)));
     log.info('Guest login completed, files set to demo structure');
