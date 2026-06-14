@@ -169,27 +169,27 @@ const WorkspaceLayout = () => {
           
           {/* Section: Creation */}
           <div className="w-full flex flex-col space-y-1">
-            <NavIcon to="/workspace" icon={Folder} label="我的作品" collapsed={isSidebarCollapsed} />
-            <NavIcon to="/trash" icon={Trash2} label="回收站" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/workspace" icon={Folder} label="工作台" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/trash" icon={Trash2} label="废稿箱" collapsed={isSidebarCollapsed} />
           </div>
 
           <div className="mx-3 h-px bg-border" />
 
           {/* Section: Discovery */}
           <div className="w-full flex flex-col space-y-1">
-            <NavIcon to="/community" icon={Home} label="创作社区" collapsed={isSidebarCollapsed} />
-            <NavIcon to="/welfare" icon={Gift} label="领取福利" collapsed={isSidebarCollapsed} />
-            <NavIcon to="/guide" icon={BookOpen} label="教程专区" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/community" icon={Home} label="模版广场" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/welfare" icon={Gift} label="奖励中心" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/guide" icon={BookOpen} label="使用指南" collapsed={isSidebarCollapsed} />
           </div>
 
           <div className="mx-3 h-px bg-border" />
 
           {/* Section: More */}
           <div className="w-full flex flex-col space-y-1">
-            <NavIcon to="/prompts" icon={Database} label="提示词库" collapsed={isSidebarCollapsed} />
-            <NavIcon to="/membership" icon={CreditCard} label="钻石充值" collapsed={isSidebarCollapsed} />
-            <NavIcon to="/records" icon={Calendar} label="钻石记录" collapsed={isSidebarCollapsed} />
-            <NavIcon to="/download" icon={Monitor} label="下载软件" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/prompts" icon={Database} label="指令工坊" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/membership" icon={CreditCard} label="充值中心" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/records" icon={Calendar} label="消费明细" collapsed={isSidebarCollapsed} />
+            <NavIcon to="/download" icon={Monitor} label="漫剧工坊" collapsed={isSidebarCollapsed} />
           </div>
         </div>
 
@@ -269,9 +269,9 @@ const WorkspaceLayout = () => {
       )}
 
       {/* 3. Main Content Area */}
-      <main className="flex-1 flex flex-col min-w-0 bg-background relative overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 bg-background relative overflow-hidden z-30">
         {/* Top User Bar */}
-        <div className="w-full flex justify-end px-6 py-3 border-b border-border bg-background">
+        <div className="w-full flex justify-end px-6 py-3 border-b border-border bg-background relative z-50">
           <UserTopBar />
         </div>
         

@@ -42,8 +42,8 @@ const TextGuideModal: React.FC<TextGuideModalProps> = ({ isOpen, guide, onClose 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50/50">
+      <div className="bg-white dark:bg-card rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col border dark:border-border">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-border bg-gray-50/50 dark:bg-muted/40">
           <div className="flex items-center min-w-0">
             <div className={`w-10 h-10 rounded-2xl flex items-center justify-center mr-3 ${guide.iconBg} shrink-0`}>
               <Icon className={`w-5 h-5 ${guide.iconColor}`} />
@@ -59,7 +59,7 @@ const TextGuideModal: React.FC<TextGuideModalProps> = ({ isOpen, guide, onClose 
         </div>
 
         <div className="p-6 overflow-y-auto">
-          <div className="rounded-2xl border border-gray-100 bg-gray-50/60 p-6">
+          <div className="rounded-2xl border border-gray-100 dark:border-border bg-gray-50/60 dark:bg-muted/40 p-6">
             <div className="text-base font-semibold text-gray-900">总体介绍</div>
             <ul className="mt-3 space-y-2 text-sm text-gray-700 list-disc pl-5">
               {guide.overview.map((p) => (
@@ -70,7 +70,7 @@ const TextGuideModal: React.FC<TextGuideModalProps> = ({ isOpen, guide, onClose 
 
           <div className="mt-8 space-y-8">
             {guide.sections.map((section) => (
-              <div key={section.title} className="rounded-2xl border border-gray-100 p-6 bg-white">
+              <div key={section.title} className="rounded-2xl border border-gray-100 dark:border-border p-6 bg-white dark:bg-muted/30">
                 <div className="text-base font-semibold text-gray-900">{section.title}</div>
                 <ul className="mt-3 space-y-2 text-sm text-gray-700 list-disc pl-5">
                   {section.points.map((p) => (
@@ -115,8 +115,8 @@ const VideoGuideModal: React.FC<VideoGuideModalProps> = ({ isOpen, guide, onClos
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50/50">
+      <div className="bg-white dark:bg-card rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col border dark:border-border">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-border bg-gray-50/50 dark:bg-muted/40">
           <div className="flex items-center min-w-0">
             <div className={`w-10 h-10 rounded-2xl flex items-center justify-center mr-3 ${guide.iconBg} shrink-0`}>
               <Icon className={`w-5 h-5 ${guide.iconColor}`} />
@@ -132,7 +132,7 @@ const VideoGuideModal: React.FC<VideoGuideModalProps> = ({ isOpen, guide, onClos
         </div>
 
         <div className="p-6 overflow-y-auto">
-          <div className="rounded-2xl border border-gray-100 bg-gray-50/60 p-6">
+          <div className="rounded-2xl border border-gray-100 dark:border-border bg-gray-50/60 dark:bg-muted/40 p-6">
             <div className="text-base font-semibold text-gray-900">文字说明（先看这里）</div>
             <ul className="mt-3 space-y-2 text-sm text-gray-700 list-disc pl-5">
               {guide.overview.map((p) => (
@@ -141,7 +141,7 @@ const VideoGuideModal: React.FC<VideoGuideModalProps> = ({ isOpen, guide, onClos
             </ul>
           </div>
 
-          <div className="mt-8 rounded-2xl border border-gray-100 p-6 bg-white">
+          <div className="mt-8 rounded-2xl border border-gray-100 dark:border-border p-6 bg-white dark:bg-muted/30">
             <div className="flex items-center justify-between gap-3">
               <div className="text-base font-semibold text-gray-900">视频教程</div>
             </div>
@@ -165,14 +165,14 @@ const videoGuides: VideoGuide[] = [
     iconColor: 'text-blue-600',
     videoSrc: '/video/guanggao.MP4',
     overview: [
-      '网站定位：一站式 AI 网文创作平台，涵盖创作工作区、社区模板、福利、提示词库、充值与记录、回收站',
-      '我的作品：导图和章节一体化写作，把设定、大纲、正文放在同一部作品里管理',
-      '回收站：误删内容先进入回收站可恢复，支持搜索筛选和批量操作，彻底删除不可撤销',
-      '创作社区：浏览作品模板和提示词模板，一键点赞收藏预览克隆，快速拿到灵感和框架',
-      '领取福利：新手签到和任务领钻石，免费体验 AI 写作，到账情况可在钻石记录核对',
-      '提示词库：把常用提示词存起来，一键复制复用，长期积累出自己的高质量模板',
-      '钻石充值：购买会员或加油包补充额度，系统优先消耗会员钻石避免到期浪费',
-      '钻石记录：查看每次 AI 消费和每笔充值到账，流水清楚，出问题先来这里查',
+      '网站定位：一站式 AI 网文创作平台，涵盖创作工作区、社区模板、福利、指令工坊、充值与记录、废稿箱',
+      '工作台：导图和章节一体化写作，把设定、大纲、正文放在同一部作品里管理',
+      '废稿箱：误删内容先进入废稿箱可恢复，支持搜索筛选和批量操作，彻底删除不可撤销',
+      '模版广场：浏览作品模板和提示词模板，一键点赞收藏预览克隆，快速拿到灵感和框架',
+      '奖励中心：新手签到和任务领钻石，免费体验 AI 写作，到账情况可在消费明细核对',
+      '指令工坊：把常用提示词存起来，一键复制复用，长期积累出自己的高质量模板',
+      '充值中心：购买会员或加油包补充额度，系统优先消耗会员钻石避免到期浪费',
+      '消费明细：查看每次 AI 消费和每笔充值到账，流水清楚，出问题先来这里查',
     ],
   },
 ];
@@ -180,13 +180,13 @@ const videoGuides: VideoGuide[] = [
 const textGuides: TextGuide[] = [
   {
     id: 'guide-my-works',
-    title: '我的作品（工作区）',
+    title: '工作台（工作区）',
     category: '创作指南',
     icon: Layers,
     iconBg: 'bg-blue-100',
     iconColor: 'text-blue-600',
     overview: [
-      '「我的作品」用于管理你的创作项目入口；进入项目后，会来到“工作区”进行大纲/设定/正文等编辑。',
+      '「工作台」用于管理你的创作项目入口；进入项目后，会来到“工作区”进行大纲/设定/正文等编辑。',
       '工作区通常包含：思维导图（用于结构化梳理）+ 章节/正文编辑器（用于写作与润色）。',
       '你可以在工作区中随时导出备份，避免重要数据丢失。',
     ],
@@ -218,8 +218,8 @@ const textGuides: TextGuide[] = [
       {
         title: 'AI 怎么帮你写（更省事）',
         points: [
-          '把常用指令存到“提示词库”，以后点一下就能用（扩写、润色、降 AI 味、补设定、写对话等）。',
-          '每次 AI 生成会消耗钻石，明细在“钻石记录”里都能查到。',
+          '把常用指令存到“指令工坊”，以后点一下就能用（扩写、润色、降 AI 味、补设定、写对话等）。',
+          '每次 AI 生成会消耗钻石，明细在“消费明细”里都能查到。',
           '生成前先确认你选的上下文是不是当前章节/设定，避免 AI 参考错内容写跑题。',
         ],
       },
@@ -234,29 +234,29 @@ const textGuides: TextGuide[] = [
       {
         title: '误删怎么办（别慌）',
         points: [
-          '删掉的作品/页面不会立刻消失，会先进回收站，你可以随时恢复。',
-          '回收站里“彻底删除”才是永久删除，删之前务必确认。',
+          '删掉的作品/页面不会立刻消失，会先进废稿箱，你可以随时恢复。',
+          '废稿箱里“彻底删除”才是永久删除，删之前务必确认。',
         ],
       },
     ],
   },
   {
     id: 'guide-trash',
-    title: '回收站',
+    title: '废稿箱',
     category: '数据保护',
     icon: Trash2,
     iconBg: 'bg-gray-200',
     iconColor: 'text-gray-600',
     overview: [
-      '回收站用于集中管理被删除的作品/页面/提示词，提供“恢复”和“彻底删除”两类操作。',
-      '回收站支持筛选、搜索、勾选批量处理，避免大量内容误删后难以找回。',
-      '回收站内容默认保留 30 天，到期会自动永久删除，请及时处理重要内容。',
+      '废稿箱用于集中管理被删除的作品/页面/提示词，提供“恢复”和“彻底删除”两类操作。',
+      '废稿箱支持筛选、搜索、勾选批量处理，避免大量内容误删后难以找回。',
+      '废稿箱内容默认保留 30 天，到期会自动永久删除，请及时处理重要内容。',
     ],
     sections: [
       {
         title: '怎么快速找到你要恢复的内容',
         points: [
-          '先用类型筛选：全部 / 我的作品 / 提示词。',
+          '先用类型筛选：全部 / 工作台 / 提示词。',
           '再用搜索框搜标题关键词（比如作品名/提示词标题）。',
           '列表默认按删除时间排序：越新删的越靠前。',
         ],
@@ -266,13 +266,13 @@ const textGuides: TextGuide[] = [
         points: [
           '勾选多条后，可以一次性恢复或一次性彻底删除。',
           '系统会再次确认，避免你手滑清空。',
-          '“清空回收站”会直接永久删除全部内容，通常只在确定不需要任何旧内容时使用。',
+          '“清空废稿箱”会直接永久删除全部内容，通常只在确定不需要任何旧内容时使用。',
         ],
       },
       {
         title: '恢复后会回到哪里',
         points: [
-          '提示词：恢复后回到“提示词库”。',
+          '提示词：恢复后回到“指令工坊”。',
           '作品/章节/设定/导图：恢复后会回到工作区的文件树里。',
           '恢复后如果没立刻看到，建议刷新一下或回到工作区看看文件树是否已出现。',
         ],
@@ -281,7 +281,7 @@ const textGuides: TextGuide[] = [
         title: '彻底删除与保留期限（一定要看）',
         points: [
           '彻底删除不可撤销：删了就真的没了，无法找回。',
-          '回收站默认只保留 30 天，快到期的内容要及时恢复或先导出备份。',
+          '废稿箱默认只保留 30 天，快到期的内容要及时恢复或先导出备份。',
           '长篇作品建议先导出 ZIP 备份，再决定是否彻底删除。',
         ],
       },
@@ -289,13 +289,13 @@ const textGuides: TextGuide[] = [
   },
   {
     id: 'guide-community',
-    title: '创作社区',
+    title: '模版广场',
     category: '模板与提示词共享',
     icon: Users,
     iconBg: 'bg-purple-100',
     iconColor: 'text-purple-600',
     overview: [
-      '创作社区用于发现与分享：包含作品模板与提示词模板两大内容类型。',
+      '模版广场用于发现与分享：包含作品模板与提示词模板两大内容类型。',
       '社区内容默认“官方优先”，并结合点赞数、浏览/使用量与创建时间综合排序，优质内容更容易被看到。',
       '你可以点赞收藏、预览、克隆到自己的工作区，也可以发布自己的模板供他人使用。',
     ],
@@ -304,7 +304,7 @@ const textGuides: TextGuide[] = [
         title: '社区里有什么（先知道入口）',
         points: [
           '作品模板：别人分享的“作品结构/设定/章节框架”。',
-          '提示词模板：别人分享的“好用提示词”，你可以导入到自己的提示词库。',
+          '提示词模板：别人分享的“好用提示词”，你可以导入到自己的指令工坊。',
           '收藏列表：你点过赞的内容都会在这里，方便下次再用。',
           '我的模板：你发布过的内容在这里管理（只有你自己能改/删）。',
           '创建模板：把你自己的模板发布出来（作品模板最多 10 个；提示词模板最多 20 个）。',
@@ -338,13 +338,13 @@ const textGuides: TextGuide[] = [
   },
   {
     id: 'guide-welfare',
-    title: '领取福利（福利中心）',
+    title: '奖励中心',
     category: '免费钻石获取',
     icon: Gift,
     iconBg: 'bg-red-100',
     iconColor: 'text-red-600',
     overview: [
-      '福利中心提供新手签到与任务奖励，帮助你免费获取钻石，用于 AI 生成与创作增强。',
+      '奖励中心提供新手签到与任务奖励，帮助你免费获取钻石，用于 AI 生成与创作增强。',
       '签到奖励适用于注册 7 天内的新用户；任务奖励包含一次性任务与每日任务。',
       '完成后钻石会自动到账，可在页面顶部余额处实时查看，并可一键跳转到充值页面。',
     ],
@@ -361,7 +361,7 @@ const textGuides: TextGuide[] = [
         title: '任务奖励怎么做（点“去完成”）',
         points: [
           '首次 AI 生成：随便完成一次 AI 生成，就能领一次奖励。',
-          '首次创建模板：去创作社区创建一个作品模板或提示词模板，就能领一次奖励。',
+          '首次创建模板：去模版广场创建一个作品模板或提示词模板，就能领一次奖励。',
           '观看激励视频：看够 80% 就能领取当天奖励。',
         ],
       },
@@ -377,22 +377,22 @@ const textGuides: TextGuide[] = [
         title: '常见问题',
         points: [
           '没登录领不了：请先登录再来签到/做任务。',
-          '不知道钻石从哪来/花到哪去：去“钻石记录”里看流水，一目了然。',
+          '不知道钻石从哪来/花到哪去：去“消费明细”里看流水，一目了然。',
         ],
       },
     ],
   },
   {
     id: 'guide-prompts',
-    title: '提示词库（我的提示词库）',
+    title: '指令工坊',
     category: 'AI 指令管理',
     icon: MessageSquare,
     iconBg: 'bg-green-100',
     iconColor: 'text-green-600',
     overview: [
-      '提示词库用于管理你常用的 AI 指令：标题 + 一级标签 + 二级标签 + 内容，结构清晰便于复用。',
-      '支持分类切换、预览、复制、编辑、删除（删除后进入回收站可恢复）。',
-      '支持从创作社区一键导入喜欢的提示词，让你的“咒语库”越用越强。',
+      '指令工坊用于管理你常用的 AI 指令：标题 + 一级标签 + 二级标签 + 内容，结构清晰便于复用。',
+      '支持分类切换、预览、复制、编辑、删除（删除后进入废稿箱可恢复）。',
+      '支持从模版广场一键导入喜欢的提示词，让你的“咒语库”越用越强。',
     ],
     sections: [
       {
@@ -416,7 +416,7 @@ const textGuides: TextGuide[] = [
         points: [
           '点击卡片可预览完整内容，方便确认是不是你要的那条提示词。',
           '点“复制”即可一键复制到剪贴板（失败会提示你手动复制）。',
-          '删除后会进回收站，可以恢复；系统也会二次确认，避免误删。',
+          '删除后会进废稿箱，可以恢复；系统也会二次确认，避免误删。',
         ],
       },
       {
@@ -431,7 +431,7 @@ const textGuides: TextGuide[] = [
   },
   {
     id: 'guide-membership',
-    title: '钻石充值（充值会员）',
+    title: '充值中心（充值会员）',
     category: '账户与付费',
     icon: Zap,
     iconBg: 'bg-yellow-100',
@@ -463,13 +463,13 @@ const textGuides: TextGuide[] = [
         points: [
           '会员没过期时再买会自动顺延；过期后再买从当前时间重新算。',
           '系统会优先用“会员钻石”，再用“加油包钻石”，避免会员到期浪费。',
-          '到账/消耗都能在“钻石记录”里查到，建议遇到疑问先去看流水。',
+          '到账/消耗都能在“消费明细”里查到，建议遇到疑问先去看流水。',
         ],
       },
       {
         title: '常见问题',
         points: [
-          '订单异常或不到账：可以带上“钻石记录/订单信息”联系管理员排查。',
+          '订单异常或不到账：可以带上“消费明细/订单信息”联系管理员排查。',
           '不要在多设备同时狂点购买，容易产生多笔待支付订单。',
         ],
       },
@@ -477,13 +477,13 @@ const textGuides: TextGuide[] = [
   },
   {
     id: 'guide-records',
-    title: '钻石记录',
+    title: '消费明细',
     category: '对账与明细',
     icon: Receipt,
     iconBg: 'bg-purple-100',
     iconColor: 'text-purple-600',
     overview: [
-      '钻石记录用于查看两类明细：消费记录（AI 调用消耗）与充值记录（到账与订单状态）。',
+      '消费明细用于查看两类明细：消费记录（AI 调用消耗）与充值记录（到账与订单状态）。',
       '记录支持分页浏览，适合长期对账与排查异常消耗。',
       '该页面需要登录后才能查看，避免账户隐私泄露。',
     ],
@@ -575,9 +575,9 @@ const Guide = () => {
   };
 
   return (
-    <div className="h-full min-h-0 bg-gray-50 flex flex-col overflow-hidden">
-      <div className="bg-white border-b border-gray-200 px-8 py-8 shrink-0">
-        <h1 className="text-3xl font-bold text-gray-900 mb-4">教程专区</h1>
+    <div className="h-full min-h-0 bg-gray-50 dark:bg-background flex flex-col overflow-hidden">
+      <div className="bg-white dark:bg-background/80 border-b border-gray-200 dark:border-border px-8 py-8 shrink-0 backdrop-blur-xl">
+        <h1 className="text-3xl font-bold text-gray-900 mb-4">使用指南</h1>
         <div className="max-w-2xl relative">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
           <input
@@ -595,7 +595,7 @@ const Guide = () => {
         <button
           onClick={() => setActiveTab('video')}
           className={`px-4 py-2 rounded-full text-sm font-medium transition-colors flex items-center ${
-            activeTab === 'video' ? 'bg-black text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+            activeTab === 'video' ? 'bg-black dark:bg-purple-600 text-white' : 'bg-white dark:bg-card text-gray-600 hover:bg-gray-100 dark:hover:bg-muted border border-gray-200 dark:border-border'
           }`}
         >
           <Video className="w-4 h-4 mr-2" />
@@ -604,7 +604,7 @@ const Guide = () => {
         <button
           onClick={() => setActiveTab('text')}
           className={`px-4 py-2 rounded-full text-sm font-medium transition-colors flex items-center ${
-            activeTab === 'text' ? 'bg-black text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+            activeTab === 'text' ? 'bg-black dark:bg-purple-600 text-white' : 'bg-white dark:bg-card text-gray-600 hover:bg-gray-100 dark:hover:bg-muted border border-gray-200 dark:border-border'
           }`}
         >
           <BookOpen className="w-4 h-4 mr-2" />
@@ -613,13 +613,13 @@ const Guide = () => {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-8 pt-0">
-        <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+        <div className="bg-white dark:bg-card rounded-2xl border border-gray-200 dark:border-border overflow-hidden shadow-sm dark:shadow-purple-950/10">
           {cardItems.length > 0 ? (
             <div className="divide-y divide-gray-100">
               {pagedItems.map((item) => {
                 const Icon = item.icon;
                 return (
-                  <div key={item.id} onClick={() => openItem(item)} className="p-6 hover:bg-gray-50 transition-colors flex items-start group cursor-pointer">
+                  <div key={item.id} onClick={() => openItem(item)} className="p-6 hover:bg-gray-50 dark:hover:bg-muted/40 transition-colors flex items-start group cursor-pointer">
                     <div className={`w-20 h-20 rounded-2xl flex-shrink-0 mr-6 flex items-center justify-center ${item.iconBg}`}>
                       <Icon className={`w-10 h-10 ${item.iconColor} group-hover:scale-110 transition-transform duration-300`} />
                     </div>

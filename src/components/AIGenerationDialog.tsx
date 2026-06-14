@@ -22,7 +22,7 @@ interface Skill {
 const skillCategories = [
   { id: 'all', label: '全部' },
   { id: 'collected', label: '已收藏' },
-  { id: 'my_prompts', label: '我的提示词库' },
+  { id: 'my_prompts', label: '指令工坊' },
   { id: 'ai_role', label: 'AI角色扮演' },
   { id: 'book_positioning', label: '开书与定位' },
   { id: 'worldbuilding', label: '世界观与设定' },
@@ -693,7 +693,7 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
             type="button"
             onClick={() => setShowPromptPicker(true)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg border transition-colors text-xs font-medium bg-white border-purple-200 hover:bg-purple-50 text-purple-700"
-            title="从提示词库选择并插入"
+            title="从指令工坊选择并插入"
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>选择提示词</span>

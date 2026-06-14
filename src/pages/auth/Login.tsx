@@ -6,7 +6,7 @@ import { createGuestProfile, createGuestUser, saveGuestSession, useAuthStore, is
 import { guestDemoFileStructure, useFileStore } from '@/store/useFileStore';
 import { usePromptStore } from '@/store/usePromptStore';
 import { useTrashStore } from '@/store/useTrashStore';
-import { createLogger } from '@/lib/logger';
+import { createLogger, flushLogs } from '@/lib/logger';
 
 const log = createLogger('Login')
 
@@ -40,6 +40,13 @@ const clearAllGuestData = () => {
     'trash-store',
     'guest-trash-store',
   ]
+  const isGuestScopedKey = (key: string) =>
+    key.startsWith('guest-') && (
+      key.includes('-mindmap-') ||
+      key.includes('-mindmap-theme-') ||
+      key.includes('-story-') ||
+      key.includes('-view-')
+    )
 
   const allKeys: string[] = []
   for (let i = 0; i < localStorage.length; i++) {
@@ -51,7 +58,8 @@ const clearAllGuestData = () => {
 
   const keysToRemove = allKeys.filter(key => 
     exactKeysToRemove.includes(key) || 
-    keyPrefixesToRemove.some(prefix => key.startsWith(prefix))
+    keyPrefixesToRemove.some(prefix => key.startsWith(prefix)) ||
+    isGuestScopedKey(key)
   )
   
   for (const key of keysToRemove) {
@@ -81,7 +89,7 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [emailError, setEmailError] = useState('');
   const navigate = useNavigate();
-  const { user, session, setUser, setSession, setProfile, setDiamondBalance, fetchProfile } = useAuthStore();
+  const { user, session, signingOut, setUser, setSession, setProfile, setDiamondBalance, fetchProfile } = useAuthStore();
   const { setFiles } = useFileStore();
   const canSubmit = email.trim().length > 0 && password.trim().length > 0;
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -89,10 +97,10 @@ export default function Login() {
 
   useEffect(() => {
     // 只有真正登录的用户（不是游客）才跳转到 workspace
-    if ((session?.user || user) && !isGuestUser(user)) {
+    if (!signingOut && (session?.user || user) && !isGuestUser(user)) {
       navigate(defaultWorkspacePath, { replace: true });
     }
-  }, [defaultWorkspacePath, navigate, session, user]);
+  }, [defaultWorkspacePath, navigate, session, user, signingOut]);
 
   const handleGuestLogin = () => {
     // 先清理之前的游客数据，确保新的游客会话是干净的！
@@ -110,16 +118,21 @@ export default function Login() {
     setDiamondBalance(0);
     setFiles(JSON.parse(JSON.stringify(guestDemoFileStructure)));
     log.info('Guest login completed, files set to demo structure');
+    flushLogs();
     
-    navigate('/workspace');
+    // 防回归：只有游客登录后的这一次跳转展示欢迎页；普通点击“我的作品”不应继续显示欢迎页。
+    navigate('/workspace', { state: { showGuestWelcome: true } });
   };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loading) return;
 
+    const loginStartedAt = performance.now();
     const normalizedEmail = email.trim();
+    log.info('Password login submitted', { email: normalizedEmail });
     if (!emailRegex.test(normalizedEmail)) {
+      log.warn('Password login blocked: invalid email', { email: normalizedEmail });
       setEmailError('请输入有效的邮箱地址');
       alert('请输入有效的邮箱地址');
       return;
@@ -132,10 +145,18 @@ export default function Login() {
         email: normalizedEmail,
         password,
       });
-      console.log('[Auth Timing] signInWithPassword ms:', Math.round(performance.now() - signInStartedAt));
+      const signInMs = Math.round(performance.now() - signInStartedAt);
+      if (signInMs >= 3000) {
+        log.warn('Slow password login detected', { email: normalizedEmail, durationMs: signInMs });
+      }
       if (error) throw error;
       
       const loggedInUser = data.user ?? data.session?.user ?? null;
+      log.success('Password login succeeded', {
+        userId: loggedInUser?.id,
+        email: normalizedEmail,
+        signInMs,
+      });
       if (data.session) {
         setSession(data.session);
       }
@@ -146,12 +167,21 @@ export default function Login() {
       // Fetch profile in the background so the page can enter workspace immediately.
       const fetchProfileStartedAt = performance.now();
       void fetchProfile().finally(() => {
-        console.log('[Auth Timing] login page fetchProfile total ms:', Math.round(performance.now() - fetchProfileStartedAt));
+        const profileMs = Math.round(performance.now() - fetchProfileStartedAt);
+        if (profileMs >= 3000) {
+          log.warn('Slow login profile hydration detected', { email: normalizedEmail, durationMs: profileMs });
+        }
       });
 
+      flushLogs();
       navigate(defaultWorkspacePath, { replace: true });
     } catch (error: any) {
       console.error('Error logging in:', error);
+      log.error('Password login failed', {
+        email: normalizedEmail,
+        durationMs: Math.round(performance.now() - loginStartedAt),
+        error: error?.message || String(error),
+      }, error);
       
       let msg = '登录失败，请检查账号密码';
       if (error.message === 'Invalid login credentials') {
@@ -170,6 +200,11 @@ export default function Login() {
           handleGuestLogin();
       }
     } finally {
+      log.info('Password login flow finished', {
+        email: normalizedEmail,
+        durationMs: Math.round(performance.now() - loginStartedAt),
+      });
+      flushLogs();
       setLoading(false);
     }
   };

@@ -4,7 +4,7 @@ import { Node, Edge } from 'reactflow';
 import { ChevronRight, ChevronDown, FileText, Check, X, Folder, Layout, List } from 'lucide-react';
 import { getNodeContext } from '@/utils/mindmapUtils';
 import { useFileStore } from '@/store/useFileStore';
-import { useAuthStore } from '@/store/useAuthStore';
+import { isGuestUser, useAuthStore } from '@/store/useAuthStore';
 import { loadChapterContent, loadMindMapContent } from '@/lib/workspacePersistence';
 
 interface ContextSelectorDialogProps {
@@ -124,8 +124,16 @@ const ContextSelectorDialog: React.FC<ContextSelectorDialogProps> = ({ isOpen, o
           }
       }
 
-      let content = key ? localStorage.getItem(key) : null;
-      if (!content && user && activeWorkId) {
+      const scopedKey = (() => {
+          if (!key) return '';
+          if (user && !isGuestUser(user)) return `user-${user.id}-${key}`;
+          if (user?.id) return `${user.id}-${key}`;
+          return `anonymous-${key}`;
+      })();
+      const contentKeys = [scopedKey, key].filter(Boolean);
+
+      let content = contentKeys.map((contentKey) => localStorage.getItem(contentKey)).find(Boolean) || null;
+      if (!content && user && !isGuestUser(user) && activeWorkId) {
           try {
               const remoteContent = await loadMindMapContent({
                   workId: activeWorkId,

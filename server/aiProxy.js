@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { randomUUID } from 'node:crypto';
 import { createServerLogger } from './logger.js';
 
 const log = createServerLogger('AIProxy');
@@ -27,6 +28,7 @@ const PRECHECK_REASONING_TOKENS = Number(process.env.AI_PRECHECK_REASONING_TOKEN
 const ANOMALY_HOURLY_DIAMONDS = Number(process.env.AI_ANOMALY_HOURLY_DIAMONDS || 800000);
 const ANOMALY_LOOKBACK_DAYS = Number(process.env.AI_ANOMALY_LOOKBACK_DAYS || 7);
 const SUMMARIZE_FETCH_TIMEOUT_MS = Number(process.env.AI_SUMMARIZE_FETCH_TIMEOUT_MS || 60000);
+const SUPABASE_QUERY_RETRY_DELAYS = [0, 600, 1200];
 
 const estimateTokens = (text = '') => {
   const normalized = String(text || '').trim();
@@ -50,12 +52,157 @@ const estimateTokens = (text = '') => {
   );
 };
 
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const isUuid = (value) => typeof value === 'string' && uuidPattern.test(value);
+
+const stripHtml = (value = '') => String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const getWordCount = (value = '') => stripHtml(value).length;
+
+const escapeHtml = (value = '') =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const sanitizeAiContinuationOutput = (userPrompt = '', content = '') => {
+  const prompt = String(userPrompt ?? '').trim();
+  const raw = String(content ?? '');
+  if (!prompt || !raw.trim()) return raw;
+
+  const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+  const normalizedPrompt = normalize(prompt);
+  if (!normalizedPrompt) return raw;
+
+  const lines = raw.split(/\r?\n/);
+  while (lines.length > 0 && !normalize(lines[0])) lines.shift();
+
+  const prefixes = [/^(task|prompt|instruction|任务|提示词|用户需求|需求|指令)\s*[:：]\s*/i];
+
+  while (lines.length > 0) {
+    const line = lines[0];
+    const trimmed = String(line ?? '').trim();
+    const normalizedLine = normalize(trimmed);
+    const normalizedLineStripped = normalize(trimmed.replace(/^[\-\*\u2022>\s"'“”‘’]+/g, ''));
+
+    const isExact = normalizedLine === normalizedPrompt || normalizedLineStripped === normalizedPrompt;
+    const isNearExact =
+      normalizedPrompt.length >= 12 &&
+      normalizedLine.includes(normalizedPrompt) &&
+      normalizedLine.length <= normalizedPrompt.length + 10;
+
+    if (isExact || isNearExact) {
+      lines.shift();
+      while (lines.length > 0 && !normalize(lines[0])) lines.shift();
+      continue;
+    }
+
+    let removedPrefixed = false;
+    for (const re of prefixes) {
+      if (re.test(trimmed)) {
+        const rest = trimmed.replace(re, '');
+        const normalizedRest = normalize(rest);
+        if (normalizedRest === normalizedPrompt || normalizedLine.includes(normalizedPrompt)) {
+          lines.shift();
+          while (lines.length > 0 && !normalize(lines[0])) lines.shift();
+          removedPrefixed = true;
+        }
+        break;
+      }
+    }
+    if (removedPrefixed) continue;
+    break;
+  }
+
+  return lines.join('\n').trimStart();
+};
+
+const textToParagraphHtml = (content = '') => {
+  const paragraphs = String(content || '')
+    .trim()
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim().replace(/\n/g, ' '))
+    .filter(Boolean);
+
+  return paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join('');
+};
+
+const appendHtml = (baseContentHtml = '', generatedHtml = '') => {
+  const base = String(baseContentHtml || '').trim();
+  if (!base || base === '<p></p>') return generatedHtml;
+  return `${base}${generatedHtml}`;
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const formatDbError = (error) => {
+  if (!error) return null;
+  return {
+    code: error.code,
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+    name: error.name,
+  };
+};
+
+const withSupabaseRetry = async (label, fn, meta = {}) => {
+  let lastError = null;
+
+  for (let attempt = 0; attempt < SUPABASE_QUERY_RETRY_DELAYS.length; attempt += 1) {
+    const delay = SUPABASE_QUERY_RETRY_DELAYS[attempt];
+    if (delay > 0) {
+      await sleep(delay);
+    }
+
+    const startedAt = Date.now();
+    try {
+      const result = await fn();
+      const durationMs = Date.now() - startedAt;
+      if (!result?.error) {
+        log.info(`${label} succeeded`, {
+          ...meta,
+          attempt: attempt + 1,
+          retried: attempt > 0,
+          durationMs,
+        });
+        return result;
+      }
+
+      lastError = result.error;
+      log.warn(`${label} attempt failed`, {
+        ...meta,
+        attempt: attempt + 1,
+        maxAttempts: SUPABASE_QUERY_RETRY_DELAYS.length,
+        durationMs,
+        error: formatDbError(result.error),
+      });
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      lastError = error;
+      log.warn(`${label} attempt threw`, {
+        ...meta,
+        attempt: attempt + 1,
+        maxAttempts: SUPABASE_QUERY_RETRY_DELAYS.length,
+        durationMs,
+        error: formatDbError(error) || { message: error?.message, name: error?.name },
+      });
+    }
+  }
+
+  return { data: null, error: lastError || new Error(`${label} failed`) };
+};
 
 const shouldRetryFetchError = (error) => {
   if (!error) return false;
   if (error.name === 'AbortError') return true;
-  if (error instanceof TypeError && String(error.message || '').toLowerCase().includes('fetch')) return true;
+  const message = String(error.message || '').toLowerCase();
+  if (error instanceof TypeError && message.includes('fetch')) return true;
+  if (message.includes('fetch failed')) return true;
+  if (message.includes('network')) return true;
+  if (message.includes('timeout')) return true;
+  if (message.includes('terminated')) return true;
   return false;
 };
 
@@ -255,16 +402,21 @@ const getSupabaseClientForRequest = (accessToken) => {
 const getAuthenticatedUser = async (supabase, accessToken) => {
   log.info('Authenticating user');
 
-  // 方案一：先用 supabase.auth.getUser 验证
-  const { data, error } = await supabase.auth.getUser({ jwt: accessToken });
+  // Supabase JS v2 的 getUser 参数应直接传 access token。传 { jwt } 会被当成 token 字符串，
+  // 导致服务端每次都报 invalid Bearer token，进而拖慢 AI 请求的扣费前置流程。
+  const startedAt = Date.now();
+  const { data, error } = await supabase.auth.getUser(accessToken);
 
   if (!error && data?.user) {
-    log.info('User authenticated via getUser', { userId: data.user.id });
+    log.info('User authenticated via getUser', { userId: data.user.id, durationMs: Date.now() - startedAt });
     return data.user;
   }
 
   // 方案二：如果 getUser 失败，尝试直接解析 JWT（备用方案）
-  log.warn('getUser failed, falling back to JWT parsing', { error: error?.message });
+  log.warn('getUser failed, falling back to JWT parsing', {
+    error: error?.message,
+    durationMs: Date.now() - startedAt,
+  });
   const safeBase64UrlDecode = (str) => {
     const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
     const pad = base64.length % 4 ? "=".repeat(4 - (base64.length % 4)) : "";
@@ -294,14 +446,19 @@ const getAuthenticatedUser = async (supabase, accessToken) => {
 const getModelPricingFromDb = async (supabase, modelKey) => {
   log.info('Fetching model pricing from DB', { modelKey });
 
-  const { data, error } = await supabase
-    .from('model_pricing')
-    .select(
-      'model_key, model_name, input_multiplier, output_multiplier, reasoning_multiplier, cache_multiplier, provider, model_api_name'
-    )
-    .eq('model_key', modelKey)
-    .eq('is_active', true)
-    .single();
+  const { data, error } = await withSupabaseRetry(
+    'Fetch model pricing',
+    () =>
+      supabase
+        .from('model_pricing')
+        .select(
+          'model_key, model_name, input_multiplier, output_multiplier, reasoning_multiplier, cache_multiplier, provider, model_api_name'
+        )
+        .eq('model_key', modelKey)
+        .eq('is_active', true)
+        .single(),
+    { modelKey }
+  );
 
   if (error || !data) {
     const code = error?.code ? ` (${error.code})` : '';
@@ -323,14 +480,19 @@ const getModelPricingFromDb = async (supabase, modelKey) => {
 const getEffectiveBalance = async (supabase, userId) => {
   log.info('Fetching user balance', { userId });
 
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('member_diamonds, permanent_diamonds, membership_type, membership_expires_at')
-    .eq('id', userId)
-    .single();
+  const { data, error } = await withSupabaseRetry(
+    'Fetch user balance',
+    () =>
+      supabase
+        .from('profiles')
+        .select('member_diamonds, permanent_diamonds, membership_type, membership_expires_at')
+        .eq('id', userId)
+        .single(),
+    { userId }
+  );
 
   if (error || !data) {
-    log.error('Failed to fetch user balance', { userId }, error);
+    log.error('Failed to fetch user balance', { userId, error: formatDbError(error) }, error);
     throw new Error('读取用户余额失败');
   }
 
@@ -508,6 +670,90 @@ const detectAbnormalUsage = async ({ supabase, userId, latestDiamonds }) => {
   return undefined;
 };
 
+const normalizeBillingResultFromLog = (row, balance) => {
+  if (!row) return null;
+  const memberRemaining = Number(balance?.member_diamonds ?? NaN);
+  const permanentRemaining = Number(balance?.permanent_diamonds ?? NaN);
+  const totalRemaining = Number.isFinite(memberRemaining) && Number.isFinite(permanentRemaining)
+    ? memberRemaining + permanentRemaining
+    : undefined;
+
+  return {
+    success: true,
+    diamonds_consumed: Number(row.diamonds_consumed ?? row.total_deducted ?? 0),
+    input_diamonds: Number(row.input_diamonds ?? 0),
+    output_diamonds: Number(row.output_diamonds ?? 0),
+    reasoning_diamonds: Number(row.reasoning_diamonds ?? 0),
+    cache_diamonds: Number(row.cache_diamonds ?? 0),
+    member_diamonds_remaining: Number.isFinite(memberRemaining) ? memberRemaining : undefined,
+    permanent_diamonds_remaining: Number.isFinite(permanentRemaining) ? permanentRemaining : undefined,
+    total_remaining: totalRemaining,
+    recoveredFromUsageLog: true,
+  };
+};
+
+const findExistingBillingLog = async ({ supabase, userId, billingGroupId, billingStep }) => {
+  if (!billingGroupId || !billingStep) return null;
+
+  const { data, error } = await withSupabaseRetry(
+    'Lookup existing billing log',
+    () =>
+      supabase
+        .from('usage_logs')
+        .select(
+          'id, diamonds_consumed, total_deducted, input_diamonds, output_diamonds, reasoning_diamonds, cache_diamonds, created_at'
+        )
+        .eq('user_id', userId)
+        .eq('billing_group_id', billingGroupId)
+        .eq('billing_step', billingStep)
+        .order('created_at', { ascending: false })
+        .limit(1),
+    { userId, billingGroupId, billingStep }
+  );
+
+  if (error) {
+    log.warn('Existing billing log lookup failed', {
+      userId,
+      billingGroupId,
+      billingStep,
+      error: formatDbError(error),
+    });
+    return null;
+  }
+
+  if (!data?.[0]) return null;
+
+  const balanceResult = await withSupabaseRetry(
+    'Fetch balance after recovered billing',
+    () =>
+      supabase
+        .from('profiles')
+        .select('member_diamonds, permanent_diamonds')
+        .eq('id', userId)
+        .single(),
+    { userId, billingGroupId, billingStep }
+  );
+
+  return normalizeBillingResultFromLog(data[0], balanceResult.data);
+};
+
+let billingIdempotencyReadyCache = null;
+const isBillingIdempotencyReady = async (supabase) => {
+  if (billingIdempotencyReadyCache !== null) return billingIdempotencyReadyCache;
+
+  const { data, error } = await supabase.rpc('billing_idempotency_ready');
+  if (error) {
+    log.warn('Billing idempotency check unavailable; RPC retry will stay conservative', {
+      error: formatDbError(error),
+    });
+    return false;
+  } else {
+    billingIdempotencyReadyCache = data === true;
+    log.info('Billing idempotency check completed', { ready: billingIdempotencyReadyCache });
+  }
+  return billingIdempotencyReadyCache;
+};
+
 const deductUsageOnServer = async ({ supabase, userId, model, usage, billingGroupId, billingStep }) => {
   log.info('Deducting usage on server', {
     userId,
@@ -520,19 +766,69 @@ const deductUsageOnServer = async ({ supabase, userId, model, usage, billingGrou
     billingStep,
   });
 
-  const { data, error } = await supabase.rpc('deduct_diamonds_v4', {
-    p_user_id: userId,
-    p_model_key: model,
-    p_input_tokens: usage.input_tokens ?? 0,
-    p_output_tokens: usage.output_tokens ?? 0,
-    p_reasoning_tokens: usage.reasoning_tokens ?? 0,
-    p_cache_tokens: usage.cache_hit_tokens ?? 0,
-    p_billing_group_id: billingGroupId ?? null,
-    p_billing_step: billingStep ?? null,
-  });
+  const existing = await findExistingBillingLog({ supabase, userId, billingGroupId, billingStep });
+  if (existing) {
+    log.warn('Deduct diamonds skipped because billing log already exists', {
+      userId,
+      model,
+      billingGroupId,
+      billingStep,
+      diamondsConsumed: existing.diamonds_consumed,
+    });
+    return existing;
+  }
+
+  const callDeductRpc = async () => {
+    const result = await supabase.rpc('deduct_diamonds_v4', {
+      p_user_id: userId,
+      p_model_key: model,
+      p_input_tokens: usage.input_tokens ?? 0,
+      p_output_tokens: usage.output_tokens ?? 0,
+      p_reasoning_tokens: usage.reasoning_tokens ?? 0,
+      p_cache_tokens: usage.cache_hit_tokens ?? 0,
+      p_billing_group_id: billingGroupId ?? null,
+      p_billing_step: billingStep ?? null,
+    });
+
+    if (result.error && shouldRetryFetchError(result.error)) {
+      const recovered = await findExistingBillingLog({ supabase, userId, billingGroupId, billingStep });
+      if (recovered) {
+        log.warn('Deduct diamonds RPC response lost but billing log was found', {
+          userId,
+          model,
+          billingGroupId,
+          billingStep,
+          diamondsConsumed: recovered.diamonds_consumed,
+        });
+        return { data: recovered, error: null };
+      }
+    }
+
+    return result;
+  };
+
+  const idempotencyReady = await isBillingIdempotencyReady(supabase);
+  const { data, error } = idempotencyReady
+    ? await withSupabaseRetry('Deduct diamonds RPC', callDeductRpc, { userId, model, billingGroupId, billingStep })
+    : await callDeductRpc();
 
   if (error) {
-    log.error('Deduct diamonds RPC failed', { userId, model, error: error.message }, error);
+    const recovered = await findExistingBillingLog({ supabase, userId, billingGroupId, billingStep });
+    if (recovered) {
+      log.warn('Deduct diamonds RPC failed after retries but billing log was found', {
+        userId,
+        model,
+        billingGroupId,
+        billingStep,
+        diamondsConsumed: recovered.diamonds_consumed,
+      });
+      return recovered;
+    }
+
+    log.error('Deduct diamonds RPC failed', { userId, model, error: formatDbError(error) }, error);
+    if (shouldRetryFetchError(error)) {
+      throw createUserFacingError('扣费确认时网络异常，AI 内容尚未应用。请稍后重试，系统会尽量避免重复扣费。');
+    }
     throw new Error(error.message || '扣费失败');
   }
 
@@ -728,13 +1024,130 @@ const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig 
   return requestOpenAICompatible({ config: finalConfig, messages, temperature });
 };
 
-const executeAiTask = async ({ kind, prompt = '', context = '', model, messages, temperature, requestContext, billingGroupId, billingStep }) => {
+const saveGeneratedChapterContent = async ({
+  supabase,
+  userId,
+  workId,
+  chapterId,
+  chapterTitle,
+  baseContentHtml,
+  generatedContent,
+  prompt,
+  deferChapterSave = false,
+}) => {
+  if (!isUuid(workId) || !isUuid(chapterId)) {
+    return { savedToChapter: false, savedChapterContent: null };
+  }
+
+  const cleaned = sanitizeAiContinuationOutput(prompt, generatedContent);
+  const generatedHtml = textToParagraphHtml(cleaned);
+  if (!generatedHtml) {
+    return { savedToChapter: false, savedChapterContent: null };
+  }
+
+  const finalContent = appendHtml(baseContentHtml, generatedHtml);
+
+  if (deferChapterSave) {
+    log.info('Generated chapter content prepared without saving', {
+      userId,
+      workId,
+      chapterId,
+      baseLength: String(baseContentHtml || '').length,
+      generatedLength: generatedContent?.length || 0,
+      finalLength: finalContent.length,
+    });
+    return {
+      savedToChapter: false,
+      savedChapterContent: null,
+      generatedHtml,
+      previewChapterContent: finalContent,
+    };
+  }
+
+  log.info('Saving generated chapter content on server', {
+    userId,
+    workId,
+    chapterId,
+    title: chapterTitle,
+    baseLength: String(baseContentHtml || '').length,
+    generatedLength: generatedContent?.length || 0,
+    finalLength: finalContent.length,
+  });
+
+  const { data: existing, error: lookupError } = await supabase
+    .from('chapters')
+    .select('id')
+    .eq('id', chapterId)
+    .eq('work_id', workId)
+    .maybeSingle();
+
+  if (lookupError) {
+    log.error('Failed to lookup chapter before AI save', { userId, workId, chapterId }, lookupError);
+    throw new Error('AI 已生成，但保存章节前读取数据库失败，请稍后重试。');
+  }
+
+  const payload = {
+    title: String(chapterTitle || '未命名章节'),
+    content: finalContent,
+    word_count: getWordCount(finalContent),
+    status: 'draft',
+  };
+
+  if (existing?.id) {
+    const { error } = await supabase
+      .from('chapters')
+      .update(payload)
+      .eq('id', chapterId)
+      .eq('work_id', workId);
+    if (error) {
+      log.error('Failed to update chapter after AI generation', { userId, workId, chapterId }, error);
+      throw new Error('AI 已生成，但保存到章节失败，请检查网络后重试。');
+    }
+    log.info('Generated chapter content saved', { userId, workId, chapterId, mode: 'update' });
+    return { savedToChapter: true, savedChapterContent: finalContent, generatedHtml, previewChapterContent: finalContent };
+  }
+
+  const { data: latestChapter, error: latestError } = await supabase
+    .from('chapters')
+    .select('chapter_number')
+    .eq('work_id', workId)
+    .order('chapter_number', { ascending: false })
+    .limit(1);
+
+  if (latestError) {
+    log.error('Failed to read latest chapter number before AI save', { userId, workId, chapterId }, latestError);
+    throw new Error('AI 已生成，但保存章节序号失败，请稍后重试。');
+  }
+
+  const chapterNumber = Number(latestChapter?.[0]?.chapter_number || 0) + 1;
+  const { error } = await supabase.from('chapters').insert({
+    id: chapterId,
+    work_id: workId,
+    ...payload,
+    chapter_number: chapterNumber,
+  });
+
+  if (error) {
+    log.error('Failed to insert chapter after AI generation', { userId, workId, chapterId }, error);
+    throw new Error('AI 已生成，但新建章节保存失败，请稍后重试。');
+  }
+
+  log.info('Generated chapter content saved', { userId, workId, chapterId, mode: 'insert', chapterNumber });
+  return { savedToChapter: true, savedChapterContent: finalContent, generatedHtml, previewChapterContent: finalContent };
+};
+
+const executeAiTask = async ({ kind, prompt = '', context = '', model, messages, temperature, requestContext, billingGroupId, billingStep, afterSuccess }) => {
+  const effectiveBillingGroupId = billingGroupId || randomUUID();
+  const effectiveBillingStep = billingStep || kind;
+
   log.info('Executing AI task', {
     kind,
     model,
     hasPrompt: !!prompt,
     contextLength: context?.length || 0,
     ip: requestContext?.ip,
+    billingGroupId: effectiveBillingGroupId,
+    billingStep: effectiveBillingStep,
   });
 
   const accessToken = requestContext?.accessToken || '';
@@ -822,8 +1235,8 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
       userId: user.id,
       model: finalModel,
       usage,
-      billingGroupId,
-      billingStep: billingStep || kind,
+      billingGroupId: effectiveBillingGroupId,
+      billingStep: effectiveBillingStep,
     });
 
     const warning = await detectAbnormalUsage({
@@ -831,6 +1244,17 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
       userId: user.id,
       latestDiamonds: billing?.diamonds_consumed ?? actualDiamonds,
     });
+
+    let afterSuccessPayload = {};
+    if (typeof afterSuccess === 'function') {
+      afterSuccessPayload = await afterSuccess({
+        supabase,
+        user,
+        content: result.content,
+        usage,
+        billing,
+      });
+    }
 
     log.info('AI task completed successfully', {
       kind,
@@ -843,10 +1267,13 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
       actualDiamonds,
       totalRemaining: billing?.total_remaining,
       hasWarning: !!warning,
+      billingGroupId: effectiveBillingGroupId,
+      billingStep: effectiveBillingStep,
     });
 
     return {
       content: result.content,
+      ...afterSuccessPayload,
       usage: {
         ...usage,
         total_cost: billing?.diamonds_consumed ?? actualDiamonds,
@@ -881,7 +1308,17 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
   }
 };
 
-export const generateTextServer = async ({ prompt, model = 'deepseek-v4-flash', context, billingGroupId }, requestContext = {}) => {
+export const generateTextServer = async ({
+  prompt,
+  model = 'deepseek-v4-flash',
+  context,
+  billingGroupId,
+  workId,
+  chapterId,
+  chapterTitle,
+  baseContentHtml,
+  deferChapterSave,
+}, requestContext = {}) => {
   const messages = [
     {
       role: 'system',
@@ -903,6 +1340,19 @@ export const generateTextServer = async ({ prompt, model = 'deepseek-v4-flash', 
     temperature: 0.7,
     requestContext,
     billingGroupId,
+    afterSuccess: isUuid(workId) && isUuid(chapterId)
+      ? ({ supabase, user, content }) => saveGeneratedChapterContent({
+          supabase,
+          userId: user.id,
+          workId,
+          chapterId,
+          chapterTitle,
+          baseContentHtml,
+          generatedContent: content,
+          prompt,
+          deferChapterSave,
+        })
+      : undefined,
   });
 };
 

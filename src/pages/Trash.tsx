@@ -18,6 +18,10 @@ import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
 import { findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree, restoreWorkFromTrash } from '@/lib/workspacePersistence';
 import Pagination from '@/components/Pagination';
+import { createUserPrompt } from '@/lib/promptPersistence';
+import { createLogger, flushLogs } from '@/lib/logger';
+
+const log = createLogger('TrashPage');
 
 const Trash = () => {
   const { items, permanentlyDelete, clearTrash, syncFromSupabase } = useTrashStore();
@@ -158,7 +162,15 @@ const Trash = () => {
 
     try {
       if (item.type === 'prompt') {
-        addPrompt(item.content as Prompt);
+        const prompt = item.content as Prompt;
+        if (user && !isGuestUser(user)) {
+          const restored = await createUserPrompt(user.id, prompt);
+          addPrompt(restored);
+          log.success('Prompt restored from trash to database', { trashId: id, promptId: restored.id });
+        } else {
+          addPrompt(prompt);
+          log.success('Prompt restored from trash locally', { trashId: id, promptId: prompt.id });
+        }
       } else {
         await restoreWorkspaceItem(item);
       }
@@ -174,6 +186,8 @@ const Trash = () => {
       }
     } catch (error) {
       console.error('Restore failed:', error);
+      log.error('Trash item restore failed', { trashId: id, type: item.type }, error);
+      flushLogs();
       // 恢复失败，不删除回收站记录，数据不会丢失
     }
   };
@@ -202,7 +216,13 @@ const Trash = () => {
 
         try {
           if (item.type === 'prompt') {
-            addPrompt(item.content as Prompt);
+            const prompt = item.content as Prompt;
+            if (user && !isGuestUser(user)) {
+              const restored = await createUserPrompt(user.id, prompt);
+              addPrompt(restored);
+            } else {
+              addPrompt(prompt);
+            }
           } else {
             await restoreWorkspaceItem(item);
           }
@@ -237,7 +257,7 @@ const Trash = () => {
   };
 
   const handleClearTrash = async () => {
-    if (confirm('确定要清空回收站吗？所有内容将被永久删除且无法找回。')) {
+    if (confirm('确定要清空废稿箱吗？所有内容将被永久删除且无法找回。')) {
       await clearTrash();
       setSelectedIds(new Set());
     }
@@ -293,7 +313,7 @@ const Trash = () => {
       return (
         <div className="flex flex-col items-center justify-center py-16 text-gray-400">
           <Trash2 className="w-12 h-12 mb-4 text-gray-200" />
-          <p>回收站空空如也</p>
+          <p>废稿箱空空如也</p>
         </div>
       );
     }
@@ -454,13 +474,13 @@ const Trash = () => {
   };
 
   return (
-    <div className="flex-1 h-full bg-gray-50 flex flex-col">
+    <div className="flex-1 h-full bg-gray-50 dark:bg-background flex flex-col">
       {/* Header */}
-      <div className="p-6 border-b border-gray-200 bg-white">
+      <div className="p-6 border-b border-gray-200 dark:border-border bg-white dark:bg-background/80 backdrop-blur-xl">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center">
             <Trash2 className="w-6 h-6 text-gray-700 mr-2" />
-            <h1 className="text-xl font-bold text-gray-800">回收站</h1>
+            <h1 className="text-xl font-bold text-gray-800">废稿箱</h1>
           </div>
           
           <div className="flex space-x-3">
@@ -487,31 +507,31 @@ const Trash = () => {
               disabled={items.length === 0}
               className="px-4 py-2 border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              清空回收站
+              清空废稿箱
             </button>
           </div>
         </div>
 
         {/* Filters */}
         <div className="flex items-center justify-between">
-          <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg">
+          <div className="flex space-x-1 bg-gray-100 dark:bg-muted p-1 rounded-lg">
             <button 
               onClick={() => setFilterType('all')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${filterType === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${filterType === 'all' ? 'bg-white dark:bg-card text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-foreground'}`}
             >
               全部
             </button>
             <button 
               onClick={() => setFilterType('work')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${filterType === 'work' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${filterType === 'work' ? 'bg-white dark:bg-card text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-foreground'}`}
             >
-              我的作品
+              作品
             </button>
             <button 
               onClick={() => setFilterType('prompt')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${filterType === 'prompt' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${filterType === 'prompt' ? 'bg-white dark:bg-card text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-foreground'}`}
             >
-              提示词
+              指令
             </button>
           </div>
 
@@ -519,7 +539,7 @@ const Trash = () => {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input 
               type="text" 
-              placeholder="搜索回收站内容..." 
+              placeholder="搜索废稿箱内容..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-9 pr-4 py-1.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -530,7 +550,7 @@ const Trash = () => {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">{renderItems()}</div>
+        <div className="bg-white dark:bg-card rounded-lg border border-gray-200 dark:border-border shadow-sm overflow-hidden">{renderItems()}</div>
         <div className="pt-4">
           <Pagination page={safePage} totalPages={totalPages} onChange={setPage} />
         </div>
@@ -538,9 +558,9 @@ const Trash = () => {
         <div className="mt-4 flex items-start p-4 bg-blue-50 rounded-lg text-sm text-blue-700">
           <AlertCircle className="w-5 h-5 mr-2 flex-shrink-0 text-blue-500" />
           <p>
-            说明：回收站中的内容将保留 30 天，到期后会自动永久删除。
+            说明：废稿箱中的内容将保留 30 天，到期后会自动永久删除。
             <br />
-            恢复作品时，将默认恢复到列表底部；恢复提示词时将回到提示词库列表。
+            恢复作品时，将默认恢复到列表底部；恢复提示词时将回到指令工坊列表。
           </p>
         </div>
       </div>

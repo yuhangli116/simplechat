@@ -2,8 +2,8 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
 import { supabase } from '../lib/supabase';
-import { useAuthStore, isGuestUser } from './useAuthStore';
-import { createLogger } from '@/lib/logger';
+import { useAuthStore, isGuestUser, hasGuestSession } from './useAuthStore';
+import { createLogger, flushLogs } from '@/lib/logger';
 
 const log = createLogger('Trash');
 
@@ -65,7 +65,8 @@ const EXPIRATION_DAYS = 30;
 
 const getTrashStorageKey = (name: string) => {
   const user = useAuthStore?.getState?.()?.user;
-  return isGuestUser(user) ? `guest-${name}` : name;
+  // 防回归：游客回收站和作品树一样，需要在 auth.user 恢复前根据游客 session 读取 guest-trash-store。
+  return isGuestUser(user) || (!user && hasGuestSession()) ? `guest-${name}` : name;
 };
 
 const dynamicTrashStorage = {
@@ -101,6 +102,12 @@ export const useTrashStore = create<TrashState>()(
           const existing = state.items.some((i) => i.id === item.id);
           return existing ? state : { items: [item, ...state.items] };
         });
+        log.info('Existing trash item added to local store', {
+          id: item.id,
+          type: item.type,
+          title: item.title,
+        });
+        flushLogs();
       },
       
       addToTrash: async (item) => {
@@ -119,11 +126,17 @@ export const useTrashStore = create<TrashState>()(
         set((state) => ({
           items: [newItem, ...state.items]
         }));
+        log.success('Item added to local trash store', {
+          id,
+          type: newItem.type,
+          title: newItem.title,
+          isGuest: isGuestUser(useAuthStore.getState().user),
+        });
 
         // Try to sync with Supabase
         try {
           const user = useAuthStore.getState().user;
-          if (user && !isGuestUser(user) && canSyncTrash()) {
+          if (user && !isGuestUser(user) && shouldProbeTrashSync()) {
             const { error } = await supabase.from('trash_items').insert({
               id: newItem.id,
               user_id: user.id,
@@ -139,11 +152,27 @@ export const useTrashStore = create<TrashState>()(
               extra: newItem.extra
             });
 
-            handleTrashSyncError(error, 'sync trash item to Supabase');
+            const handled = handleTrashSyncError(error, 'sync trash item to Supabase');
+            if (error && handled) {
+              throw error;
+            }
+            if (!error) {
+              log.success('Trash item synced to Supabase', { id: newItem.id, userId: user.id });
+            }
           }
         } catch (error) {
           handleTrashSyncError(error, 'sync trash item to Supabase');
+          const user = useAuthStore.getState().user;
+          if (user && !isGuestUser(user)) {
+            set((state) => ({
+              items: state.items.filter((entry) => entry.id !== newItem.id)
+            }));
+            log.error('Trash sync failed, rolled back local trash item for logged-in user', { id: newItem.id }, error);
+            flushLogs();
+            throw error;
+          }
         }
+        flushLogs();
       },
 
       getTrashItem: async (id: string) => {
@@ -198,6 +227,7 @@ export const useTrashStore = create<TrashState>()(
         set((state) => ({
           items: state.items.filter(i => i.id !== id)
         }));
+        log.success('Trash item removed from local store', { id });
         
         try {
           const user = useAuthStore.getState().user;
@@ -208,6 +238,7 @@ export const useTrashStore = create<TrashState>()(
         } catch (error) {
           handleTrashSyncError(error, 'delete trash item from Supabase');
         }
+        flushLogs();
       },
 
       clearTrash: async () => {
@@ -223,6 +254,8 @@ export const useTrashStore = create<TrashState>()(
         } catch (error) {
           handleTrashSyncError(error, 'clear trash from Supabase');
         }
+        log.success('All trash items cleared locally');
+        flushLogs();
       },
 
       clearExpired: async () => {
@@ -245,6 +278,8 @@ export const useTrashStore = create<TrashState>()(
           } catch (error) {
             handleTrashSyncError(error, 'clear expired trash from Supabase');
           }
+          log.success('Expired trash items cleared locally', { count: expiredIds.length });
+          flushLogs();
         }
       },
       
@@ -279,11 +314,13 @@ export const useTrashStore = create<TrashState>()(
                 extra: d.extra
               }));
               set({ items });
+              log.success('Trash items synced from Supabase', { userId: user.id, count: items.length });
             }
           }
         } catch (error) {
           handleTrashSyncError(error, 'sync trash items from Supabase');
         }
+        flushLogs();
       }
     }),
     {

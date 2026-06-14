@@ -29,6 +29,9 @@ import ContextSelectorDialog from './ContextSelectorDialog';
 import ExportDialog from './ExportDialog';
 import { exportMindMap, exportMindMapAsImage, exportMindMapAsText } from '@/lib/fileExport';
 import { getMindMapTitleFromRoute, loadMindMapContent, loadMindMapRecord, saveMindMapContent } from '@/lib/workspacePersistence';
+import { createLogger, flushLogs } from '@/lib/logger';
+
+const log = createLogger('MindMapEditor');
 
 export const MindMapContext = React.createContext<any>(null);
 
@@ -40,10 +43,46 @@ interface MindMapEditorProps {
 }
 
 const THEMES = {
-  dark: { label: '深色', bgClass: 'bg-[#111827]', borderClass: 'border-gray-800', flowBg: '#374151', nodeColor: '#4b5563', edgeColor: '#6b7280', panelClass: 'bg-gray-800/80 border-gray-700' },
-  light: { label: '浅色', bgClass: 'bg-white', borderClass: 'border-gray-200', flowBg: '#e5e7eb', nodeColor: '#d1d5db', edgeColor: '#9ca3af', panelClass: 'bg-white/80 border-gray-200' },
-  beige: { label: '护眼', bgClass: 'bg-[#fefae0]', borderClass: 'border-[#e9edc9]', flowBg: '#faedcd', nodeColor: '#d4a373', edgeColor: '#d4a373', panelClass: 'bg-[#fefae0]/90 border-[#e9edc9]' },
-  green: { label: '自然', bgClass: 'bg-[#ecfccb]', borderClass: 'border-[#bef264]', flowBg: '#d9f99d', nodeColor: '#84cc16', edgeColor: '#84cc16', panelClass: 'bg-[#ecfccb]/90 border-[#bef264]' },
+  dark: {
+    label: '深色',
+    bgClass: 'bg-[#111827]',
+    borderClass: 'border-gray-800',
+    flowBg: '#374151',
+    nodeColor: '#4b5563',
+    edgeColor: '#6b7280',
+    panelClass: 'bg-gray-800/80 border-gray-700 text-slate-100',
+    swatch: ['#111827', '#2563eb', '#f8fafc'],
+  },
+  light: {
+    label: '浅色',
+    bgClass: 'bg-[#f8fafc]',
+    borderClass: 'border-slate-200',
+    flowBg: '#cbd5e1',
+    nodeColor: '#94a3b8',
+    edgeColor: '#64748b',
+    panelClass: 'bg-white/88 border-slate-200 text-slate-700',
+    swatch: ['#f8fafc', '#475569', '#ffffff'],
+  },
+  beige: {
+    label: '护眼',
+    bgClass: 'bg-[#f5efe4]',
+    borderClass: 'border-stone-200',
+    flowBg: '#d8cbb8',
+    nodeColor: '#b89b72',
+    edgeColor: '#8a6f4d',
+    panelClass: 'bg-[#fffaf0]/88 border-stone-200 text-stone-800',
+    swatch: ['#f5efe4', '#8a6f4d', '#fffaf0'],
+  },
+  green: {
+    label: '自然',
+    bgClass: 'bg-[#eef6f1]',
+    borderClass: 'border-emerald-100',
+    flowBg: '#b8d3c5',
+    nodeColor: '#79aa91',
+    edgeColor: '#3f7d62',
+    panelClass: 'bg-white/86 border-emerald-100 text-slate-700',
+    swatch: ['#eef6f1', '#3f7d62', '#ffffff'],
+  },
 };
 
 type ThemeType = keyof typeof THEMES;
@@ -67,6 +106,41 @@ const getDefaultData = (type: string) => {
     edges: []
   };
 };
+
+const getMindMapContentSignature = (nodes: Node[], edges: Edge[]) => JSON.stringify({
+  nodes: nodes.map((node) => {
+    const { theme: _theme, ...data } = (node.data || {}) as Record<string, unknown>;
+    return {
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      data,
+    };
+  }),
+  edges: edges.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    sourceHandle: edge.sourceHandle,
+    targetHandle: edge.targetHandle,
+    type: edge.type,
+  })),
+});
+
+const getStoredMindMapContentSignature = (content: { nodes?: Node[]; edges?: Edge[] } | null | undefined) => {
+  const normalizedNodes = Array.isArray(content?.nodes)
+    ? content.nodes.map((node) => ({ ...node, type: node.type || 'mindMap' }))
+    : [];
+  return getMindMapContentSignature(normalizedNodes, Array.isArray(content?.edges) ? content.edges : []);
+};
+
+const getMindMapContentCounts = (content: { nodes?: Node[]; edges?: Edge[] } | null | undefined) => ({
+  nodeCount: Array.isArray(content?.nodes) ? content.nodes.length : 0,
+  edgeCount: Array.isArray(content?.edges) ? content.edges.length : 0,
+});
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const isUuid = (value?: string | null) => !!value && uuidPattern.test(value);
 
 type AIGeneratedTreeNode = {
   label: string;
@@ -170,17 +244,23 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const [isLocked, setIsLocked] = useState(false);
 
   // Theme Key based on page identity
+  const storageScope = useMemo(() => {
+    if (user && !isGuestUser(user)) return `user-${user.id}`;
+    if (user?.id) return user.id;
+    return 'anonymous';
+  }, [user]);
+
   const themeKey = useMemo(() => {
-    return id ? `mindmap-theme-${id}` : `mindmap-theme-${workId}-${type}`;
-  }, [workId, type, id]);
+    return id ? `${storageScope}-mindmap-theme-${id}` : `${storageScope}-mindmap-theme-${workId}-${type}`;
+  }, [workId, type, id, storageScope]);
 
   const storageKey = useMemo(() => {
-    return id ? `mindmap-${id}` : `mindmap-${workId}-${type}`;
-  }, [workId, type, id]);
+    return id ? `${storageScope}-mindmap-${id}` : `${storageScope}-mindmap-${workId}-${type}`;
+  }, [workId, type, id, storageScope]);
 
   const mapViewKey = useMemo(() => {
-    return id ? `view-${id}` : `view-${workId}-${type}`;
-  }, [workId, type, id]);
+    return id ? `${storageScope}-view-${id}` : `${storageScope}-view-${workId}-${type}`;
+  }, [workId, type, id, storageScope]);
 
   const currentPagePath = useMemo(() => {
     return id ? `/workspace/p/${workId}/mindmap/${id}` : `/workspace/p/${workId}/${type === 'character' ? 'characters' : type === 'event' ? 'events' : type}`;
@@ -212,7 +292,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         // and let the useEffect handle the correct load.
         // However, to avoid flash, we can try to read from the *current* props.
         // But props are available in scope.
-        const key = id ? `mindmap-theme-${id}` : `mindmap-theme-${workId}-${type}`;
+        const scope = user && !isGuestUser(user) ? `user-${user.id}` : user?.id || 'anonymous';
+        const key = id ? `${scope}-mindmap-theme-${id}` : `${scope}-mindmap-theme-${workId}-${type}`;
         const saved = localStorage.getItem(key);
         if (saved && THEMES[saved as ThemeType]) {
             return saved as ThemeType;
@@ -242,6 +323,13 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   const isHydratingRef = useRef(false);
   const hasHydratedRef = useRef(false);
   const saveSeqRef = useRef(0);
+  const lastPersistedSignatureRef = useRef<string | null>(null);
+  const pendingRemoteSaveRef = useRef<{
+    nodes: Node[];
+    edges: Edge[];
+    updatedAt: string;
+    seq: number;
+  } | null>(null);
   const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving' | 'error'>('saved');
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
 
@@ -311,6 +399,11 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       ? changes.filter((c: any) => c.type !== 'select')
       : changes;
     if (filteredChanges.length === 0) return;
+    const selectChange = filteredChanges.find((change: any) => change.type === 'select' && change.selected);
+    if (selectChange?.id) {
+      setSelectedNodeId(selectChange.id);
+      setMultiSelectedNodeIds([]);
+    }
     originalOnNodesChange(filteredChanges);
     const hasDimensionChange = filteredChanges.some(c => c.type === 'dimensions');
     // Trigger layout recalculation on ANY dimension change, not just when editing.
@@ -357,10 +450,15 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       }, 10);
     }
   }, [originalOnNodesChange, setEdges, setNodes, isLocked]);
-  const activeNodeId = useMemo(
-    () => selectedNodeId || nodes.find((node) => Boolean((node as Node & { selected?: boolean }).selected))?.id || null,
-    [selectedNodeId, nodes]
-  );
+  const getCurrentSelectedNodeId = useCallback(() => {
+    const flowSelectedNode = reactFlowInstance
+      ?.getNodes?.()
+      ?.find((node: Node & { selected?: boolean }) => Boolean(node.selected))
+      ?.id;
+    return selectedNodeId || flowSelectedNode || nodes.find((node) => Boolean((node as Node & { selected?: boolean }).selected))?.id || null;
+  }, [selectedNodeId, reactFlowInstance, nodes]);
+
+  const activeNodeId = useMemo(() => getCurrentSelectedNodeId(), [getCurrentSelectedNodeId]);
 
   // Load Theme when page changes
   React.useEffect(() => {
@@ -440,18 +538,19 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       showLockedHint();
       return;
     }
-    if (!activeNodeId) {
+    const targetNodeId = getCurrentSelectedNodeId();
+    if (!targetNodeId) {
       alert('请先选择一个节点');
       return;
     }
-    setSelectedNodeId(activeNodeId);
+    setSelectedNodeId(targetNodeId);
     setMultiSelectedNodeIds([]);
     setShowAIDialog(true);
     // Auto fit view after dialog opens to ensure everything is visible
     setTimeout(() => {
       reactFlowInstance?.fitView({ padding: 0.24, duration: 300 });
     }, 50);
-  }, [isLocked, showLockedHint, activeNodeId, reactFlowInstance]);
+  }, [isLocked, showLockedHint, getCurrentSelectedNodeId, reactFlowInstance]);
 
   const handleCloseAiDialog = useCallback(() => {
     setShowAIDialog(false);
@@ -568,10 +667,19 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   // Load from localStorage or reset when type/workId/id changes
   React.useEffect(() => {
+    isHydratingRef.current = true;
+    hasHydratedRef.current = false;
+    lastPersistedSignatureRef.current = null;
+    pendingRemoteSaveRef.current = null;
+    setSaveState('saved');
+
     if (!workId && !id) {
       const newData = getDefaultData(type);
       setNodes(newData.nodes);
       setEdges(newData.edges);
+      lastPersistedSignatureRef.current = getMindMapContentSignature(newData.nodes, newData.edges);
+      isHydratingRef.current = false;
+      hasHydratedRef.current = true;
       return;
     }
 
@@ -583,6 +691,9 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
           newData.nodes[0].data.label = fileName;
       }
       
+      let appliedNodes: Node[];
+      let appliedEdges: Edge[];
+
       if (content?.nodes?.length) {
         // Backward compatibility: old saved data may miss `type`, which breaks custom node events (double click edit).
         const normalizedNodes = content.nodes.map((node) => ({
@@ -590,10 +701,14 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
           type: node.type || 'mindMap',
         }));
         const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(normalizedNodes, content.edges || [], 'LR');
+        appliedNodes = layoutedNodes;
+        appliedEdges = layoutedEdges;
         setNodes(layoutedNodes);
         setEdges(layoutedEdges);
       } else {
         const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(newData.nodes, newData.edges, 'LR');
+        appliedNodes = layoutedNodes;
+        appliedEdges = layoutedEdges;
         setNodes(layoutedNodes);
         setEdges(layoutedEdges);
       }
@@ -606,6 +721,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       setTimeout(() => {
         isHydratingRef.current = false;
         hasHydratedRef.current = true;
+        lastPersistedSignatureRef.current = getMindMapContentSignature(appliedNodes, appliedEdges);
         setSaveState('saved');
         const updatedAtValue = content?.updated_at;
         if (typeof updatedAtValue === 'string' && updatedAtValue) {
@@ -618,6 +734,22 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     };
 
     const loadData = async () => {
+      const isAuthenticatedUser = Boolean(user && !isGuestUser(user));
+      if (!isAuthenticatedUser && isUuid(workId)) {
+        log.info('Waiting for auth before loading user mind map route', {
+          workId,
+          nodeId: id || `mm-${type}-${workId}`,
+          type,
+        });
+        return;
+      }
+
+      log.info('Loading mind map data', {
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        isGuest: !isAuthenticatedUser,
+      });
       const saved = localStorage.getItem(storageKey);
       let localParsed: any = null;
       let localUpdatedAt = -1;
@@ -639,7 +771,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         }
       }
 
-      if (user && workId && !isGuestUser(user)) {
+      if (isAuthenticatedUser && workId) {
         try {
           const remoteRecord = await loadMindMapRecord({ workId, id, type: id ? undefined : type });
           if (remoteRecord?.content) {
@@ -647,6 +779,26 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
               typeof remoteRecord.updatedAt === 'string' && remoteRecord.updatedAt
                 ? Date.parse(remoteRecord.updatedAt)
                 : -1;
+            const remoteContent = remoteRecord.content as { nodes?: Node[]; edges?: Edge[] };
+            const remoteSignature = getStoredMindMapContentSignature(remoteContent);
+            const localSignature = localParsed ? getStoredMindMapContentSignature(localParsed) : null;
+            if (localSignature && localSignature === remoteSignature) {
+              const payload = {
+                ...(remoteRecord.content as any),
+                updated_at: remoteRecord.updatedAt || undefined,
+              };
+              localStorage.setItem(storageKey, JSON.stringify(payload));
+              applyMindMapData(payload as any);
+              const counts = getMindMapContentCounts(payload as any);
+              log.success('Loaded mind map from remote with matching local content', {
+                workId,
+                nodeId: id || `mm-${type}-${workId}`,
+                nodeCount: counts.nodeCount,
+                edgeCount: counts.edgeCount,
+              });
+              return;
+            }
+
             if (localUpdatedAt < 0 || (remoteUpdatedAt >= 0 && remoteUpdatedAt > localUpdatedAt)) {
               const payload = {
                 ...(remoteRecord.content as any),
@@ -654,16 +806,34 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
               };
               localStorage.setItem(storageKey, JSON.stringify(payload));
               applyMindMapData(payload as any);
+              const counts = getMindMapContentCounts(payload as any);
+              log.success('Loaded mind map from remote', {
+                workId,
+                nodeId: id || `mm-${type}-${workId}`,
+                nodeCount: counts.nodeCount,
+                edgeCount: counts.edgeCount,
+              });
               return;
             }
           }
         } catch (error) {
           console.error('Failed to load mind map from Supabase:', error);
+          log.error('Failed to load mind map from remote', {
+            workId,
+            nodeId: id || `mm-${type}-${workId}`,
+            type,
+          }, error);
         }
       }
 
       if (localUpdatedAt >= 0) {
-        if (user && workId && !isGuestUser(user) && Array.isArray(localParsed?.nodes) && localParsed.nodes.length > 0) {
+        if (isAuthenticatedUser && workId && Array.isArray(localParsed?.nodes) && localParsed.nodes.length > 0) {
+          log.info('Syncing newer local mind map to remote', {
+            workId,
+            nodeId: id || `mm-${type}-${workId}`,
+            nodeCount: localParsed.nodes.length,
+            edgeCount: Array.isArray(localParsed?.edges) ? localParsed.edges.length : 0,
+          });
           saveMindMapContent({
             workId,
             nodeId: id || `mm-${type}-${workId}`,
@@ -674,12 +844,14 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
               nodes: Array.isArray(localParsed?.nodes) ? localParsed.nodes : [],
               edges: Array.isArray(localParsed?.edges) ? localParsed.edges : [],
             },
+            updatedAt: typeof localParsed?.updated_at === 'string' ? localParsed.updated_at : undefined,
           }).catch(() => {});
         }
         return;
       }
 
       applyMindMapData(null);
+      log.info('Using default mind map data', { workId, nodeId: id || `mm-${type}-${workId}`, type });
     };
 
     loadData();
@@ -687,50 +859,139 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   React.useEffect(() => {
     if (!hasHydratedRef.current || isHydratingRef.current) return;
+    const contentSignature = getMindMapContentSignature(nodes, edges);
+    if (contentSignature === lastPersistedSignatureRef.current) {
+      setSaveState('saved');
+      return;
+    }
     setSaveState('dirty');
   }, [nodes, edges]);
 
+  const persistRemoteWithState = useCallback((
+    payload: { nodes: Node[]; edges: Edge[]; updatedAt: string },
+    options: { immediate?: boolean } = {}
+  ) => {
+    if (!user || !workId || isGuestUser(user)) {
+      return;
+    }
+
+    setSaveState('saving');
+    const seq = ++saveSeqRef.current;
+    pendingRemoteSaveRef.current = {
+      nodes: payload.nodes,
+      edges: payload.edges,
+      updatedAt: payload.updatedAt,
+      seq,
+    };
+    log.info(options.immediate ? 'Saving mind map to remote immediately' : 'Saving mind map to remote', {
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      nodeCount: payload.nodes.length,
+      edgeCount: payload.edges.length,
+    });
+
+    saveMindMapContent({
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      title: mindMapTitle,
+      type,
+      isDefault: !id,
+      content: { nodes: payload.nodes, edges: payload.edges },
+      updatedAt: payload.updatedAt,
+    })
+      .then(() => {
+        if (seq !== saveSeqRef.current) return;
+        pendingRemoteSaveRef.current = null;
+        setSaveState('saved');
+        setLastSavedAt(Date.parse(payload.updatedAt) || Date.now());
+        log.success(options.immediate ? 'Mind map saved to remote immediately' : 'Mind map saved to remote', {
+          workId,
+          nodeId: id || `mm-${type}-${workId}`,
+          type,
+          nodeCount: payload.nodes.length,
+          edgeCount: payload.edges.length,
+        });
+      })
+      .catch((error) => {
+        if (seq !== saveSeqRef.current) return;
+        setSaveState('error');
+        console.error('Failed to save mind map to Supabase:', error);
+        log.error(options.immediate ? 'Failed to save mind map immediately' : 'Failed to save mind map to remote', {
+          workId,
+          nodeId: id || `mm-${type}-${workId}`,
+          type,
+          nodeCount: payload.nodes.length,
+          edgeCount: payload.edges.length,
+        }, error);
+        const now = Date.now();
+        if (now - lastSaveErrorAtRef.current > 5000) {
+          lastSaveErrorAtRef.current = now;
+          const message = error instanceof Error ? error.message : '未知错误';
+          addToast(`思维导图保存失败，已保存在本地，将在网络恢复后重试：${message}`, 'error');
+        }
+      });
+  }, [user, workId, id, type, mindMapTitle, addToast]);
+
+  React.useEffect(() => {
+    if (!user || !workId || isGuestUser(user)) return;
+    if (typeof window === 'undefined') return;
+
+    const retryPendingSave = () => {
+      const pending = pendingRemoteSaveRef.current;
+      if (!pending) return;
+      if (pending.seq !== saveSeqRef.current) return;
+      log.info('Retrying pending mind map save after network returned', {
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+      });
+      persistRemoteWithState(
+        {
+          nodes: pending.nodes,
+          edges: pending.edges,
+          updatedAt: pending.updatedAt,
+        },
+        { immediate: true }
+      );
+    };
+
+    window.addEventListener('online', retryPendingSave);
+    return () => window.removeEventListener('online', retryPendingSave);
+  }, [user, workId, id, type, persistRemoteWithState]);
+
   React.useEffect(() => {
     if (!workId && !id) return;
+    if (!hasHydratedRef.current || isHydratingRef.current) return;
+
+    const contentSignature = getMindMapContentSignature(nodes, edges);
+    if (contentSignature === lastPersistedSignatureRef.current) {
+      return;
+    }
+
     const timeout = setTimeout(() => {
       const now = Date.now();
       const updatedAt = new Date(now).toISOString();
       const payload = { nodes, edges, updated_at: updatedAt };
       localStorage.setItem(storageKey, JSON.stringify(payload));
+      lastPersistedSignatureRef.current = contentSignature;
       if (!user || !workId || isGuestUser(user)) {
         setSaveState('saved');
         setLastSavedAt(now);
+        log.success('Mind map saved locally', {
+          workId,
+          nodeId: id || `mm-${type}-${workId}`,
+          type,
+          nodeCount: nodes.length,
+          edgeCount: edges.length,
+        });
         return;
       }
 
-      setSaveState('saving');
-      const seq = ++saveSeqRef.current;
-      saveMindMapContent({
-        workId,
-        nodeId: id || `mm-${type}-${workId}`,
-        title: mindMapTitle,
-        type,
-        isDefault: !id,
-        content: { nodes: payload.nodes, edges: payload.edges },
-      })
-        .then(() => {
-          if (seq !== saveSeqRef.current) return;
-          setSaveState('saved');
-          setLastSavedAt(now);
-        })
-        .catch((error) => {
-          if (seq !== saveSeqRef.current) return;
-          setSaveState('error');
-          console.error('Failed to save mind map to Supabase:', error);
-          if (now - lastSaveErrorAtRef.current > 5000) {
-            lastSaveErrorAtRef.current = now;
-            const message = error instanceof Error ? error.message : '未知错误';
-            addToast(`思维导图保存失败：${message}`, 'error');
-          }
-        });
+      persistRemoteWithState({ nodes: payload.nodes, edges: payload.edges, updatedAt });
     }, 1000);
     return () => clearTimeout(timeout);
-  }, [nodes, edges, workId, type, id, user, storageKey, mindMapTitle, addToast]);
+  }, [nodes, edges, workId, type, id, user, storageKey, persistRemoteWithState]);
 
   // Center view once after each mind map page is loaded.
   // Keep viewport unchanged for regular edits like add/delete node.
@@ -932,43 +1193,71 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
   }, []);
 
   const persistMindMapNow = useCallback((payload: { nodes: Node[]; edges: Edge[] }) => {
+    const contentSignature = getMindMapContentSignature(payload.nodes, payload.edges);
+    if (contentSignature === lastPersistedSignatureRef.current) {
+      return;
+    }
+
     const now = Date.now();
     const updatedAt = new Date(now).toISOString();
     const payloadWithMeta = { ...payload, updated_at: updatedAt };
     localStorage.setItem(storageKey, JSON.stringify(payloadWithMeta));
+    lastPersistedSignatureRef.current = contentSignature;
 
     if (!user || !workId || isGuestUser(user)) {
       setSaveState('saved');
       setLastSavedAt(now);
+      log.success('Mind map saved locally immediately', {
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        nodeCount: payload.nodes.length,
+        edgeCount: payload.edges.length,
+      });
       return;
     }
 
-    setSaveState('saving');
-    const seq = ++saveSeqRef.current;
-    saveMindMapContent({
-      workId,
-      nodeId: id || `mm-${type}-${workId}`,
-      title: mindMapTitle,
-      type,
-      isDefault: !id,
-      content: payload,
-    })
-      .then(() => {
-        if (seq !== saveSeqRef.current) return;
-        setSaveState('saved');
-        setLastSavedAt(now);
-      })
-      .catch((error) => {
-        if (seq !== saveSeqRef.current) return;
-        setSaveState('error');
-        console.error('Failed to save mind map to Supabase:', error);
-        if (now - lastSaveErrorAtRef.current > 5000) {
-          lastSaveErrorAtRef.current = now;
-          const message = error instanceof Error ? error.message : '未知错误';
-          addToast(`思维导图保存失败：${message}`, 'error');
-        }
+    persistRemoteWithState({ nodes: payload.nodes, edges: payload.edges, updatedAt }, { immediate: true });
+  }, [storageKey, user, workId, id, type, persistRemoteWithState]);
+
+  React.useEffect(() => {
+    const flushCurrentMindMap = (reason: string) => {
+      if (!hasHydratedRef.current || isHydratingRef.current) return;
+      if (!workId && !id) return;
+      log.info('Flushing mind map before leaving page', {
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        reason,
+        saveState,
       });
-  }, [storageKey, user, workId, id, type, mindMapTitle, addToast]);
+      persistMindMapNow({ nodes, edges });
+      flushLogs();
+    };
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (saveState === 'dirty' || saveState === 'saving' || saveState === 'error') {
+        flushCurrentMindMap('beforeunload');
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+
+    const handlePageHide = () => flushCurrentMindMap('pagehide');
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushCurrentMindMap('visibility-hidden');
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [workId, id, type, nodes, edges, saveState, persistMindMapNow]);
 
   const applyStructuredLayoutAndFit = useCallback((sourceNodes: Node[], sourceEdges: Edge[]) => {
     // Also enforce edge styling here for safety
@@ -1057,22 +1346,32 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     }
   ];
 
-  const addNode = (type: 'child' | 'sibling') => {
+  const addNode = (relation: 'child' | 'sibling') => {
     if (isLocked) {
       showLockedHint();
       return;
     }
 
-    if (!activeNodeId) {
+    const targetNodeId = getCurrentSelectedNodeId();
+
+    if (!targetNodeId) {
+      log.warn('Mind map add node skipped because no node is selected', {
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        relation,
+      });
       alert('请先选择一个节点');
       return;
     }
 
-    const selectedNode = nodes.find(n => n.id === activeNodeId);
+    setSelectedNodeId(targetNodeId);
+
+    const selectedNode = nodes.find(n => n.id === targetNodeId);
     if (!selectedNode) return;
 
-    const SIBLING_VERTICAL_GAP = 52;
-    const CONTENT_WRAP_CHARS = 18;
+    const SIBLING_VERTICAL_GAP = 48;
+    const CONTENT_WRAP_CHARS = 24;
 
     let newPos = { x: 0, y: 0 };
     let parentId = '';
@@ -1092,7 +1391,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       const label = typeof node.data?.label === 'string' ? node.data.label : '';
       const content = typeof node.data?.content === 'string' ? node.data.content : '';
       const roughCharCount = Math.max(label.length, Math.min(content.length, CONTENT_WRAP_CHARS * 2));
-      return Math.min(260, Math.max(90, roughCharCount * 9 + 28));
+      return Math.min(340, Math.max(72, roughCharCount * 8 + 24));
     };
 
     const getNodeHeight = (node: Node) => {
@@ -1104,7 +1403,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       const labelLines = Math.max(1, countWrappedLines(label, 12));
       const contentLines = content ? countWrappedLines(content, CONTENT_WRAP_CHARS) : 0;
 
-      return 28 + labelLines * 15 + contentLines * 14;
+      return 24 + labelLines * 13 + contentLines * 12;
     };
 
     const getNodeBottom = (node: Node) => node.position.y + getNodeHeight(node);
@@ -1138,8 +1437,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return result;
     };
 
-    if (type === 'sibling') {
-       const parentEdge = edges.find(e => e.target === activeNodeId);
+    if (relation === 'sibling') {
+       const parentEdge = edges.find(e => e.target === targetNodeId);
        if (!parentEdge) {
          alert('根节点无法添加兄弟节点');
          return;
@@ -1160,8 +1459,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
        
     } else {
-       parentId = activeNodeId;
-       const requiredChildX = selectedNode.position.x + getNodeWidth(selectedNode) + 48;
+       parentId = targetNodeId;
+       const requiredChildX = selectedNode.position.x + getNodeWidth(selectedNode) + 44;
        const childEdges = edges.filter(e => e.source === parentId);
        let childNodes = workingNodes.filter(n => childEdges.some(e => e.target === n.id));
 
@@ -1218,13 +1517,24 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         };
     });
 
-    // Instead of using getLayoutedElements immediately, we let the onNodesChange handler
-    // do the layouting once the real DOM dimensions of the new node are available.
-    setNodes(nextNodes);
-    setEdges(updatedEdges);
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nextNodes, updatedEdges, 'LR');
+
+    setNodes(layoutedNodes);
+    setEdges(layoutedEdges);
+    log.info('Mind map node added', {
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      relation,
+      parentId,
+      newNodeId,
+      nodeCount: layoutedNodes.length,
+      edgeCount: layoutedEdges.length,
+    });
+    flushLogs();
     
-    // We only record state here. The exact layout position will be fine-tuned by onNodesChange.
-    recordState(nextNodes, updatedEdges);
+    recordState(layoutedNodes, layoutedEdges);
+    persistMindMapNow({ nodes: layoutedNodes, edges: layoutedEdges });
   };
 
   const deleteNode = () => {
@@ -1233,10 +1543,11 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return;
     }
 
+    const targetNodeId = getCurrentSelectedNodeId();
     const baseSelection = multiSelectedNodeIds.length > 0
       ? multiSelectedNodeIds
-      : activeNodeId
-        ? [activeNodeId]
+      : targetNodeId
+        ? [targetNodeId]
         : [];
 
     if (baseSelection.length === 0) {
@@ -1244,8 +1555,20 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       return;
     }
 
-    const idsToDelete = new Set<string>(baseSelection);
-    const queue = [...baseSelection];
+    const rootNodeIds = new Set(nodes.filter((node) => Boolean(node.data?.isRoot)).map((node) => node.id));
+    const deletableSelection = baseSelection.filter((nodeId) => !rootNodeIds.has(nodeId));
+
+    if (deletableSelection.length === 0) {
+      alert('根节点不能删除');
+      return;
+    }
+
+    if (deletableSelection.length < baseSelection.length) {
+      addToast('根节点不能删除，已保留根节点', 'info');
+    }
+
+    const idsToDelete = new Set<string>(deletableSelection);
+    const queue = [...deletableSelection];
 
     while (queue.length > 0) {
       const nodeId = queue.shift();
@@ -1263,8 +1586,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     const hasDescendant = idsToDelete.size > baseSelection.length;
     const shouldDelete = window.confirm(
       hasDescendant
-        ? `将删除 ${baseSelection.length} 个已选节点及其子节点，共 ${idsToDelete.size} 个节点，是否继续？`
-        : `将删除 ${baseSelection.length} 个已选节点，是否继续？`
+        ? `将删除 ${deletableSelection.length} 个已选节点及其子节点，共 ${idsToDelete.size} 个节点，是否继续？`
+        : `将删除 ${deletableSelection.length} 个已选节点，是否继续？`
     );
 
     if (!shouldDelete) return;
@@ -1293,6 +1616,15 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       setSelectedNodeId(null);
       setMultiSelectedNodeIds([]);
       setShowAIDialog(false);
+      log.info('Mind map node deleted', {
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        deletedCount: idsToDelete.size,
+        nodeCount: layoutedNodes.length,
+        edgeCount: layoutedEdges.length,
+      });
+      flushLogs();
   };
 
   // --- AI Generation Logic ---
@@ -1609,9 +1941,13 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                 nodeColor={() => THEMES[theme].nodeColor} 
             />
 
-            {/* Left Toolbar: Operations */}
-            <Panel position="top-left" className="m-4">
-              <div className={`flex items-center gap-2 p-2 backdrop-blur border rounded-lg shadow-xl ${THEMES[theme].panelClass}`}>
+            {/* Toolbar: Node operations */}
+            <Panel position="top-left" className="m-4 max-w-[calc(50vw-2rem)]">
+              <div
+                className={`flex flex-wrap items-center gap-2 p-2 backdrop-blur border rounded-lg shadow-xl ${THEMES[theme].panelClass}`}
+                onPointerDownCapture={(event) => event.stopPropagation()}
+                onMouseDownCapture={(event) => event.stopPropagation()}
+              >
                 <ToolbarButton 
                   onClick={() => addNode('child')} 
                   icon={<Plus className="w-4 h-4" />} 
@@ -1662,16 +1998,20 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
               </div>
             </Panel>
 
-            {/* Right Toolbar: AI & View */}
-            <Panel position="top-right" className="m-4">
-              <div className={`flex items-center gap-2 p-2 backdrop-blur border rounded-lg shadow-xl ${THEMES[theme].panelClass}`}>
+            {/* Toolbar: View, page actions and save state */}
+            <Panel position="top-right" className="m-4 max-w-[calc(50vw-2rem)]">
+              <div
+                className={`flex flex-wrap items-center justify-end gap-2 p-2 backdrop-blur border rounded-lg shadow-xl ${THEMES[theme].panelClass}`}
+                onPointerDownCapture={(event) => event.stopPropagation()}
+                onMouseDownCapture={(event) => event.stopPropagation()}
+              >
                 <ToolbarButton 
-                onClick={handleToolbarAiClick} 
-                icon={isGenerating ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-purple-500 border-t-transparent" /> : <Sparkles className="w-4 h-4" />} 
-                tooltip={isGenerating ? "生成中..." : "AI 智能生成"} 
-                ai
-                theme={theme}
-              />
+                  onClick={handleToolbarAiClick} 
+                  icon={isGenerating ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-purple-500 border-t-transparent" /> : <Sparkles className="w-4 h-4" />} 
+                  tooltip={isGenerating ? "生成中..." : "AI 智能生成"} 
+                  ai
+                  theme={theme}
+                />
                 <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
                 <ToolbarButton 
                   onClick={handleUndo} 
@@ -1714,22 +2054,24 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                       theme={theme}
                     />
                     {showThemeSelector && (
-                      <div className={`absolute top-12 right-0 p-3 rounded-lg border shadow-xl flex flex-col gap-2 w-max z-50 ${theme === 'dark' ? 'bg-gray-800 border-gray-600 text-white' : 'bg-white border-gray-200 text-gray-900'}`}>
+                      <div className={`absolute top-12 right-0 p-3 rounded-xl border shadow-xl flex flex-col gap-2 w-[220px] z-50 backdrop-blur-xl ${THEMES[theme].panelClass}`}>
                         <div className="text-xs font-bold mb-1 opacity-70">选择主题</div>
                         <div className="grid grid-cols-2 gap-2">
                         {(Object.keys(THEMES) as ThemeType[]).map((t) => (
                           <button
                             key={t}
                             onClick={() => handleThemeChange(t)}
-                            className={`flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-gray-100'} ${theme === t ? 'ring-1 ring-blue-500 bg-blue-500/10' : ''}`}
+                            className={`flex items-center gap-2 px-2 py-2 rounded-lg transition-all text-left ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-white/60'} ${theme === t ? 'ring-1 ring-offset-0 bg-white/20 shadow-sm' : ''}`}
+                            style={theme === t ? { boxShadow: `0 0 0 1px ${THEMES[t].edgeColor}66` } : undefined}
                             title={THEMES[t].label}
                           >
-                            <div 
-                               className="w-4 h-4 rounded-full border shadow-sm"
-                               style={{ backgroundColor: t === 'dark' ? '#1f2937' : t === 'light' ? '#ffffff' : t === 'beige' ? '#fefae0' : '#ecfccb', borderColor: 'rgba(0,0,0,0.1)' }}
-                            />
+                            <div className="w-8 h-5 rounded-md border border-black/10 shadow-sm overflow-hidden flex">
+                              {THEMES[t].swatch.map((color) => (
+                                <span key={color} className="flex-1" style={{ backgroundColor: color }} />
+                              ))}
+                            </div>
                             <span className="text-sm font-medium">{THEMES[t].label}</span>
-                            {theme === t && <Check className="w-3 h-3 ml-auto opacity-80 text-blue-500" />}
+                            {theme === t && <Check className="w-3 h-3 ml-auto opacity-80" style={{ color: THEMES[t].edgeColor }} />}
                           </button>
                         ))}
                         </div>
@@ -1883,7 +2225,15 @@ const ToolbarButton: React.FC<ToolbarButtonProps> = ({ onClick, icon, tooltip, h
   if (ai) colorClass = "text-purple-500 hover:bg-purple-500/20";
 
   return (
-    <button className={`${baseClass} ${colorClass}`} onClick={onClick}>
+    <button
+      className={`${baseClass} ${colorClass}`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+    >
       {icon}
       {/* Custom tooltip with instant display */}
       <span className={`absolute top-full left-1/2 -translate-x-1/2 mt-2 px-2 py-1 text-xs font-medium rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-800 text-white'}`}>

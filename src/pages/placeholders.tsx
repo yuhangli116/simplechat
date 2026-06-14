@@ -39,14 +39,14 @@ const PlaceholderPage = ({ title, desc, withPagination }: { title: string; desc:
   );
 };
 
-export const Community = () => <PlaceholderPage title="创作社区 (开发中)" desc="这里将展示其他用户的优秀作品和交流区" withPagination />;
-export const Welfare = () => <PlaceholderPage title="福利中心 (开发中)" desc="签到、任务、领取钻石" />;
-export const Guide = () => <PlaceholderPage title="教程专区 (开发中)" desc="新手指南、进阶技巧" withPagination />;
-export const Prompts = () => <PlaceholderPage title="提示词库 (开发中)" desc="管理和分享你的 AI 提示词" withPagination />;
-export const Membership = () => <PlaceholderPage title="会员充值 (开发中)" desc="升级会员，获取更多权益" />;
-export const Records = () => <PlaceholderPage title="钻石记录 (开发中)" desc="查看你的消费和充值记录" withPagination />;
-export const Download = () => <PlaceholderPage title="下载客户端 (开发中)" desc="Windows / Mac / Mobile" />;
-export const Trash = () => <PlaceholderPage title="回收站 (开发中)" desc="找回误删的作品" withPagination />;
+export const Community = () => <PlaceholderPage title="模版广场 (开发中)" desc="这里将展示其他用户的优秀作品和交流区" withPagination />;
+export const Welfare = () => <PlaceholderPage title="奖励中心 (开发中)" desc="签到、任务、领取钻石" />;
+export const Guide = () => <PlaceholderPage title="使用指南 (开发中)" desc="新手指南、进阶技巧" withPagination />;
+export const Prompts = () => <PlaceholderPage title="指令工坊 (开发中)" desc="管理和分享你的 AI 提示词" withPagination />;
+export const Membership = () => <PlaceholderPage title="充值中心 (开发中)" desc="升级会员，获取更多权益" />;
+export const Records = () => <PlaceholderPage title="消费明细 (开发中)" desc="查看你的消费和充值记录" withPagination />;
+export const Download = () => <PlaceholderPage title="漫剧工坊 (开发中)" desc="AI 漫剧创作能力正在筹备中，敬请期待" />;
+export const Trash = () => <PlaceholderPage title="废稿箱 (开发中)" desc="找回误删的作品" withPagination />;
 
 export const Validate = () => {
   const { user, session, profile, diamondBalance } = useAuthStore();

@@ -35,7 +35,7 @@ const Sidebar = () => {
         <div>
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-2">创作</h3>
           <div className="space-y-1">
-            <NavItem to="/dashboard" icon={<Layout className="w-4 h-4" />} label="我的作品" />
+            <NavItem to="/dashboard" icon={<Layout className="w-4 h-4" />} label="工作台" />
             
             {/* Project Specific Sub-menu (Mock for now) */}
             <div className="ml-4 mt-2 border-l border-gray-700 pl-4 space-y-1">
@@ -55,9 +55,9 @@ const Sidebar = () => {
         <div>
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-2">探索</h3>
           <div className="space-y-1">
-            <NavItem to="/community" icon={<Users className="w-4 h-4" />} label="创作社区" />
-            <NavItem to="/rewards" icon={<CreditCard className="w-4 h-4" />} label="领稿稿酬" />
-            <NavItem to="/tutorials" icon={<BookOpen className="w-4 h-4" />} label="教程专区" />
+            <NavItem to="/community" icon={<Users className="w-4 h-4" />} label="模版广场" />
+            <NavItem to="/rewards" icon={<CreditCard className="w-4 h-4" />} label="奖励中心" />
+            <NavItem to="/tutorials" icon={<BookOpen className="w-4 h-4" />} label="使用指南" />
           </div>
         </div>
 
@@ -65,10 +65,10 @@ const Sidebar = () => {
         <div>
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-2">更多</h3>
           <div className="space-y-1">
-            <NavItem to="/prompts" icon={<MessageSquare className="w-4 h-4" />} label="提示词库" />
-            <NavItem to="/membership" icon={<Zap className="w-4 h-4 text-yellow-500" />} label="充值会员" highlight />
-            <NavItem to="/logs" icon={<History className="w-4 h-4" />} label="星云记录" />
-            <NavItem to="/download" icon={<Download className="w-4 h-4" />} label="下载软件" />
+            <NavItem to="/prompts" icon={<MessageSquare className="w-4 h-4" />} label="指令工坊" />
+            <NavItem to="/membership" icon={<Zap className="w-4 h-4 text-yellow-500" />} label="充值中心" highlight />
+            <NavItem to="/logs" icon={<History className="w-4 h-4" />} label="消费明细" />
+            <NavItem to="/download" icon={<Download className="w-4 h-4" />} label="漫剧工坊" />
           </div>
         </div>
       </nav>

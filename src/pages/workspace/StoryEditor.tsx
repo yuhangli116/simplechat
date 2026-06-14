@@ -1,21 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
+import { Extension, Mark } from '@tiptap/core';
 import { 
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
   Bold, 
-  Italic, 
   Sparkles,
   Save,
   Download,
   ChevronDown,
   ChevronUp,
-  Undo2,
-  Redo2,
   X,
   Bot,
   FileText,
   Link as LinkIcon,
-  FileCode
+  FileCode,
+  History,
+  Heading1,
+  List,
+  ListOrdered,
+  Strikethrough
 } from 'lucide-react';
 import { aiService, MODEL_PRICING } from '@/services/ai';
 import { syncModelPricingFromDb } from '@/services/billing';
@@ -30,6 +36,112 @@ import { loadChapterContent, saveChapterContent } from '@/lib/workspacePersisten
 import PromptPickerDialog from '@/components/PromptPickerDialog';
 import { useWorkspacePrefsStore } from '@/store/useWorkspacePrefsStore';
 import { v4 as uuidv4 } from 'uuid';
+import { createLogger, flushLogs } from '@/lib/logger';
+import {
+  createChapterVersion,
+  deleteExpiredChapterVersions,
+  loadChapterVersions,
+  type ChapterVersion,
+} from '@/lib/chapterVersions';
+
+const log = createLogger('StoryEditor');
+
+type SaveState = 'saved' | 'dirty' | 'saving' | 'error';
+
+type PendingAiVersion = {
+  currentContent: string;
+  nextContent: string;
+  generatedHtml: string;
+  prompt: string;
+  model: string;
+  usage: { input_tokens: number; output_tokens: number; total_cost: number } | null;
+};
+
+const STORY_SAVE_RETRY_DELAYS = [500, 1200, 2500];
+
+const TEXT_COLOR_PALETTE = [
+  '#111827',
+  '#6b7280',
+  '#ef4444',
+  '#f59e0b',
+  '#22c55e',
+  '#3b82f6',
+  '#6366f1',
+  '#d1d5db',
+  '#000000',
+  '#dc2626',
+  '#f97316',
+  '#16a34a',
+  '#2563eb',
+  '#4f46e5',
+];
+
+const TextAlignExtension = Extension.create({
+  name: 'simpleTextAlign',
+
+  addGlobalAttributes() {
+    return [
+      {
+        types: ['heading', 'paragraph'],
+        attributes: {
+          textAlign: {
+            default: null,
+            parseHTML: (element) => element.style.textAlign || null,
+            renderHTML: (attributes) => {
+              if (!attributes.textAlign) return {};
+              return { style: `text-align: ${attributes.textAlign}` };
+            },
+          },
+        },
+      },
+    ];
+  },
+});
+
+const TextColorMark = Mark.create({
+  name: 'textColor',
+
+  addAttributes() {
+    return {
+      color: {
+        default: null,
+        parseHTML: (element) => element.style.color || null,
+        renderHTML: (attributes) => {
+          if (!attributes.color) return {};
+          return { style: `color: ${attributes.color}` };
+        },
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'span[style*="color"]' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['span', HTMLAttributes, 0];
+  },
+});
+
+const isMeaningfulHtml = (content: string | null | undefined) => {
+  const plain = (content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return plain.length > 0;
+};
+
+const formatVersionDate = (value: string) =>
+  new Date(value).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+const getVersionSourceLabel = (source: string) => {
+  if (source === 'ai-current-before-replace') return 'AI替换前';
+  if (source === 'ai-applied') return 'AI生成';
+  if (source === 'restore-before') return '恢复前';
+  return '手动版本';
+};
 
 const StoryEditor = () => {
   const { workId, chapterId } = useParams();
@@ -49,6 +161,21 @@ const StoryEditor = () => {
   const [lastUsage, setLastUsage] = useState<{input_tokens: number, output_tokens: number, total_cost: number} | null>(null);
   const [aiPhase, setAiPhase] = useState('等待开始');
   const [aiElapsed, setAiElapsed] = useState(0);
+  const [saveState, setSaveState] = useState<SaveState>('saved');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [saveError, setSaveError] = useState('');
+  const [pendingAiVersion, setPendingAiVersion] = useState<PendingAiVersion | null>(null);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [chapterVersions, setChapterVersions] = useState<ChapterVersion[]>([]);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const [restoringVersion, setRestoringVersion] = useState(false);
+  const saveTimerRef = React.useRef<number | null>(null);
+  const latestContentRef = React.useRef('');
+  const lastSavedSignatureRef = React.useRef('');
+  const saveInFlightRef = React.useRef(false);
+  const saveQueuedRef = React.useRef(false);
+  const suppressEditorUpdateRef = React.useRef(false);
 
   useEffect(() => {
     syncModelPricingFromDb().catch((error) => {
@@ -118,6 +245,11 @@ const StoryEditor = () => {
     return () => window.clearInterval(timer);
   }, [isAiTiming]);
 
+  const getStoryStorageKey = useCallback(() => {
+    if (!workId || !chapterId) return '';
+    return `story-${workId}-${chapterId}`;
+  }, [workId, chapterId]);
+
   const currentChapterName = React.useMemo(() => {
     const findByPath = (nodes: typeof files): string | null => {
       for (const node of nodes) {
@@ -136,32 +268,227 @@ const StoryEditor = () => {
     return findByPath(files) || '未命名章节';
   }, [files, workId, chapterId]);
 
+  const persistChapterWithRetry = useCallback(async (content: string, reason: string) => {
+    if (!workId || !chapterId) return;
+
+    localStorage.setItem(getStoryStorageKey(), content);
+    latestContentRef.current = content;
+
+    if (!user || isGuestUser(user)) {
+      lastSavedSignatureRef.current = content;
+      setSaveState('saved');
+      setLastSavedAt(Date.now());
+      setSaveError('');
+      log.info('Guest chapter content saved locally', { workId, chapterId, reason, contentLength: content.length });
+      return;
+    }
+
+    if (content === lastSavedSignatureRef.current) {
+      setSaveState('saved');
+      return;
+    }
+
+    if (saveInFlightRef.current) {
+      saveQueuedRef.current = true;
+      log.info('Chapter save queued while previous save is in flight', { workId, chapterId, reason });
+      return;
+    }
+
+    saveInFlightRef.current = true;
+    setSaveState('saving');
+    setSaveError('');
+
+    try {
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < STORY_SAVE_RETRY_DELAYS.length; attempt += 1) {
+        try {
+          await saveChapterContent(workId, chapterId, currentChapterName, content);
+          lastSavedSignatureRef.current = content;
+          setSaveState('saved');
+          setLastSavedAt(Date.now());
+          setSaveError('');
+          log.success('Chapter content auto-saved', {
+            workId,
+            chapterId,
+            reason,
+            attempt: attempt + 1,
+            contentLength: content.length,
+          });
+          return;
+        } catch (error) {
+          lastError = error;
+          log.warn('Chapter content save attempt failed', {
+            workId,
+            chapterId,
+            reason,
+            attempt: attempt + 1,
+            maxAttempts: STORY_SAVE_RETRY_DELAYS.length,
+          });
+          if (attempt < STORY_SAVE_RETRY_DELAYS.length - 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, STORY_SAVE_RETRY_DELAYS[attempt]));
+          }
+        }
+      }
+
+      const message = lastError instanceof Error ? lastError.message : '同步到数据库失败';
+      setSaveState('error');
+      setSaveError(message);
+      log.error('Chapter content save failed after retries', { workId, chapterId, reason }, lastError);
+    } finally {
+      saveInFlightRef.current = false;
+      if (saveQueuedRef.current && latestContentRef.current !== lastSavedSignatureRef.current) {
+        saveQueuedRef.current = false;
+        void persistChapterWithRetry(latestContentRef.current, 'queued');
+      }
+    }
+  }, [chapterId, currentChapterName, getStoryStorageKey, user, workId]);
+
+  const scheduleChapterSave = useCallback((content: string, reason: string) => {
+    localStorage.setItem(getStoryStorageKey(), content);
+    latestContentRef.current = content;
+
+    if (!user || isGuestUser(user)) {
+      lastSavedSignatureRef.current = content;
+      setSaveState('saved');
+      setLastSavedAt(Date.now());
+      setSaveError('');
+      return;
+    }
+
+    if (content === lastSavedSignatureRef.current) {
+      setSaveState('saved');
+      return;
+    }
+
+    setSaveState('dirty');
+    setSaveError('');
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      void persistChapterWithRetry(latestContentRef.current, reason);
+    }, 1000);
+  }, [getStoryStorageKey, persistChapterWithRetry, user]);
+
+  const flushChapterSave = useCallback((reason: string) => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    return persistChapterWithRetry(latestContentRef.current, reason);
+  }, [persistChapterWithRetry]);
+
   // Main Content Editor
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
         heading: {
-          levels: [1, 2, 3],
+          levels: [1, 2, 3, 4],
         },
         history: {
           depth: 100,
         },
       }),
+      TextAlignExtension,
+      TextColorMark,
     ],
     content: '',
     editorProps: {
       attributes: {
         class: 'prose prose-lg max-w-none focus:outline-none min-h-[400px] p-6',
       },
-    },
-    onUpdate: ({ editor }) => {
-      if (workId && chapterId) {
-        const key = `story-${workId}-${chapterId}`;
-        const content = editor.getHTML();
-        localStorage.setItem(key, content);
-      }
     }
   });
+
+  const snapshotChapterVersion = useCallback(async (
+    content: string,
+    source: Parameters<typeof createChapterVersion>[0]['source'],
+    meta: { prompt?: string | null; model?: string | null } = {}
+  ) => {
+    if (!user || isGuestUser(user) || !workId || !chapterId || !isMeaningfulHtml(content)) {
+      return null;
+    }
+
+    try {
+      return await createChapterVersion({
+        userId: user.id,
+        workId,
+        chapterId,
+        title: currentChapterName,
+        content,
+        source,
+        prompt: meta.prompt || null,
+        model: meta.model || null,
+      });
+    } catch (error) {
+      log.error('Chapter version snapshot failed', { workId, chapterId, source }, error);
+      return null;
+    }
+  }, [chapterId, currentChapterName, user, workId]);
+
+  const applyChapterContent = useCallback(async (
+    content: string,
+    reason: string,
+    options: {
+      snapshotCurrentAs?: Parameters<typeof createChapterVersion>[0]['source'];
+      snapshotNextAs?: Parameters<typeof createChapterVersion>[0]['source'];
+      prompt?: string | null;
+      model?: string | null;
+    } = {}
+  ) => {
+    if (!editor || !workId || !chapterId) return;
+
+    const currentContent = latestContentRef.current || editor.getHTML();
+    if (options.snapshotCurrentAs) {
+      await snapshotChapterVersion(currentContent, options.snapshotCurrentAs, {
+        prompt: options.prompt,
+        model: options.model,
+      });
+    }
+
+    suppressEditorUpdateRef.current = true;
+    editor.commands.setContent(content || '');
+    latestContentRef.current = content || '';
+    localStorage.setItem(getStoryStorageKey(), content || '');
+    setSaveState('dirty');
+    setSaveError('');
+    window.setTimeout(() => {
+      suppressEditorUpdateRef.current = false;
+    }, 0);
+
+    await persistChapterWithRetry(content || '', reason);
+
+    if (options.snapshotNextAs) {
+      await snapshotChapterVersion(content || '', options.snapshotNextAs, {
+        prompt: options.prompt,
+        model: options.model,
+      });
+    }
+
+    log.success('Chapter content applied', {
+      workId,
+      chapterId,
+      reason,
+      contentLength: content?.length || 0,
+    });
+  }, [chapterId, editor, getStoryStorageKey, persistChapterWithRetry, snapshotChapterVersion, workId]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const handleUpdate = () => {
+      if (!workId || !chapterId) return;
+      const content = editor.getHTML();
+      latestContentRef.current = content;
+      if (suppressEditorUpdateRef.current) return;
+      scheduleChapterSave(content, 'editor-update');
+    };
+
+    editor.on('update', handleUpdate);
+    return () => {
+      editor.off('update', handleUpdate);
+    };
+  }, [chapterId, editor, scheduleChapterSave, workId]);
 
   // Load content
   useEffect(() => {
@@ -170,12 +497,22 @@ const StoryEditor = () => {
     const key = `story-${workId}-${chapterId}`;
 
     const applyContent = (content: string | null) => {
+      suppressEditorUpdateRef.current = true;
       if (content) {
         editor.commands.setContent(content);
-        return;
+      } else {
+        // 新建章节时保持空白，不预设任何内容
+        editor.commands.clearContent();
       }
-      // 新建章节时保持空白，不预设任何内容
-      editor.commands.clearContent();
+      const normalizedContent = editor.getHTML();
+      latestContentRef.current = normalizedContent;
+      lastSavedSignatureRef.current = normalizedContent;
+      setSaveState('saved');
+      setLastSavedAt(Date.now());
+      setSaveError('');
+      window.setTimeout(() => {
+        suppressEditorUpdateRef.current = false;
+      }, 0);
     };
 
     const loadContent = async () => {
@@ -185,34 +522,78 @@ const StoryEditor = () => {
           if (remoteContent) {
             localStorage.setItem(key, remoteContent);
             applyContent(remoteContent);
+            log.success('Chapter content loaded from database', { workId, chapterId, contentLength: remoteContent.length });
             return;
           }
         } catch (error) {
-          console.error('Failed to load chapter from Supabase:', error);
+          log.error('Failed to load chapter from Supabase', { workId, chapterId }, error);
         }
       }
 
-      applyContent(localStorage.getItem(key));
+      const localContent = localStorage.getItem(key);
+      applyContent(localContent);
+      log.info('Chapter content loaded from local cache', { workId, chapterId, contentLength: localContent?.length || 0 });
     };
 
     loadContent();
-  }, [editor, workId, chapterId, user, currentChapterName]);
+  }, [editor, workId, chapterId, user?.id]);
+
+  useEffect(() => {
+    const flushIfDirty = (reason: string) => {
+      if (latestContentRef.current && latestContentRef.current !== lastSavedSignatureRef.current) {
+        void flushChapterSave(reason);
+      }
+      flushLogs(true);
+    };
+
+    const handleBeforeUnload = () => flushIfDirty('beforeunload');
+    const handlePageHide = () => flushIfDirty('pagehide');
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushIfDirty('visibility-hidden');
+      }
+    };
+    const handleOnline = () => {
+      if (latestContentRef.current && latestContentRef.current !== lastSavedSignatureRef.current) {
+        log.info('Network restored, retrying chapter save', { workId, chapterId });
+        void flushChapterSave('network-restored');
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [chapterId, flushChapterSave, workId]);
 
   const handleSave = async () => {
     if (editor && workId && chapterId) {
-      const key = `story-${workId}-${chapterId}`;
       const content = editor.getHTML();
-      localStorage.setItem(key, content);
-      if (user && !isGuestUser(user)) {
-        try {
-          await saveChapterContent(workId, chapterId, currentChapterName, content);
-        } catch (error) {
-          console.error('Failed to save chapter to Supabase:', error);
-          alert('已保存到本地，但同步到数据库失败');
+      log.info('Manual chapter save requested', { workId, chapterId, contentLength: content.length });
+      try {
+        await persistChapterWithRetry(content, 'manual-save');
+        if (user && !isGuestUser(user) && content !== lastSavedSignatureRef.current) {
+          log.warn('Manual chapter save finished with database sync warning', { workId, chapterId });
+          alert('已保存到本地，但同步到数据库失败，请稍后重试');
           return;
         }
+        log.success('Manual chapter save completed', { workId, chapterId, contentLength: content.length });
+        alert('保存成功');
+      } catch (error) {
+        log.error('Manual chapter save failed', { workId, chapterId }, error);
+        alert('已保存到本地，但同步到数据库失败');
       }
-      alert('保存成功');
     }
   };
 
@@ -227,12 +608,19 @@ const StoryEditor = () => {
     const htmlContent = editor.getHTML();
     const markdownContent = htmlToMarkdown(htmlContent);
     const filename = `${currentChapterName || '未命名章节'}`;
+    log.info('Chapter export requested', {
+      workId,
+      chapterId,
+      format,
+      contentLength: htmlContent.length,
+    });
     
     if (format === 'html') {
       exportHtml(htmlContent, `${filename}.html`);
     } else {
       exportMarkdown(markdownContent, `${filename}.md`);
     }
+    log.success('Chapter export completed', { workId, chapterId, format });
   };
 
   const exportOptions = [
@@ -380,6 +768,97 @@ const StoryEditor = () => {
     }
   };
 
+  const textToParagraphHtml = (content: string) => {
+    const paragraphs = String(content || '')
+      .trim()
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.trim().replace(/\n/g, ' '))
+      .filter(Boolean);
+    return paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join('');
+  };
+
+  const openVersionHistory = async () => {
+    if (!user || isGuestUser(user)) {
+      if (window.confirm('历史版本功能需要登录后使用，是否前往登录？')) {
+        navigate('/login');
+      }
+      return;
+    }
+    if (!chapterId) return;
+
+    setShowVersionHistory(true);
+    setLoadingVersions(true);
+    try {
+      await deleteExpiredChapterVersions(user.id);
+      const versions = await loadChapterVersions({ userId: user.id, chapterId });
+      setChapterVersions(versions);
+      setSelectedVersionId(versions[0]?.id || null);
+      log.success('Chapter version history opened', { chapterId, count: versions.length });
+    } catch (error) {
+      log.error('Failed to open chapter version history', { chapterId }, error);
+      alert('加载历史版本失败，请稍后重试');
+    } finally {
+      setLoadingVersions(false);
+    }
+  };
+
+  const handleCancelPendingAiVersion = () => {
+    if (!pendingAiVersion) return;
+    log.info('Pending AI version cancelled', {
+      workId,
+      chapterId,
+      currentLength: pendingAiVersion.currentContent.length,
+      nextLength: pendingAiVersion.nextContent.length,
+    });
+    setPendingAiVersion(null);
+  };
+
+  const handleApplyPendingAiVersion = async () => {
+    if (!pendingAiVersion) return;
+    try {
+      await applyChapterContent(pendingAiVersion.nextContent, 'ai-version-apply', {
+        snapshotCurrentAs: 'ai-current-before-replace',
+        snapshotNextAs: 'ai-applied',
+        prompt: pendingAiVersion.prompt,
+        model: pendingAiVersion.model,
+      });
+      if (pendingAiVersion.usage) {
+        setLastUsage(pendingAiVersion.usage);
+        setTimeout(() => setLastUsage(null), 5000);
+      }
+      setPendingAiVersion(null);
+      setPromptText('');
+      if (user && !isGuestUser(user)) fetchBalance();
+    } catch (error) {
+      log.error('Failed to apply pending AI version', { workId, chapterId }, error);
+      alert('应用 AI 新版本失败，请检查网络后重试');
+    }
+  };
+
+  const handleRestoreVersion = async () => {
+    const selected = chapterVersions.find((version) => version.id === selectedVersionId);
+    if (!selected) return;
+
+    setRestoringVersion(true);
+    try {
+      await applyChapterContent(selected.content, 'version-restore', {
+        snapshotCurrentAs: 'restore-before',
+      });
+      setShowVersionHistory(false);
+      log.success('Chapter version restored', {
+        workId,
+        chapterId,
+        versionId: selected.id,
+        contentLength: selected.content.length,
+      });
+    } catch (error) {
+      log.error('Failed to restore chapter version', { workId, chapterId, versionId: selected.id }, error);
+      alert('恢复历史版本失败，请稍后重试');
+    } finally {
+      setRestoringVersion(false);
+    }
+  };
+
   const handleAiContinue = async () => {
     if (!editor) return;
 
@@ -443,43 +922,66 @@ const StoryEditor = () => {
         context: finalContext,
         userId: user?.id,
         billingGroupId,
+        workId,
+        chapterId,
+        chapterTitle: currentChapterName,
+        baseContentHtml: editor.getHTML(),
+        deferChapterSave: true,
       });
 
       if (response.content) {
         setAiPhase('正在写入正文');
+        const currentContent = editor.getHTML();
         const cleaned = sanitizeAiContinuationOutput(userPrompt, response.content);
-        await insertContentGradually(cleaned);
-        setIsAiTiming(false);
-        
-        if (workId && chapterId) {
-          const content = editor.getHTML();
-          localStorage.setItem(`story-${workId}-${chapterId}`, content);
-          if (user && !isGuestUser(user)) {
-            try {
-              setAiPhase('正在保存');
-              await saveChapterContent(workId, chapterId, currentChapterName, content);
-            } catch (e) {
-              console.error('Auto-save failed:', e);
+        const generatedHtml = response.generatedHtml || textToParagraphHtml(cleaned);
+        // 版本比较里的“继续应用”是用本次 AI 输出完整替换当前正文，不做旧正文合并。
+        // 服务端 previewChapterContent 仅保留给其他预览场景，正文落库以 generatedHtml 为准。
+        const nextContent = generatedHtml || '';
+        const hasExistingContent = isMeaningfulHtml(currentContent);
+        const combinedUsage = response.usage
+          ? {
+              input_tokens: response.usage.input_tokens + (summarizationUsage ? summarizationUsage.input_tokens : 0),
+              output_tokens: response.usage.output_tokens + (summarizationUsage ? summarizationUsage.output_tokens : 0),
+              total_cost: response.usage.total_cost + (summarizationUsage ? summarizationUsage.total_cost : 0),
             }
-          }
+          : null;
+
+        if (!nextContent) {
+          alert('AI 没有返回可应用的正文内容，请重试');
+          return;
         }
-        
-        if (user && !isGuestUser(user)) fetchBalance();
-        
-        if (response.usage) {
-          const totalCost = response.usage.total_cost + (summarizationUsage ? summarizationUsage.total_cost : 0);
-          const inputTokens = response.usage.input_tokens + (summarizationUsage ? summarizationUsage.input_tokens : 0);
-          const outputTokens = response.usage.output_tokens + (summarizationUsage ? summarizationUsage.output_tokens : 0);
-          setLastUsage({
-            input_tokens: inputTokens,
-            output_tokens: outputTokens,
-            total_cost: totalCost
+
+        if (hasExistingContent) {
+          setPendingAiVersion({
+            currentContent,
+            nextContent,
+            generatedHtml,
+            prompt: userPrompt,
+            model: modelKey,
+            usage: combinedUsage,
           });
-          setTimeout(() => setLastUsage(null), 5000);
+          log.info('Pending AI version comparison opened', {
+            workId,
+            chapterId,
+            currentLength: currentContent.length,
+            generatedLength: generatedHtml.length,
+            nextLength: nextContent.length,
+            replaceMode: 'replace-with-generated',
+          });
+        } else {
+          await applyChapterContent(nextContent, 'ai-first-apply', {
+            snapshotNextAs: 'ai-applied',
+            prompt: userPrompt,
+            model: modelKey,
+          });
+          if (combinedUsage) {
+            setLastUsage(combinedUsage);
+            setTimeout(() => setLastUsage(null), 5000);
+          }
+          setPromptText('');
+          if (user && !isGuestUser(user)) fetchBalance();
         }
-        
-        // Clear prompt after successful generation
-        setPromptText('');
+        setIsAiTiming(false);
       } else if (response.error) {
         alert(`AI生成失败: ${response.error}`);
       }
@@ -498,6 +1000,52 @@ const StoryEditor = () => {
   }
 
   const currentModelConfig = MODEL_PRICING[selectedModel as keyof typeof MODEL_PRICING];
+  const selectedVersion = chapterVersions.find((version) => version.id === selectedVersionId) || null;
+  const saveStateLabel =
+    saveState === 'saving'
+      ? '正在同步...'
+      : saveState === 'dirty'
+        ? '有未保存修改，正在等待自动保存'
+        : saveState === 'error'
+          ? `保存失败：${saveError || '请检查网络'}`
+          : lastSavedAt
+            ? `已保存 ${new Date(lastSavedAt).toLocaleTimeString()}`
+            : '已保存';
+  const saveStateClass =
+    saveState === 'error'
+      ? 'text-red-600'
+      : saveState === 'dirty'
+        ? 'text-amber-600'
+        : saveState === 'saving'
+          ? 'text-blue-600'
+          : 'text-emerald-600';
+  const activeHeadingLevel = ([1, 2, 3, 4] as const).find((level) => editor.isActive('heading', { level }));
+  const currentTextAlign =
+    editor.getAttributes('heading').textAlign ||
+    editor.getAttributes('paragraph').textAlign ||
+    'left';
+  const setHeadingLevel = (level: 0 | 1 | 2 | 3 | 4) => {
+    if (level === 0) {
+      editor.chain().focus().setParagraph().run();
+    } else {
+      editor.chain().focus().setHeading({ level }).run();
+    }
+  };
+  const setTextAlign = (align: 'left' | 'center' | 'right') => {
+    editor
+      .chain()
+      .focus()
+      .updateAttributes('paragraph', { textAlign: align })
+      .updateAttributes('heading', { textAlign: align })
+      .run();
+  };
+  const setTextColor = (color: string | null) => {
+    if (color) {
+      editor.chain().focus().setMark('textColor', { color }).run();
+    } else {
+      editor.chain().focus().unsetMark('textColor').run();
+    }
+  };
 
   const insertPromptContent = (text: string) => {
     const el = promptTextareaRef.current;
@@ -568,7 +1116,7 @@ const StoryEditor = () => {
                 setShowPromptPicker(true);
               }}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg border transition-colors text-xs font-medium bg-white border-purple-200 hover:bg-purple-50 text-purple-700"
-              title="从提示词库选择并插入"
+              title="从指令工坊选择并插入"
             >
               <Sparkles className="w-3.5 h-3.5" />
               <span>选择提示词</span>
@@ -727,25 +1275,57 @@ const StoryEditor = () => {
               icon={<Bold className="w-4 h-4" />} 
               title="加粗"
             />
-            <ToolbarButton 
-              onAction={() => editor.chain().focus().toggleItalic().run()} 
-              isActive={editor.isActive('italic')} 
-              icon={<Italic className="w-4 h-4" />} 
-              title="斜体"
+            <TextColorPicker
+              title="字体颜色"
+              isActive={editor.isActive('textColor')}
+              colors={TEXT_COLOR_PALETTE}
+              onSelect={setTextColor}
             />
-            <ToolbarButton 
-              onAction={() => editor.chain().focus().undo().run()} 
-              isActive={false} 
-              icon={<Undo2 className="w-4 h-4" />} 
-              title="撤销"
-              disabled={!editor.can().undo()}
+            <ToolbarButton
+              onAction={() => editor.chain().focus().toggleStrike().run()}
+              isActive={editor.isActive('strike')}
+              icon={<Strikethrough className="w-4 h-4" />}
+              title="删除线"
             />
-            <ToolbarButton 
-              onAction={() => editor.chain().focus().redo().run()} 
-              isActive={false} 
-              icon={<Redo2 className="w-4 h-4" />} 
-              title="重做"
-              disabled={!editor.can().redo()}
+            <ToolbarDropdown
+              title="标题级别"
+              icon={<Heading1 className="w-4 h-4" />}
+              isActive={Boolean(activeHeadingLevel)}
+              options={[
+                { label: '正文', active: !activeHeadingLevel, onSelect: () => setHeadingLevel(0) },
+                { label: '一级标题', active: activeHeadingLevel === 1, onSelect: () => setHeadingLevel(1) },
+                { label: '二级标题', active: activeHeadingLevel === 2, onSelect: () => setHeadingLevel(2) },
+                { label: '三级标题', active: activeHeadingLevel === 3, onSelect: () => setHeadingLevel(3) },
+                { label: '四级标题', active: activeHeadingLevel === 4, onSelect: () => setHeadingLevel(4) },
+              ]}
+            />
+            <ToolbarDropdown
+              title="对齐方式"
+              icon={
+                currentTextAlign === 'center'
+                  ? <AlignCenter className="w-4 h-4" />
+                  : currentTextAlign === 'right'
+                    ? <AlignRight className="w-4 h-4" />
+                    : <AlignLeft className="w-4 h-4" />
+              }
+              isActive={currentTextAlign !== 'left'}
+              options={[
+                { label: '左对齐', active: currentTextAlign === 'left', onSelect: () => setTextAlign('left') },
+                { label: '居中对齐', active: currentTextAlign === 'center', onSelect: () => setTextAlign('center') },
+                { label: '右对齐', active: currentTextAlign === 'right', onSelect: () => setTextAlign('right') },
+              ]}
+            />
+            <ToolbarButton
+              onAction={() => editor.chain().focus().toggleBulletList().run()}
+              isActive={editor.isActive('bulletList')}
+              icon={<List className="w-4 h-4" />}
+              title="无序列表"
+            />
+            <ToolbarButton
+              onAction={() => editor.chain().focus().toggleOrderedList().run()}
+              isActive={editor.isActive('orderedList')}
+              icon={<ListOrdered className="w-4 h-4" />}
+              title="有序列表"
             />
           </div>
           
@@ -760,21 +1340,22 @@ const StoryEditor = () => {
           </div>
           
           <div className="flex-1" />
-          
-          <button 
+
+          <IconActionButton
+            onClick={openVersionHistory}
+            title="历史版本"
+            icon={<History className="w-4 h-4" />}
+          />
+          <IconActionButton
             onClick={handleSave}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-50 hover:border-gray-300 transition-colors"
-          >
-            <Save className="w-4 h-4" />
-            保存
-          </button>
-          <button 
+            title="保存"
+            icon={<Save className="w-4 h-4" />}
+          />
+          <IconActionButton
             onClick={handleExport}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-50 hover:border-gray-300 transition-colors"
-          >
-            <Download className="w-4 h-4" />
-            另存为
-          </button>
+            title="另存为"
+            icon={<Download className="w-4 h-4" />}
+          />
         </div>
         
         {/* Editor Content */}
@@ -790,7 +1371,10 @@ const StoryEditor = () => {
         {/* Status Bar */}
         <div className="flex items-center justify-between px-4 py-1.5 bg-gray-50 border-t border-gray-100 text-xs text-gray-500">
           <span>字数: {editor.getText().length}</span>
-          <span>已自动保存</span>
+          <span className={saveStateClass}>
+            {saveStateLabel}
+            {user && !isGuestUser(user) ? '，看到已保存后再退出' : ''}
+          </span>
         </div>
       </div>
 
@@ -833,6 +1417,90 @@ const StoryEditor = () => {
         }}
         pageSize={6}
       />
+
+      {pendingAiVersion && (
+        <AiVersionCompareDialog
+          version={pendingAiVersion}
+          onCancel={handleCancelPendingAiVersion}
+          onApply={handleApplyPendingAiVersion}
+        />
+      )}
+
+      {showVersionHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+          <div className="flex max-h-[86vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+              <div>
+                <div className="text-base font-bold text-gray-900">历史版本</div>
+                <div className="mt-1 text-xs text-gray-500">仅保留最近 30 天的章节版本</div>
+              </div>
+              <button
+                onClick={() => setShowVersionHistory(false)}
+                className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                title="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[280px_minmax(0,1fr)]">
+              <div className="min-h-0 overflow-y-auto border-b border-gray-100 bg-gray-50 p-3 md:border-b-0 md:border-r">
+                {loadingVersions ? (
+                  <div className="py-12 text-center text-sm text-gray-400">正在加载...</div>
+                ) : chapterVersions.length === 0 ? (
+                  <div className="py-12 text-center text-sm text-gray-400">暂无历史版本</div>
+                ) : (
+                  <div className="space-y-2">
+                    {chapterVersions.map((version) => (
+                      <button
+                        key={version.id}
+                        onClick={() => setSelectedVersionId(version.id)}
+                        className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
+                          selectedVersionId === version.id
+                            ? 'border-purple-200 bg-purple-50 text-purple-800'
+                            : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="text-sm font-semibold">{formatVersionDate(version.created_at)}</div>
+                        <div className="mt-1 text-xs text-gray-500">{version.word_count} 字 · {getVersionSourceLabel(version.source)}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="min-h-0 overflow-y-auto p-5">
+                {selectedVersion ? (
+                  <div
+                    className="story-editor-content prose prose-sm max-w-none"
+                    dangerouslySetInnerHTML={{
+                      __html: selectedVersion.content,
+                    }}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-gray-400">请选择一个历史版本</div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-5 py-4">
+              <button
+                onClick={() => setShowVersionHistory(false)}
+                className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleRestoreVersion}
+                disabled={!selectedVersionId || restoringVersion}
+                className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {restoringVersion ? '恢复中...' : '恢复'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -873,5 +1541,250 @@ const ToolbarButton = ({
     )}
   </button>
 );
+
+const AiVersionCompareDialog = ({
+  version,
+  onCancel,
+  onApply,
+}: {
+  version: PendingAiVersion;
+  onCancel: () => void;
+  onApply: () => void;
+}) => {
+  const currentWords = React.useMemo(() => {
+    const plain = version.currentContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, '').trim();
+    return plain.length;
+  }, [version.currentContent]);
+  const generatedWords = React.useMemo(() => {
+    const plain = version.generatedHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, '').trim();
+    return plain.length;
+  }, [version.generatedHtml]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-6 backdrop-blur-[2px]">
+      <div className="flex max-h-[88vh] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-white/70 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.24)]">
+        <div className="flex items-center justify-between gap-4 border-b border-gray-100 px-6 py-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-lg font-semibold tracking-normal text-gray-950">版本比较</h2>
+            </div>
+          </div>
+          <button
+            onClick={onCancel}
+            className="rounded-full p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+            title="关闭"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden bg-slate-50 p-4 md:grid-cols-2">
+          <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-5 py-3">
+              <div>
+                <div className="text-sm font-semibold text-gray-900">当前正文</div>
+                <div className="mt-0.5 text-xs text-gray-500">{currentWords} 字</div>
+              </div>
+              <span className="rounded-full bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700">旧版本</span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto bg-[#fbfbfa] px-6 py-5">
+              <div
+                className="story-editor-content prose prose-sm max-w-none"
+                dangerouslySetInnerHTML={{ __html: version.currentContent }}
+              />
+            </div>
+          </section>
+
+          <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-gray-900/10 bg-white shadow-sm ring-1 ring-gray-950/5">
+            <div className="flex items-center justify-between border-b border-emerald-100 bg-emerald-50 px-5 py-3">
+              <div>
+                <div className="text-sm font-semibold text-emerald-950">新版本</div>
+                <div className="mt-0.5 text-xs text-emerald-700">{generatedWords} 字</div>
+              </div>
+              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700">待保存</span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto bg-white px-6 py-5">
+              <div
+                className="story-editor-content prose prose-sm max-w-none"
+                dangerouslySetInnerHTML={{ __html: version.generatedHtml }}
+              />
+            </div>
+          </section>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t border-gray-100 bg-white px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs text-gray-500">
+            继续应用则会保存新版本内容，旧版本可以在历史版本中找到。
+          </div>
+          <div className="flex items-center justify-end gap-3">
+            <button
+              onClick={onCancel}
+              className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+            >
+              取消应用
+            </button>
+            <button
+              onClick={onApply}
+              className="rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-gray-800"
+            >
+              继续应用
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const TextColorPicker = ({
+  title,
+  isActive,
+  colors,
+  onSelect,
+}: {
+  title: string;
+  isActive: boolean;
+  colors: string[];
+  onSelect: (color: string | null) => void;
+}) => {
+  const [isOpen, setIsOpen] = React.useState(false);
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+    >
+      <button
+        onMouseDown={(e) => {
+          e.preventDefault();
+        }}
+        onClick={() => setIsOpen(true)}
+        className={`relative flex h-9 w-9 items-center justify-center rounded-lg text-sm font-semibold transition-colors ${
+          isActive ? 'bg-purple-100 text-purple-600' : 'text-gray-600 hover:bg-gray-100'
+        }`}
+        title={title}
+        aria-label={title}
+      >
+        T
+      </button>
+      {isOpen && (
+        <div className="absolute left-0 top-full z-50 mt-1 w-[184px] rounded-lg border border-gray-200 bg-white p-3 shadow-lg">
+          <div className="mb-2 text-xs text-gray-500">字体颜色</div>
+          <div className="grid grid-cols-7 gap-2">
+            {colors.map((color) => (
+              <button
+                key={color}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onSelect(color);
+                  setIsOpen(false);
+                }}
+                className="h-5 w-5 rounded-md border border-gray-200 transition-transform hover:scale-110"
+                style={{ backgroundColor: color }}
+                title={color}
+                aria-label={`字体颜色 ${color}`}
+              />
+            ))}
+          </div>
+          <button
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onSelect(null);
+              setIsOpen(false);
+            }}
+            className="mt-3 w-full rounded-md border border-gray-200 px-3 py-1.5 text-xs text-gray-600 transition-colors hover:bg-gray-50"
+          >
+            恢复默认
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const IconActionButton = ({
+  onClick,
+  icon,
+  title,
+}: {
+  onClick: () => void;
+  icon: React.ReactNode;
+  title: string;
+}) => (
+  <button
+    onClick={onClick}
+    className="group relative flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-700 transition-colors hover:border-gray-300 hover:bg-gray-50"
+    aria-label={title}
+  >
+    {icon}
+    <span className="pointer-events-none absolute top-full left-1/2 z-50 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-gray-800 px-2 py-0.5 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100">
+      {title}
+    </span>
+  </button>
+);
+
+type ToolbarDropdownOption = {
+  label: string;
+  active: boolean;
+  onSelect: () => void;
+};
+
+const ToolbarDropdown = ({
+  title,
+  icon,
+  isActive,
+  options,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  isActive: boolean;
+  options: ToolbarDropdownOption[];
+}) => {
+  const [isOpen, setIsOpen] = React.useState(false);
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+    >
+      <button
+        onMouseDown={(e) => {
+          e.preventDefault();
+        }}
+        onClick={() => setIsOpen(true)}
+        className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+          isActive ? 'bg-purple-100 text-purple-600' : 'text-gray-600 hover:bg-gray-100'
+        }`}
+        title={title}
+      >
+        {icon}
+      </button>
+      {isOpen && (
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-[120px] overflow-hidden rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+          {options.map((option) => (
+            <button
+              key={option.label}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                option.onSelect();
+                setIsOpen(false);
+              }}
+              className={`block w-full px-3 py-2 text-left text-sm transition-colors ${
+                option.active
+                  ? 'bg-purple-50 text-purple-700'
+                  : 'text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default StoryEditor;

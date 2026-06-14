@@ -64,31 +64,31 @@ const Membership = () => {
   };
 
   return (
-    <div className="flex-1 h-full bg-gray-50 overflow-y-auto p-8">
+    <div className="flex-1 h-full bg-gray-50 dark:bg-background overflow-y-auto p-8">
       {/* Header Tabs */}
       <div className="flex items-center space-x-8 border-b border-gray-200 mb-8">
         <button
           onClick={() => setActiveTab('member')}
           className={`pb-4 text-base font-medium transition-colors relative flex items-center gap-2 ${
-            activeTab === 'member' ? 'text-gray-900' : 'text-gray-500 hover:text-gray-700'
+            activeTab === 'member' ? 'text-gray-900 dark:text-foreground' : 'text-gray-500 hover:text-gray-700 dark:hover:text-foreground'
           }`}
         >
           <Crown className="w-4 h-4" />
           购买会员
           {activeTab === 'member' && (
-            <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gray-900" />
+            <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gray-900 dark:bg-purple-400" />
           )}
         </button>
         <button
           onClick={() => setActiveTab('fuel')}
           className={`pb-4 text-base font-medium transition-colors relative flex items-center gap-2 ${
-            activeTab === 'fuel' ? 'text-gray-900' : 'text-gray-500 hover:text-gray-700'
+            activeTab === 'fuel' ? 'text-gray-900 dark:text-foreground' : 'text-gray-500 hover:text-gray-700 dark:hover:text-foreground'
           }`}
         >
           <Zap className="w-4 h-4" />
           加油包 (永久)
           {activeTab === 'fuel' && (
-            <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gray-900" />
+            <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gray-900 dark:bg-purple-400" />
           )}
         </button>
       </div>
@@ -180,7 +180,7 @@ type PricingCardProps = {
 
 const PricingCard = ({ title, price, originalPrice, tag, tagColor, features, activeTab, onPurchase }: PricingCardProps) => {
   return (
-    <div className="bg-white rounded-xl p-8 shadow-sm border border-gray-100 flex flex-col hover:shadow-md transition-shadow relative overflow-hidden">
+    <div className="bg-white dark:bg-card rounded-xl p-8 shadow-sm dark:shadow-purple-950/10 border border-gray-100 dark:border-border flex flex-col hover:shadow-md dark:hover:shadow-purple-950/20 transition-shadow relative overflow-hidden">
       {/* Tag */}
       <div className={`absolute top-8 right-8 ${tagColor} text-white text-xs font-bold px-2 py-1 rounded-sm`}>
         {activeTab === 'fuel' && <span className="mr-1">🔥</span>}
@@ -201,7 +201,7 @@ const PricingCard = ({ title, price, originalPrice, tag, tagColor, features, act
       <div className="space-y-6 flex-1">
         {features.map((feature, idx) => (
           <div key={idx} className="flex items-start">
-            <Check className="w-5 h-5 text-gray-900 mt-0.5 flex-shrink-0 mr-3" strokeWidth={1.5} />
+            <Check className="w-5 h-5 text-gray-900 dark:text-purple-300 mt-0.5 flex-shrink-0 mr-3" strokeWidth={1.5} />
             <div>
               <div className="font-bold text-gray-900 text-sm mb-1">{feature.title}</div>
               <div className="text-gray-500 text-xs leading-relaxed">{feature.desc}</div>

@@ -8,6 +8,10 @@ const log = createLogger('AIService');
 interface AIResponse {
   content: string;
   error?: string;
+  savedChapterContent?: string;
+  savedToChapter?: boolean;
+  generatedHtml?: string;
+  previewChapterContent?: string;
   usage?: {
     input_tokens: number;
     output_tokens: number;
@@ -29,6 +33,11 @@ interface AIRequest {
   context?: string;
   userId?: string; // Required for billing
   billingGroupId?: string;
+  workId?: string;
+  chapterId?: string;
+  chapterTitle?: string;
+  baseContentHtml?: string;
+  deferChapterSave?: boolean;
 }
 
 const estimateTokens = (text: string) => {
@@ -113,6 +122,10 @@ const callAIEndpoint = async (
   return {
     content: result?.content || '',
     error: result?.error,
+    savedChapterContent: result?.savedChapterContent,
+    savedToChapter: result?.savedToChapter,
+    generatedHtml: result?.generatedHtml,
+    previewChapterContent: result?.previewChapterContent,
     usage: result?.usage,
     billing: result?.billing,
   };
@@ -158,6 +171,10 @@ const getFriendlyErrorMessage = (error: any, provider: string): string => {
 
   if (msg.includes('429')) {
     return `请求过多 (${provider})：已达到调用频率限制，请稍后再试。`;
+  }
+
+  if (msg.toLowerCase().includes('fetch failed') || msg.includes('网络异常')) {
+    return `网络连接异常 (${provider})：AI 生成或扣费确认过程中网络中断，请稍后重试。`;
   }
 
   return `AI 生成出错 (${provider}): ${msg.slice(0, 100)}...`;
@@ -251,6 +268,11 @@ export const aiService = {
         context: request.context,
         userId: resolvedUserId,
         billingGroupId: request.billingGroupId,
+        workId: request.workId,
+        chapterId: request.chapterId,
+        chapterTitle: request.chapterTitle,
+        baseContentHtml: request.baseContentHtml,
+        deferChapterSave: request.deferChapterSave,
       });
       const content = response.content;
       const promptTokens =
@@ -283,6 +305,10 @@ export const aiService = {
       return {
         content,
         error: response.error,
+        savedChapterContent: response.savedChapterContent,
+        savedToChapter: response.savedToChapter,
+        generatedHtml: response.generatedHtml,
+        previewChapterContent: response.previewChapterContent,
         billing: response.billing,
         usage: {
           input_tokens: promptTokens,

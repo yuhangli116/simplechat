@@ -112,6 +112,50 @@ export interface Database {
           updated_at?: string
         }
       }
+      chapter_versions: {
+        Row: {
+          id: string
+          user_id: string
+          work_id: string
+          chapter_id: string
+          title: string
+          content: string
+          word_count: number
+          source: string
+          prompt: string | null
+          model: string | null
+          created_at: string
+          expires_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          work_id: string
+          chapter_id: string
+          title: string
+          content: string
+          word_count?: number
+          source?: string
+          prompt?: string | null
+          model?: string | null
+          created_at?: string
+          expires_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          work_id?: string
+          chapter_id?: string
+          title?: string
+          content?: string
+          word_count?: number
+          source?: string
+          prompt?: string | null
+          model?: string | null
+          created_at?: string
+          expires_at?: string
+        }
+      }
       mind_maps: {
         Row: {
           id: string
@@ -308,6 +352,61 @@ export interface Database {
           template_id?: string
           user_id?: string
           created_at?: string
+        }
+      }
+      user_skill_templates: {
+        Row: {
+          id: string
+          user_id: string
+          skill_template_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          skill_template_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          skill_template_id?: string
+          created_at?: string
+        }
+      }
+      user_prompts: {
+        Row: {
+          id: string
+          user_id: string
+          title: string
+          category: string
+          tags: string[]
+          content: string
+          source_skill_template_id: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          title: string
+          category: string
+          tags?: string[]
+          content: string
+          source_skill_template_id?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          title?: string
+          category?: string
+          tags?: string[]
+          content?: string
+          source_skill_template_id?: string | null
+          created_at?: string
+          updated_at?: string
         }
       }
       tutorials: {

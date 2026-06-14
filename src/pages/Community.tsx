@@ -10,8 +10,12 @@ import { loadWorkspaceTree, persistWorkTree } from '@/lib/workspacePersistence';
 import { Database } from '@/types/supabase';
 import Pagination from '@/components/Pagination';
 import { useToastStore } from '@/store/useToastStore';
+import { createLogger, flushLogs } from '@/lib/logger';
+import { createUserPrompt, updateUserPrompt } from '@/lib/promptPersistence';
 
 type Template = Database['public']['Tables']['community_templates']['Row'];
+
+const log = createLogger('Community');
 
 interface Skill {
   id: string;
@@ -159,7 +163,7 @@ const Community = () => {
 
   const mainCategories = [
     { id: 'templates', label: '作品模板', icon: <BookOpen className="w-4 h-4 mr-1" /> },
-    { id: 'skills', label: '提示词库', icon: <Sparkles className="w-4 h-4 mr-1" /> },
+    { id: 'skills', label: '指令工坊', icon: <Sparkles className="w-4 h-4 mr-1" /> },
     { id: 'mine', label: '我的模板', icon: <User className="w-4 h-4 mr-1" /> },
     { id: 'favorites', label: '收藏列表', icon: <Star className="w-4 h-4 mr-1" /> },
   ];
@@ -211,6 +215,7 @@ const Community = () => {
   useEffect(() => {
     const fetchTemplates = async () => {
       setLoading(true);
+      log.info('Fetching community templates', { isGuest: isActiveGuest, userId: user?.id });
       try {
         const { data, error } = await supabase
           .from('community_templates')
@@ -221,6 +226,7 @@ const Community = () => {
         
         if (error) {
           console.error('Error fetching templates:', error);
+          log.error('Failed to fetch community templates', { error: error.message }, error);
         } else {
           // 如果是游客，根据本地存储的 delta 调整 likes/views
           let finalData: Template[] = data || [];
@@ -241,15 +247,21 @@ const Community = () => {
             setGuestTemplateViewsDelta(storedViewsDelta);
           }
           setResources(finalData);
+          log.success('Community templates fetched', {
+            count: finalData.length,
+            isGuest: isActiveGuest,
+          });
         }
       } catch (err) {
         console.error('Unexpected error:', err);
+        log.error('Unexpected error while fetching community templates', {}, err);
       } finally {
         setLoading(false);
       }
     };
 
     const loadGuestCommunityState = () => {
+      log.info('Loading guest community state from localStorage');
       setCollectedSkills(readIdListFromStorage('collectedSkills'));
       setLikedTemplateIds(readIdListFromStorage('likedTemplates'));
       setCollectedTemplateIds(readIdListFromStorage('collectedTemplates'));
@@ -258,13 +270,14 @@ const Community = () => {
       setOfficialSkillMetrics(readJsonFromStorage('officialSkillMetrics', {}));
       setGuestTemplateLikesDelta(readJsonFromStorage('guestTemplateLikesDelta', {}));
       setGuestTemplateViewsDelta(readJsonFromStorage('guestTemplateViewsDelta', {}));
+      flushLogs();
     };
 
     fetchTemplates();
     if (isActiveGuest) {
       loadGuestCommunityState();
     } else if (user?.id) {
-      setCollectedSkills(readIdListFromStorage('collectedSkills'));
+      setCollectedSkills([]);
     }
   }, [isActiveGuest, user?.id]);
 
@@ -330,6 +343,7 @@ const Community = () => {
   useEffect(() => {
     if (!user?.id) {
       setLikedSkillIds([]);
+      setCollectedSkills([]);
       return;
     }
     if (isActiveGuest) {
@@ -346,6 +360,35 @@ const Community = () => {
     };
     run();
   }, [user, isActiveGuest]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setCollectedSkills([]);
+      return;
+    }
+    if (isActiveGuest) {
+      setCollectedSkills(readIdListFromStorage('collectedSkills'));
+      return;
+    }
+
+    const run = async () => {
+      log.info('Loading collected skill templates', { userId: user.id });
+      const { data, error } = await supabase
+        .from('user_skill_templates')
+        .select('skill_template_id')
+        .eq('user_id', user.id);
+      if (error) {
+        log.error('Failed to load collected skill templates', { userId: user.id, error: error.message }, error);
+        flushLogs();
+        return;
+      }
+      setCollectedSkills((data || []).map((r: any) => String(r.skill_template_id)));
+      log.success('Collected skill templates loaded', { userId: user.id, count: data?.length || 0 });
+      flushLogs();
+    };
+
+    run();
+  }, [user?.id, isActiveGuest]);
 
   useEffect(() => {
     if (!subTabsRef.current) return;
@@ -548,15 +591,57 @@ const Community = () => {
     return structure ? addPreviewIds(structure) : null;
   };
 
-  const toggleCollectSkill = (skillId: string) => {
-    let newCollected;
-    if (collectedSkills.includes(skillId)) {
-      newCollected = collectedSkills.filter(id => id !== skillId);
-    } else {
-      newCollected = [...collectedSkills, skillId];
+  const toggleCollectSkill = async (skillId: string) => {
+    const isCollected = collectedSkills.includes(skillId);
+    log.info('Toggling collected skill template', {
+      skillId,
+      isGuest: isGuestUser(user),
+      nextCollected: !isCollected,
+      userId: user?.id,
+    });
+
+    if (isGuestUser(user)) {
+      const newCollected = isCollected
+        ? collectedSkills.filter(id => id !== skillId)
+        : [...collectedSkills, skillId];
+      setCollectedSkills(newCollected);
+      localStorage.setItem('collectedSkills', JSON.stringify(newCollected));
+      log.success('Guest collected skill template persisted locally', { skillId, nextCollected: !isCollected });
+      flushLogs();
+      return;
     }
-    setCollectedSkills(newCollected);
-    localStorage.setItem('collectedSkills', JSON.stringify(newCollected));
+
+    if (!ensureLogin()) return;
+
+    if (isCollected) {
+      const { error } = await supabase
+        .from('user_skill_templates')
+        .delete()
+        .eq('skill_template_id', skillId)
+        .eq('user_id', user!.id);
+      if (error) {
+        log.error('Failed to uncollect skill template', { skillId, userId: user!.id, error: error.message }, error);
+        flushLogs();
+        return;
+      }
+      setCollectedSkills((prev) => prev.filter((id) => id !== skillId));
+      log.success('Skill template uncollected in database', { skillId, userId: user!.id });
+      flushLogs();
+      return;
+    }
+
+    const { error } = await supabase.from('user_skill_templates').insert({
+      skill_template_id: skillId,
+      user_id: user!.id,
+    } as any);
+    if (error) {
+      log.error('Failed to collect skill template', { skillId, userId: user!.id, error: error.message }, error);
+      flushLogs();
+      return;
+    }
+    setCollectedSkills((prev) => [...prev, skillId]);
+    log.success('Skill template collected in database', { skillId, userId: user!.id });
+    flushLogs();
   };
 
   const officialSkills: Skill[] = [
@@ -2004,7 +2089,9 @@ const Community = () => {
     if (collectedSkills.includes(skill.id)) {
       const next = collectedSkills.filter((id) => id !== skill.id);
       setCollectedSkills(next);
-      localStorage.setItem('collectedSkills', JSON.stringify(next));
+      if (isGuestUser(user)) {
+        localStorage.setItem('collectedSkills', JSON.stringify(next));
+      }
     }
     alert('提示词模板已删除');
   };
@@ -2014,6 +2101,12 @@ const Community = () => {
     if (String(template.id).startsWith('mock-')) return;
     const templateId = String(template.id); // 统一转成 string 处理
     const isLiked = likedTemplateIds.includes(templateId);
+    log.info('Toggling template like', {
+      templateId,
+      isGuest: isActiveGuest,
+      nextLiked: !isLiked,
+      userId: user?.id,
+    });
 
     // 游客模式：只更新本地状态，不写数据库，但保存到localStorage
     if (isActiveGuest) {
@@ -2032,6 +2125,12 @@ const Community = () => {
       setGuestTemplateLikesDelta(nextDelta);
       writeJsonToStorage('likedTemplates', nextLikedIds);
       writeJsonToStorage('guestTemplateLikesDelta', nextDelta);
+      log.success('Guest template like state persisted locally', {
+        templateId,
+        nextLiked: !isLiked,
+        likedCount: nextLikedIds.length,
+      });
+      flushLogs();
       return;
     }
 
@@ -2043,7 +2142,11 @@ const Community = () => {
         .delete()
         .eq('template_id', template.id)
         .eq('user_id', user!.id);
-      if (error) return;
+      if (error) {
+        log.error('Failed to unlike template', { templateId, userId: user!.id, error: error.message }, error);
+        flushLogs();
+        return;
+      }
 
       setLikedTemplateIds((prev) => prev.filter((id) => id !== templateId));
       setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes: Math.max((t.likes || 0) - 1, 0) } : t)));
@@ -2057,12 +2160,18 @@ const Community = () => {
         const likes = Number((latest as any)?.likes ?? 0);
         setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes } : t)));
       }
+      log.success('Template unliked', { templateId, userId: user!.id });
+      flushLogs();
     } else {
       const { error } = await supabase.from('template_likes').insert({
         template_id: template.id,
         user_id: user!.id,
       } as any);
-      if (error) return;
+      if (error) {
+        log.error('Failed to like template', { templateId, userId: user!.id, error: error.message }, error);
+        flushLogs();
+        return;
+      }
 
       setLikedTemplateIds((prev) => [...prev, templateId]);
       setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes: (t.likes || 0) + 1 } : t)));
@@ -2076,6 +2185,8 @@ const Community = () => {
         const likes = Number((latest as any)?.likes ?? 0);
         setResources((prev) => prev.map((t) => (String(t.id) === templateId ? { ...t, likes } : t)));
       }
+      log.success('Template liked', { templateId, userId: user!.id });
+      flushLogs();
     }
   };
 
@@ -2084,6 +2195,12 @@ const Community = () => {
     if (String(template.id).startsWith('mock-')) return;
     const templateId = String(template.id); // 统一转成 string 处理
     const isCollected = collectedTemplateIds.includes(templateId);
+    log.info('Toggling template collect', {
+      templateId,
+      isGuest: isActiveGuest,
+      nextCollected: !isCollected,
+      userId: user?.id,
+    });
 
     // 游客模式：只更新本地状态，不写数据库，但保存到localStorage
     if (isActiveGuest) {
@@ -2095,6 +2212,12 @@ const Community = () => {
       }
       setCollectedTemplateIds(nextCollectedIds);
       writeJsonToStorage('collectedTemplates', nextCollectedIds);
+      log.success('Guest template collect state persisted locally', {
+        templateId,
+        nextCollected: !isCollected,
+        collectedCount: nextCollectedIds.length,
+      });
+      flushLogs();
       return;
     }
 
@@ -2106,17 +2229,29 @@ const Community = () => {
         .delete()
         .eq('template_id', template.id)
         .eq('user_id', user!.id);
-      if (error) return;
+      if (error) {
+        log.error('Failed to uncollect template', { templateId, userId: user!.id, error: error.message }, error);
+        flushLogs();
+        return;
+      }
 
       setCollectedTemplateIds((prev) => prev.filter((id) => id !== templateId));
+      log.success('Template uncollected', { templateId, userId: user!.id });
+      flushLogs();
     } else {
       const { error } = await supabase.from('user_templates').insert({
         template_id: template.id,
         user_id: user!.id,
       } as any);
-      if (error) return;
+      if (error) {
+        log.error('Failed to collect template', { templateId, userId: user!.id, error: error.message }, error);
+        flushLogs();
+        return;
+      }
 
       setCollectedTemplateIds((prev) => [...prev, templateId]);
+      log.success('Template collected', { templateId, userId: user!.id });
+      flushLogs();
     }
   };
 
@@ -2158,6 +2293,11 @@ const Community = () => {
   const openTemplatePreview = (template: Template) => {
     const normalized = getNormalizedTemplateStructure(template);
     const nextViews = (template.views ?? 0) + 1;
+    log.info('Opening template preview', {
+      templateId: template.id,
+      isGuest: isActiveGuest,
+      nextViews,
+    });
     setPreviewTemplate({ ...template, views: nextViews });
     setPreviewStructure(normalized);
 
@@ -2168,9 +2308,11 @@ const Community = () => {
         const nextDelta = { ...guestTemplateViewsDelta, [templateId]: (guestTemplateViewsDelta[templateId] || 0) + 1 };
         setGuestTemplateViewsDelta(nextDelta);
         writeJsonToStorage('guestTemplateViewsDelta', nextDelta);
+        log.success('Guest template view delta persisted locally', { templateId, viewsDelta: nextDelta[templateId] });
       }
       void incrementTemplateViews(template);
     }
+    flushLogs();
 
     const folderInit: Record<string, boolean> = {};
     const firstSelectable: string | null = (() => {
@@ -2248,6 +2390,11 @@ const Community = () => {
 
     if (!isDbSkillTemplate(skill)) {
       const isLiked = likedOfficialSkillIds.includes(skill.id);
+      log.info('Toggling official skill like locally', {
+        skillId: skill.id,
+        nextLiked: !isLiked,
+        isGuest: isGuestUser(user),
+      });
       setLikedOfficialSkillIds((prev) => (isLiked ? prev.filter((id) => id !== skill.id) : [...prev, skill.id]));
       setOfficialSkillMetrics((prev) => {
         const current = prev[skill.id];
@@ -2264,10 +2411,17 @@ const Community = () => {
       setPreviewSkill((prev) =>
         prev && prev.id === skill.id ? { ...prev, likes: Math.max((prev.likes ?? 0) + (isLiked ? -1 : 1), 0) } : prev
       );
+      flushLogs();
       return;
     }
 
     const isLiked = likedSkillIds.includes(skill.id);
+    log.info('Toggling skill template like', {
+      skillId: skill.id,
+      isGuest: isGuestUser(user),
+      nextLiked: !isLiked,
+      userId: user?.id,
+    });
 
     // 游客模式：只更新本地状态，不写数据库
     if (isGuestUser(user)) {
@@ -2280,6 +2434,8 @@ const Community = () => {
         setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, likes: (s.likes ?? 0) + 1 } : s)));
         setPreviewSkill((prev) => (prev && prev.id === skill.id ? { ...prev, likes: (prev.likes ?? 0) + 1 } : prev));
       }
+      log.success('Guest skill like state persisted locally', { skillId: skill.id, nextLiked: !isLiked });
+      flushLogs();
       return;
     }
 
@@ -2291,7 +2447,11 @@ const Community = () => {
         .delete()
         .eq('skill_template_id', skill.id)
         .eq('user_id', user!.id);
-      if (error) return;
+      if (error) {
+        log.error('Failed to unlike skill template', { skillId: skill.id, userId: user!.id, error: error.message }, error);
+        flushLogs();
+        return;
+      }
       setLikedSkillIds((prev) => prev.filter((id) => id !== skill.id));
       setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, likes: Math.max((s.likes ?? 0) - 1, 0) } : s)));
       setPreviewSkill((prev) => (prev && prev.id === skill.id ? { ...prev, likes: Math.max((prev.likes ?? 0) - 1, 0) } : prev));
@@ -2306,6 +2466,8 @@ const Community = () => {
         setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, likes } : s)));
         setPreviewSkill((prev) => (prev && prev.id === skill.id ? { ...prev, likes } : prev));
       }
+      log.success('Skill template unliked', { skillId: skill.id, userId: user!.id });
+      flushLogs();
       return;
     }
 
@@ -2313,7 +2475,11 @@ const Community = () => {
       skill_template_id: skill.id,
       user_id: user!.id,
     } as any);
-    if (error) return;
+    if (error) {
+      log.error('Failed to like skill template', { skillId: skill.id, userId: user!.id, error: error.message }, error);
+      flushLogs();
+      return;
+    }
     setLikedSkillIds((prev) => [...prev, skill.id]);
     setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, likes: (s.likes ?? 0) + 1 } : s)));
     setPreviewSkill((prev) => (prev && prev.id === skill.id ? { ...prev, likes: (prev.likes ?? 0) + 1 } : prev));
@@ -2328,6 +2494,8 @@ const Community = () => {
       setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? { ...s, likes } : s)));
       setPreviewSkill((prev) => (prev && prev.id === skill.id ? { ...prev, likes } : prev));
     }
+    log.success('Skill template liked', { skillId: skill.id, userId: user!.id });
+    flushLogs();
   };
 
   const handleCopySkillPrompt = async (skill: Skill) => {
@@ -2339,7 +2507,7 @@ const Community = () => {
     }
   };
 
-  const handleImportSkillToPrompts = (skill: Skill, e?: React.MouseEvent) => {
+  const handleImportSkillToPrompts = async (skill: Skill, e?: React.MouseEvent) => {
     e?.stopPropagation();
     const categoryLabel = skillCategories.find((c) => c.id === skill.category)?.label || '其他/自定义';
     const id = `community-skill-${skill.id}`;
@@ -2350,23 +2518,59 @@ const Community = () => {
       index: categoryLabel,
       tags: [],
       content: skill.prompt_text || '',
+      sourceSkillTemplateId: isDbSkillTemplate(skill) ? skill.id : null,
     };
-    if (existing) {
-      if (existing.content !== payload.content || existing.index !== payload.index) {
-        if (!confirm('该提示词已导入过，是否覆盖更新？')) return;
+
+    try {
+      if (user && !isGuestUser(user)) {
+        if (existing) {
+          if (existing.content !== payload.content || existing.index !== payload.index) {
+            if (!confirm('该指令已导入过，是否覆盖更新？')) return;
+          }
+          const saved = await updateUserPrompt(user.id, existing.id, payload);
+          updatePrompt(existing.id, saved);
+          alert('已更新到你的指令工坊');
+          return;
+        }
+        const saved = await createUserPrompt(user.id, {
+          title: payload.title,
+          index: payload.index,
+          tags: payload.tags,
+          content: payload.content,
+          sourceSkillTemplateId: payload.sourceSkillTemplateId,
+        });
+        addPrompt(saved);
+        alert('已导入到你的指令工坊');
+        return;
       }
-      updatePrompt(id, payload);
-      alert('已更新到你的提示词库');
-      return;
+
+      if (existing) {
+        if (existing.content !== payload.content || existing.index !== payload.index) {
+          if (!confirm('该指令已导入过，是否覆盖更新？')) return;
+        }
+        updatePrompt(id, payload);
+        alert('已更新到你的指令工坊');
+        return;
+      }
+      addPrompt(payload);
+      alert('已导入到你的指令工坊');
+    } catch (error) {
+      log.error('Failed to import skill to prompts', { skillId: skill.id, userId: user?.id }, error);
+      alert(error instanceof Error ? error.message : '导入失败，请稍后重试');
+      flushLogs();
     }
-    addPrompt(payload);
-    alert('已导入到你的提示词库');
   };
 
   const openSkillPreview = (skill: Skill) => {
     const base = getSkillMetrics(skill);
+    log.info('Opening skill preview', {
+      skillId: skill.id,
+      isGuest: isGuestUser(user),
+      nextUses: base.uses + 1,
+    });
     setPreviewSkill({ ...skill, likes: base.likes, uses: base.uses + 1 });
     void incrementSkillUses(skill);
+    flushLogs();
   };
 
   const closeSkillPreview = () => {
@@ -2374,6 +2578,12 @@ const Community = () => {
   };
 
   const handleUseTemplate = async (template: Template) => {
+    log.info('Use template requested', {
+      templateId: template.id,
+      title: template.title,
+      isGuest: isGuestUser(user),
+      userId: user?.id,
+    });
     // 游客限制：最多创建10个作品
     if (isGuestUser(user)) {
       const currentWorks = files[0]?.children?.filter((c: FileNode) => c.type === 'folder') || [];
@@ -2452,6 +2662,11 @@ const Community = () => {
                 newNode.name = `${newNode.name}${Math.floor(Math.random() * 1000)}`;
             }
             addNode(newNode);
+            log.info('Template copied into workspace tree', {
+              templateId: template.id,
+              newWorkId: workId,
+              isGuest: isGuestUser(user),
+            });
 
             const persistMindMapSeedsToLocal = (node: any) => {
               if (!node) return;
@@ -2476,6 +2691,11 @@ const Community = () => {
                 await persistWorkTree(user.id, newNode as any);
                 const nextFiles = await loadWorkspaceTree(user.id);
                 setFiles(nextFiles as FileNode[]);
+                log.success('Template work persisted for logged-in user', {
+                  templateId: template.id,
+                  userId: user.id,
+                  newWorkId: workId,
+                });
             }
             alert('模板已应用到工作区！');
             
@@ -2488,6 +2708,12 @@ const Community = () => {
                 );
               }
             }
+            log.success('Template applied to workspace', {
+              templateId: template.id,
+              newWorkId: workId,
+              isGuest: isGuestUser(user),
+            });
+            flushLogs();
         }
     }
   };
@@ -2594,7 +2820,7 @@ const Community = () => {
     <div className="h-full min-h-0 bg-gray-50 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-8 py-6 shrink-0">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">创作社区</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">模版广场</h1>
         <p className="text-gray-500 text-sm">发现优质创作模板和提示词，激发你的写作灵感</p>
       </div>
 

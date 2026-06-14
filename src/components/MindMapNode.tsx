@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useContext } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { MindMapContext } from './MindMapEditor';
 
-const CONTENT_WRAP_CHARS = 18;
+const CONTENT_WRAP_CHARS = 24;
 
 const wrapTextByChars = (text: string, charsPerLine: number) => {
   if (!text) return '';
@@ -179,11 +179,56 @@ const MindMapNodeInner = React.memo(({
     }
   };
 
-  const themeStyles: Record<string, { rootBg: string; nodeBg: string; text: string; border: string }> = {
-    dark: { rootBg: 'bg-gradient-to-r from-blue-600 to-indigo-600', nodeBg: 'bg-white', text: 'text-gray-900', border: 'border-slate-200/90' },
-    light: { rootBg: 'bg-gradient-to-r from-blue-500 to-cyan-500', nodeBg: 'bg-white', text: 'text-gray-900', border: 'border-slate-200/90' },
-    beige: { rootBg: 'bg-gradient-to-r from-orange-400 to-amber-500', nodeBg: 'bg-[#fffbeb]', text: 'text-amber-900', border: 'border-orange-200/90' },
-    green: { rootBg: 'bg-gradient-to-r from-green-500 to-emerald-600', nodeBg: 'bg-[#f0fdf4]', text: 'text-green-900', border: 'border-green-200/90' },
+  const themeStyles: Record<string, {
+    rootBg: string;
+    nodeBg: string;
+    text: string;
+    border: string;
+    selected: string;
+    shadow: string;
+    selectedShadow: string;
+    handle: string;
+  }> = {
+    dark: {
+      rootBg: 'bg-blue-600',
+      nodeBg: 'bg-white',
+      text: 'text-slate-900',
+      border: 'border-slate-200/90',
+      selected: 'ring-1 ring-blue-400 border-blue-400',
+      shadow: 'shadow-[0_3px_10px_rgba(15,23,42,0.12)]',
+      selectedShadow: 'shadow-[0_6px_18px_rgba(37,99,235,0.22)]',
+      handle: '!bg-slate-400',
+    },
+    light: {
+      rootBg: 'bg-slate-700',
+      nodeBg: 'bg-white',
+      text: 'text-slate-800',
+      border: 'border-slate-200',
+      selected: 'ring-1 ring-slate-500 border-slate-500',
+      shadow: 'shadow-[0_4px_12px_rgba(15,23,42,0.10)]',
+      selectedShadow: 'shadow-[0_6px_18px_rgba(71,85,105,0.18)]',
+      handle: '!bg-slate-400',
+    },
+    beige: {
+      rootBg: 'bg-[#8a6f4d]',
+      nodeBg: 'bg-[#fffaf0]',
+      text: 'text-stone-800',
+      border: 'border-stone-200',
+      selected: 'ring-1 ring-[#8a6f4d] border-[#8a6f4d]',
+      shadow: 'shadow-[0_4px_12px_rgba(120,85,40,0.10)]',
+      selectedShadow: 'shadow-[0_6px_18px_rgba(120,85,40,0.18)]',
+      handle: '!bg-[#8a6f4d]',
+    },
+    green: {
+      rootBg: 'bg-[#3f7d62]',
+      nodeBg: 'bg-white',
+      text: 'text-slate-800',
+      border: 'border-emerald-100',
+      selected: 'ring-1 ring-[#3f7d62] border-[#3f7d62]',
+      shadow: 'shadow-[0_4px_12px_rgba(28,83,62,0.10)]',
+      selectedShadow: 'shadow-[0_6px_18px_rgba(28,83,62,0.18)]',
+      handle: '!bg-[#3f7d62]',
+    },
   };
 
   const currentStyle = themeStyles[theme] || themeStyles.dark;
@@ -193,11 +238,11 @@ const MindMapNodeInner = React.memo(({
   const isNodeSelected = !isLocked && (selected || isAiActive || isMultiSelected);
 
   const borderColor = isNodeSelected
-    ? 'ring-1 ring-purple-500 border-purple-500'
+    ? currentStyle.selected
     : (isRoot ? 'border-transparent' : currentStyle.border);
   const shadow = isNodeSelected
-    ? 'shadow-md shadow-purple-500/20'
-    : 'shadow-[0_3px_10px_rgba(15,23,42,0.12)]';
+    ? currentStyle.selectedShadow
+    : currentStyle.shadow;
 
   const contentPreview = isEditing ? content.trim() : (typeof data.content === 'string' ? data.content.trim() : '');
   const wrappedPreview = wrapTextByChars(contentPreview, CONTENT_WRAP_CHARS);
@@ -208,17 +253,17 @@ const MindMapNodeInner = React.memo(({
     ? 'rounded-2xl'
     : 'rounded-xl';
   const sizeClass = isRoot
-    ? 'min-w-[72px] max-w-[160px] px-2 py-[3px]'
+    ? 'min-w-[64px] max-w-[148px] px-1.5 py-[2px]'
     : shouldExpandWidth
-      ? `min-w-[84px] max-w-[240px] px-2 ${shouldExpandHeight ? 'py-1.5' : 'py-[5px]'}`
-      : 'min-w-[64px] max-w-[128px] px-1.5 py-[3px]';
+      ? `min-w-[88px] max-w-[320px] px-2 ${shouldExpandHeight ? 'py-1' : 'py-[4px]'}`
+      : 'min-w-[56px] max-w-[116px] px-1.5 py-[2px]';
 
   return (
     <div
       className={`relative flex flex-col justify-center ${shapeClass} text-center transition-all duration-300 group border ${sizeClass} ${bgColor} ${borderColor} ${shadow}`}
       title="双击可编辑节点标题"
     >
-      <Handle type="target" position={Position.Left} isConnectable={isConnectable} className="!bg-slate-400 !w-[2px] !h-[2px] !border !border-white/90" />
+      <Handle type="target" position={Position.Left} isConnectable={isConnectable} className={`${currentStyle.handle} !w-[2px] !h-[2px] !border !border-white/90`} />
 
       <div 
         className="flex-1 flex flex-col justify-center items-center w-full h-full"
@@ -242,7 +287,7 @@ const MindMapNodeInner = React.memo(({
                   }
                 }, 0);
               }}
-              className={`w-full bg-transparent outline-none text-center font-semibold text-[11px] leading-[14px] tracking-normal p-0 m-0 border-none relative z-10 ${textColor}`}
+              className={`w-full bg-transparent outline-none text-center font-semibold text-[10px] leading-[13px] tracking-normal p-0 m-0 border-none relative z-10 ${textColor}`}
               placeholder=""
             />
             <textarea
@@ -262,7 +307,7 @@ const MindMapNodeInner = React.memo(({
                 }, 0);
               }}
               className={`w-full bg-transparent outline-none text-center resize-none overflow-hidden break-words p-0 m-0 border-none ${textColor} ${
-                content.length > 30 ? 'text-[9px] leading-[12px]' : 'text-[10px] leading-[13px]'
+                content.length > 30 ? 'text-[8.5px] leading-[11px]' : 'text-[9px] leading-[12px]'
               } ${
                 !content 
                   ? 'absolute bottom-0 left-0 h-[10px] opacity-0 cursor-text focus:relative focus:mt-0.5 focus:h-auto focus:opacity-100 z-20' 
@@ -275,12 +320,12 @@ const MindMapNodeInner = React.memo(({
           </div>
         ) : (
           <div className="flex-1 flex flex-col justify-center items-center w-full">
-            <div className={`font-semibold text-[11px] select-none break-words leading-[14px] tracking-normal ${textColor}`}>
+            <div className={`font-semibold text-[10px] select-none break-words leading-[13px] tracking-normal ${textColor}`}>
               {data.label}
             </div>
             {wrappedPreview && (
               <div className={`opacity-75 whitespace-pre-wrap break-words text-center mt-0.5 ${textColor} ${
-                contentPreview.length > 30 ? 'text-[9px] leading-[12px]' : 'text-[10px] leading-[13px]'
+                contentPreview.length > 30 ? 'text-[8.5px] leading-[11px]' : 'text-[9px] leading-[12px]'
               }`}>
                 {wrappedPreview}
               </div>
@@ -289,7 +334,7 @@ const MindMapNodeInner = React.memo(({
         )}
       </div>
 
-      <Handle type="source" position={Position.Right} isConnectable={isConnectable} className="!bg-slate-400 !w-[2px] !h-[2px] !border !border-white/90" />
+      <Handle type="source" position={Position.Right} isConnectable={isConnectable} className={`${currentStyle.handle} !w-[2px] !h-[2px] !border !border-white/90`} />
     </div>
   );
 });

@@ -5,6 +5,10 @@ import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useTrashStore } from '@/store/useTrashStore';
 import { useToastStore } from '@/store/useToastStore';
 import Pagination from '@/components/Pagination';
+import { createUserPrompt, deleteUserPrompt, loadUserPrompts, updateUserPrompt } from '@/lib/promptPersistence';
+import { createLogger, flushLogs } from '@/lib/logger';
+
+const log = createLogger('Prompts');
 
 const CATEGORY_ITEMS = [
   { id: 'ai_role', label: 'AI角色扮演' },
@@ -44,6 +48,8 @@ const Prompts = () => {
   const [previewPrompt, setPreviewPrompt] = useState<Prompt | null>(null);
   const [page, setPage] = useState(1);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [loadingPrompts, setLoadingPrompts] = useState(false);
+  const [savingPrompt, setSavingPrompt] = useState(false);
 
   // Modal State
   const [titleInput, setTitleInput] = useState('');
@@ -60,47 +66,41 @@ const Prompts = () => {
   // Copy state
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // 监听用户状态变化，加载预设提示词（只在非游客模式且没有提示词时）
   useEffect(() => {
-    if (!user) return;
-    const isGuest = isGuestUser(user);
-    // 导入 initialPrompts 从 usePromptStore
-    // 让我们先在这里创建一个引用！让我修改一下，直接在这里定义初始提示词
-    const DEFAULT_PROMPTS: any[] = [
-      {
-        id: '1',
-        index: '作家',
-        title: '角色设定',
-        tags: ['职业'],
-        content: '你是一个经验丰富的作家，擅长描写细腻的情感和宏大的场面。请帮我构思一个...'
-      },
-      {
-        id: '2',
-        index: '短篇小说作家',
-        title: '短篇',
-        tags: ['快节奏'],
-        content: '请以欧·亨利的风格写一篇反转结局的短篇小说，主题是...'
-      },
-      {
-        id: '3',
-        index: '创建一个角色',
-        title: '角色卡',
-        tags: ['详细设定'],
-        content: '请详细设计一个反派角色，包含姓名、外貌、性格缺陷、核心动机和不为人知的秘密...'
-      },
-      {
-        id: '4',
-        index: '对标',
-        title: '风格模仿',
-        tags: ['练笔'],
-        content: '请模仿鲁迅的笔触，描写一段关于...'
-      }
-    ];
-    
-    if (!isGuest && prompts.length === 0) {
-      setPrompts(DEFAULT_PROMPTS);
+    if (!user) {
+      setPrompts([]);
+      return;
     }
-  }, [user, prompts.length, setPrompts]);
+    if (isGuestUser(user)) {
+      log.info('Using local prompts for guest user', { count: prompts.length });
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setLoadingPrompts(true);
+      try {
+        const data = await loadUserPrompts(user.id);
+        if (!cancelled) {
+          setPrompts(data);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          addToast('加载指令失败，请稍后重试', 'error');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingPrompts(false);
+          flushLogs();
+        }
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, setPrompts, addToast]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -216,7 +216,7 @@ const Prompts = () => {
   const safePage = Math.min(page, totalPages);
   const pagedPrompts = filteredPrompts.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const title = titleInput.trim();
     const index = indexInput.trim();
     const content = contentInput.trim();
@@ -238,35 +238,73 @@ const Prompts = () => {
       title,
       index,
       tags: tagInput.split(' ').filter((t) => t),
-      content
+      content,
+      sourceSkillTemplateId: editingPrompt?.sourceSkillTemplateId || null,
     };
 
-    if (editingPrompt) {
-      updatePrompt(editingPrompt.id, newPrompt);
-    } else {
-      addPrompt(newPrompt);
+    setSavingPrompt(true);
+    try {
+      if (user && !isGuestUser(user)) {
+        if (editingPrompt) {
+          const saved = await updateUserPrompt(user.id, editingPrompt.id, newPrompt);
+          updatePrompt(editingPrompt.id, saved);
+          addToast('指令已保存', 'success');
+        } else {
+          const saved = await createUserPrompt(user.id, newPrompt);
+          addPrompt(saved);
+          addToast('指令已新增', 'success');
+        }
+      } else if (editingPrompt) {
+        updatePrompt(editingPrompt.id, newPrompt);
+        addToast('指令已保存到本地', 'success');
+      } else {
+        addPrompt(newPrompt);
+        addToast('指令已新增到本地', 'success');
+      }
+      log.success('Prompt saved from Prompts page', {
+        promptId: newPrompt.id,
+        isGuest: isGuestUser(user),
+        editing: Boolean(editingPrompt),
+      });
+      setIsModalOpen(false);
+    } catch (error) {
+      log.error('Failed to save prompt from Prompts page', { promptId: newPrompt.id }, error);
+      addToast(error instanceof Error ? error.message : '保存指令失败', 'error');
+    } finally {
+      setSavingPrompt(false);
+      flushLogs();
     }
-    setIsModalOpen(false);
   };
 
   const handleDelete = (id: string) => {
     setConfirmDeleteId(id);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!confirmDeleteId) return;
     const promptToDelete = prompts.find((p) => p.id === confirmDeleteId);
     if (promptToDelete) {
       const trashTitle = (promptToDelete.title || '').trim() || promptToDelete.tags?.[0] || promptToDelete.index;
-      addToTrash({
-        originalId: confirmDeleteId,
-        type: 'prompt',
-        title: trashTitle,
-        content: promptToDelete,
-      });
-      removePrompt(confirmDeleteId);
-      if (previewPrompt?.id === confirmDeleteId) {
-        setPreviewPrompt(null);
+      try {
+        await addToTrash({
+          originalId: confirmDeleteId,
+          type: 'prompt',
+          title: trashTitle,
+          content: promptToDelete,
+        });
+        if (user && !isGuestUser(user)) {
+          await deleteUserPrompt(user.id, confirmDeleteId);
+        }
+        removePrompt(confirmDeleteId);
+        if (previewPrompt?.id === confirmDeleteId) {
+          setPreviewPrompt(null);
+        }
+        addToast('指令已移入废稿箱', 'success');
+      } catch (error) {
+        log.error('Failed to delete prompt', { promptId: confirmDeleteId }, error);
+        addToast(error instanceof Error ? error.message : '删除指令失败，请稍后重试', 'error');
+        flushLogs();
+        return;
       }
     }
     setConfirmDeleteId(null);
@@ -286,19 +324,19 @@ const Prompts = () => {
     <div className="h-full min-h-0 bg-gray-50 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="p-6 border-b border-gray-200 bg-white shrink-0">
-        <h1 className="text-xl font-bold text-gray-800 mb-4">我的提示词库</h1>
+        <h1 className="text-xl font-bold text-gray-800 mb-4">指令工坊</h1>
         
         <div className="flex items-center justify-between">
           <div className="flex-1 bg-green-50 border border-green-100 rounded-lg p-3 flex items-center text-sm text-green-700 mr-4">
             <Info className="w-4 h-4 mr-2 text-green-600" />
-            你可以在创作社区一键导入喜欢的提示词到这里；AI 创作时也可以直接从“我的提示词库”选择。
+            你可以在模版广场一键导入喜欢的指令到这里；AI 创作时也可以直接从“指令工坊”选择。
           </div>
           <button 
             onClick={() => handleOpenModal()}
             className="flex items-center px-5 py-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 shadow-sm hover:shadow-md transition-all font-medium"
           >
             <Plus className="w-4.5 h-4.5 mr-2" />
-            新增提示词
+            新增指令
           </button>
         </div>
       </div>
@@ -328,8 +366,10 @@ const Prompts = () => {
       <div className="flex-1 min-h-0 flex flex-col bg-gray-50">
         {/* 列表滚动区 */}
         <div className="flex-1 min-h-0 overflow-y-auto p-6 pb-2">
-          {filteredPrompts.length === 0 ? (
-            <div className="text-center py-20 text-gray-400">暂无提示词</div>
+          {loadingPrompts ? (
+            <div className="text-center py-20 text-gray-400">正在加载指令...</div>
+          ) : filteredPrompts.length === 0 ? (
+            <div className="text-center py-20 text-gray-400">暂无指令</div>
           ) : (
             <div className="flex flex-col gap-2.5">
             {pagedPrompts.map((prompt) => {
@@ -434,7 +474,7 @@ const Prompts = () => {
           <div className="bg-white rounded-xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh]">
             <div className="flex justify-between items-center p-6 border-b border-gray-100">
               <h2 className="text-lg font-bold text-gray-900">
-                {editingPrompt ? '修改提示词' : '新增提示词'}
+                {editingPrompt ? '修改指令' : '新增指令'}
               </h2>
               <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-gray-600">
                 <X className="w-5 h-5" />
@@ -451,7 +491,7 @@ const Prompts = () => {
                     type="text"
                     value={titleInput}
                     onChange={(e) => setTitleInput(e.target.value)}
-                    placeholder="请输入提示词标题（用于列表展示）"
+                    placeholder="请输入指令标题（用于列表展示）"
                     className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none text-sm"
                   />
                 </div>
@@ -529,20 +569,20 @@ const Prompts = () => {
                       ))}
                     </div>
                   )}
-                  <p className="text-xs text-gray-400 mt-1">更细分的提示词标签，支持多个，用空格分隔</p>
+                  <p className="text-xs text-gray-400 mt-1">更细分的指令标签，支持多个，用空格分隔</p>
                 </div>
               </div>
 
               {/* Content Input */}
               <div className="flex items-start">
                 <label className="w-24 text-right mr-4 text-sm font-medium text-gray-600 mt-2">
-                  <span className="text-red-500 mr-1">*</span>提示词：
+                  <span className="text-red-500 mr-1">*</span>指令：
                 </label>
                 <div className="flex-1 relative">
                   <textarea 
                     value={contentInput}
                     onChange={(e) => setContentInput(e.target.value)}
-                    placeholder="请输入详细的提示词内容..."
+                    placeholder="请输入详细的指令内容..."
                     className="w-full h-64 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none text-sm resize-none"
                   />
                   <div className="absolute bottom-3 right-3 flex space-x-2">
@@ -564,9 +604,10 @@ const Prompts = () => {
               </button>
               <button 
                 onClick={handleSave}
+                disabled={savingPrompt}
                 className="px-6 py-2 bg-black text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors"
               >
-                {editingPrompt ? '保存修改' : '新增'}
+                {savingPrompt ? '保存中...' : editingPrompt ? '保存修改' : '新增'}
               </button>
             </div>
           </div>
@@ -633,8 +674,8 @@ const Prompts = () => {
             className="bg-white rounded-xl w-full max-w-md shadow-2xl p-6"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="text-lg font-bold text-gray-900">确定要删除这个提示词吗？</div>
-            <div className="text-sm text-gray-600 mt-2">删除后将进入回收站，可在回收站恢复。</div>
+            <div className="text-lg font-bold text-gray-900">确定要删除这个指令吗？</div>
+            <div className="text-sm text-gray-600 mt-2">删除后将进入废稿箱，可在废稿箱恢复。</div>
             <div className="flex justify-end gap-3 mt-6">
               <button
                 onClick={cancelDelete}

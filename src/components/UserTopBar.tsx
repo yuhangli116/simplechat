@@ -14,14 +14,18 @@ import { getUserProfile, getRandomAvatar } from '@/utils/randomProfile';
 import { EditProfileModal } from '@/components/EditProfileModal';
 import { RechargeHistoryModal } from '@/components/RechargeHistoryModal';
 import { AboutUsModal } from '@/components/AboutUsModal';
+import { createLogger, flushLogs } from '@/lib/logger';
+
+const log = createLogger('UserTopBar');
 
 const UserTopBar = () => {
-  const { user, signOut, diamondBalance, profile: storeProfile } = useAuthStore();
+  const { user, beginSignOut, signOut, diamondBalance, profile: storeProfile } = useAuthStore();
   const navigate = useNavigate();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isRechargeHistoryOpen, setIsRechargeHistoryOpen] = useState(false);
   const [isAboutUsModalOpen, setIsAboutUsModalOpen] = useState(false);
+  const [dropdownRect, setDropdownRect] = useState<{ top: number; right: number } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const isGuest = isGuestUser(user);
@@ -56,18 +60,59 @@ const UserTopBar = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    if (!isDropdownOpen || !dropdownRef.current) return;
+
+    const updateDropdownPosition = () => {
+      const rect = dropdownRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setDropdownRect({
+        top: rect.bottom + 12,
+        right: Math.max(12, window.innerWidth - rect.right),
+      });
+    };
+
+    updateDropdownPosition();
+    window.addEventListener('resize', updateDropdownPosition);
+    window.addEventListener('scroll', updateDropdownPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateDropdownPosition);
+      window.removeEventListener('scroll', updateDropdownPosition, true);
+    };
+  }, [isDropdownOpen]);
+
   const handleLogout = async () => {
+    const startedAt = performance.now();
+    log.info('Logout button clicked', {
+      userId: user?.id,
+      isGuest,
+      path: window.location.pathname,
+    });
     setIsDropdownOpen(false);
-    // 等待 signOut 完成后再跳转，确保数据清理完毕
-    await signOut();
+    beginSignOut();
     navigate('/login', { replace: true });
+    flushLogs(true);
+    const signOutPromise = signOut();
+    await signOutPromise;
+    log.success('Logout flow completed', {
+      userId: user?.id,
+      isGuest,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+    flushLogs();
   };
 
   // 处理登录按钮点击：确保不管什么状态都能正确跳转到登录页面
   const handleLoginClick = async () => {
     if (isGuest) {
       // 如果是游客，先清理数据
-      await signOut();
+      log.info('Guest login button clicked, signing out guest before login', { userId: user?.id });
+      beginSignOut();
+      navigate('/login');
+      flushLogs(true);
+      const signOutPromise = signOut();
+      await signOutPromise;
+      return;
     }
     // 然后跳转到登录页
     navigate('/login');
@@ -165,7 +210,13 @@ const UserTopBar = () => {
 
       {/* Dropdown Menu */}
       {isDropdownOpen && (
-        <div className="absolute right-0 top-full mt-3 w-72 bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-[1101] transform origin-top-right">
+        <div
+          className="fixed w-72 bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-[9999] transform origin-top-right"
+          style={{
+            top: dropdownRect?.top ?? 72,
+            right: dropdownRect?.right ?? 24,
+          }}
+        >
           {/* Header */}
           <div className="p-5 bg-gradient-to-br from-purple-50/80 to-indigo-50/80 border-b border-gray-100">
             <div className="flex items-center gap-4">

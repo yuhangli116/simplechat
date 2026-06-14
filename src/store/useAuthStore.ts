@@ -12,6 +12,8 @@ const GUEST_DEFAULT_BALANCE = 0 // 游客不分配钻石
 const NEW_USER_DIAMOND_BONUS = 50000 // 新用户注册赠送5w钻石
 let inflightProfileUserId: string | null = null
 let inflightProfilePromise: Promise<void> | null = null
+const SLOW_AUTH_REQUEST_MS = 3000
+let pendingSignOutUser: User | null = null
 
 const getGuestBalance = (): number => {
   if (typeof window === 'undefined') return GUEST_DEFAULT_BALANCE
@@ -20,9 +22,10 @@ const getGuestBalance = (): number => {
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : GUEST_DEFAULT_BALANCE
 }
 
-// 判断当前用户是否为游客
+// 判断当前用户是否为游客。
+// 注意：null 表示登录态仍在恢复或未登录，不能当作游客；否则真实用户刷新 UUID 作品页会被误放行到游客态。
 export const isGuestUser = (user: User | null): boolean => {
-  if (!user) return true
+  if (!user) return false
   return typeof user.id === 'string' && user.id.startsWith('guest-')
 }
 
@@ -62,6 +65,9 @@ export const loadGuestSession = (): { guestId: string; createdAt: number } | nul
   }
 }
 
+// 给 Zustand persist 的早期 hydrate 使用：此时 auth.user 可能还没恢复，但游客 session 已在 sessionStorage 中。
+export const hasGuestSession = () => Boolean(loadGuestSession())
+
 export const clearGuestSession = () => {
   if (typeof window === 'undefined') return
   sessionStorage.removeItem(GUEST_SESSION_KEY)
@@ -74,10 +80,10 @@ const clearGuestData = () => {
 
   // 需要清理的 localStorage key 前缀和具体 key
   const keyPrefixesToRemove = [
-    'mindmap-',        // MindMapEditor 缓存: mindmap-${workId}-${type}, mindmap-${id}
-    'mindmap-theme-',  // MindMapEditor 主题: mindmap-theme-${workId}-${type}
-    'story-',          // StoryEditor 缓存: story-${workId}-${chapterId}, story-selected-model*
-    'view-',           // MindMapEditor 视图状态
+    'guest-mindmap-',        // MindMapEditor 游客缓存
+    'guest-mindmap-theme-',  // MindMapEditor 游客主题
+    'guest-story-',          // StoryEditor 游客缓存
+    'guest-view-',           // MindMapEditor 游客视图状态
   ]
   const exactKeysToRemove = [
     'collectedSkills',       // 社区收藏
@@ -97,6 +103,13 @@ const clearGuestData = () => {
     'trash-store',           // useTrashStore Zustand persist key
     'guest-trash-store',     // 游客 useTrashStore Zustand persist key
   ]
+  const isGuestScopedKey = (key: string) =>
+    key.startsWith('guest-') && (
+      key.includes('-mindmap-') ||
+      key.includes('-mindmap-theme-') ||
+      key.includes('-story-') ||
+      key.includes('-view-')
+    )
 
   let removedCount = 0
   try {
@@ -112,7 +125,8 @@ const clearGuestData = () => {
     // 然后再删除匹配的键
     const keysToRemove = allKeys.filter(key => 
       exactKeysToRemove.includes(key) || 
-      keyPrefixesToRemove.some(prefix => key.startsWith(prefix))
+      keyPrefixesToRemove.some(prefix => key.startsWith(prefix)) ||
+      isGuestScopedKey(key)
     )
 
     for (const key of keysToRemove) {
@@ -158,13 +172,16 @@ interface AuthState {
   session: Session | null;
   profile: Profile | null;
   loading: boolean;
+  signingOut: boolean;
   diamondBalance: number;
   setUser: (user: User | null) => void;
   setSession: (session: Session | null) => void;
   setProfile: (profile: Profile | null) => void;
+  setLoading: (loading: boolean) => void;
   setDiamondBalance: (balance: number) => void;
   fetchProfile: () => Promise<void>;
   fetchBalance: () => Promise<void>;
+  beginSignOut: () => void;
   signOut: () => Promise<void>;
 }
 
@@ -172,12 +189,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   session: null,
   profile: null,
-  loading: false, // Changed from true to false for faster dev load
+  loading: true,
+  signingOut: false,
   diamondBalance: 0,
   setUser: (user) => set({ user }),
   setSession: (session) => set({ session }),
   setProfile: (profile) => set({ profile }),
+  setLoading: (loading) => set({ loading }),
   setDiamondBalance: (balance) => set({ diamondBalance: balance }),
+  beginSignOut: () => {
+    const currentUser = get().user
+    pendingSignOutUser = currentUser
+    clearGuestSession()
+    log.info('Begin signOut transition', {
+      userId: currentUser?.id,
+      wasGuest: isGuestUser(currentUser),
+    })
+    set({ signingOut: true, user: null, session: null, profile: null, diamondBalance: 0 })
+  },
   fetchBalance: async () => {
     await get().fetchProfile();
   },
@@ -185,6 +214,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const { user } = get();
     // GUEST MODE: 游客不分配钻石
     if (!user || isGuestUser(user)) {
+        log.info('Using guest profile fallback', { userId: user?.id || null })
         set({
             profile: {
                 id: user?.id || 'guest',
@@ -208,12 +238,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     inflightProfileUserId = user.id
     inflightProfilePromise = (async () => {
       const profileFetchStartedAt = performance.now()
+      log.info('Fetching profile', { userId: user.id })
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.id)
         .maybeSingle();
-      console.log('[Auth Timing] fetchProfile query ms:', Math.round(performance.now() - profileFetchStartedAt))
+      const profileQueryMs = Math.round(performance.now() - profileFetchStartedAt)
+      if (profileQueryMs >= SLOW_AUTH_REQUEST_MS) {
+        log.warn('Slow profile fetch detected', { userId: user.id, durationMs: profileQueryMs })
+      }
         
       if (error) {
           log.error('Error fetching profile', { userId: user.id, error: error.message })
@@ -244,6 +278,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           }, 
           diamondBalance: effective.totalDiamonds || 0 
         });
+        log.success('Profile fetched', {
+          userId: user.id,
+          durationMs: Math.round(performance.now() - profileFetchStartedAt),
+          membershipType: effective.membershipType,
+        })
       } else {
         // Profile missing! Create it.
         log.info('Profile missing, creating new profile', { userId: user.id });
@@ -288,6 +327,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
                }, 
                diamondBalance: effective.totalDiamonds || 0 
              });
+             log.success('Missing profile created', {
+               userId: user.id,
+               durationMs: Math.round(performance.now() - profileFetchStartedAt),
+             })
         }
       }
     })().finally(() => {
@@ -298,9 +341,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return inflightProfilePromise
   },
   signOut: async () => {
-    const currentUser = get().user
+    const signOutStartedAt = performance.now()
+    const currentUser = get().user || pendingSignOutUser
     const wasGuest = isGuestUser(currentUser)
     log.info('User signing out', { wasGuest, userId: currentUser?.id })
+    set({ signingOut: true })
 
     // 先清理 localStorage 缓存（在 user 置空之前，确保能正确识别游客）
     if (wasGuest) {
@@ -327,9 +372,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       log.error('Failed to reset stores', { error: e })
     }
     try {
+      const remoteSignOutStartedAt = performance.now()
       await supabase.auth.signOut()
-    } catch {
+      log.success('Supabase signOut completed', {
+        wasGuest,
+        userId: currentUser?.id,
+        durationMs: Math.round(performance.now() - remoteSignOutStartedAt),
+      })
+    } catch (error) {
+      log.warn('Supabase signOut failed after local cleanup', {
+        wasGuest,
+        userId: currentUser?.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      pendingSignOutUser = null
+      set({ signingOut: false })
       return
     }
+    pendingSignOutUser = null
+    set({ signingOut: false })
+    log.success('User signOut completed', {
+      wasGuest,
+      userId: currentUser?.id,
+      durationMs: Math.round(performance.now() - signOutStartedAt),
+    })
   },
 }))

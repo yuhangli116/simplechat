@@ -27,6 +27,9 @@ import { ToastContainer } from '@/components/ToastContainer';
 import Records from '@/pages/Records';
 import { Validate } from '@/pages/placeholders';
 import { loadWorkspaceTree } from '@/lib/workspacePersistence';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('App');
 
 // Redirect helper for legacy routes
 const LegacyStoryRedirect = () => {
@@ -45,14 +48,28 @@ const findFirstWorkspacePath = (nodes: FileNode[]): string | null => {
 };
 
 const WorkspaceIndexRoute = () => {
-  const { user } = useAuthStore();
+  const { user, loading } = useAuthStore();
+  const location = useLocation();
   const { setFiles, files, createWorkInProgress } = useFileStore();
   const [fileStoreHydrated, setFileStoreHydrated] = React.useState(() => useFileStore.persist.hasHydrated());
   const [targetPath, setTargetPath] = React.useState<string | null>(null);
   const [resolved, setResolved] = React.useState(false);
 
-  // 游客模式：同步设置，避免闪烁
-  const isGuest = !user || isGuestUser(user);
+  const isGuest = Boolean(user && isGuestUser(user));
+  // 游客欢迎页只在“点击游客登录”的首次跳转展示。
+  // 后续从回收站/社区点击“我的作品”回到 /workspace 时，不带该 state，应自动进入第一个作品页。
+  const [showGuestWelcome] = React.useState(() =>
+    Boolean((location.state as { showGuestWelcome?: boolean } | null)?.showGuestWelcome)
+  );
+
+  React.useEffect(() => {
+    if (!showGuestWelcome || typeof window === 'undefined') return;
+    // 清除一次性 history state，避免刷新 /workspace 后反复停留在欢迎页。
+    const historyState = window.history.state;
+    if (historyState && typeof historyState === 'object' && 'usr' in historyState) {
+      window.history.replaceState({ ...historyState, usr: null }, '', window.location.href);
+    }
+  }, [showGuestWelcome]);
 
   React.useEffect(() => {
     if (useFileStore.persist.hasHydrated()) {
@@ -68,9 +85,14 @@ const WorkspaceIndexRoute = () => {
     let cancelled = false;
 
     const resolveTarget = async () => {
+      if (loading && !user) return;
+      if (!user) {
+        if (!cancelled) setResolved(true);
+        return;
+      }
       if (isGuest && !fileStoreHydrated) return;
 
-      // 游客模式：只在文件树为空时加载 demo 数据，避免覆盖游客新建的作品
+      // 游客模式：只在文件树为空时加载 demo 数据，避免覆盖游客刷新前已经创建/删除过的作品树。
       if (isGuest) {
         const currentFiles = useFileStore.getState().files;
         const hasWorks = currentFiles[0]?.children && currentFiles[0].children.length > 0;
@@ -78,20 +100,30 @@ const WorkspaceIndexRoute = () => {
           setFiles(JSON.parse(JSON.stringify(guestDemoFileStructure)));
         }
         if (!cancelled) {
-          const existingPath = findFirstWorkspacePath(useFileStore.getState().files);
-          setTargetPath(existingPath || '/workspace/p/book-1/story/1');
+          if (!showGuestWelcome) {
+            const existingPath = findFirstWorkspacePath(useFileStore.getState().files);
+            setTargetPath(existingPath || '/workspace/p/book-1/outline');
+          }
           setResolved(true);
         }
         return;
       }
 
       try {
-        const remoteTree = await loadWorkspaceTree(user.id);
+        const remoteTree = await withTimeout(
+          loadWorkspaceTree(user.id),
+          8000,
+          '加载工作区超时，已尝试使用本地缓存'
+        );
         if (cancelled) return;
         setFiles(remoteTree as FileNode[]);
         setTargetPath(findFirstWorkspacePath(remoteTree) || null);
       } catch (error) {
         console.error('Failed to resolve workspace entry:', error);
+        log.warn('Workspace entry fell back to local tree', {
+          userId: user.id,
+          reason: error instanceof Error ? error.message : String(error),
+        });
         if (!cancelled) {
           const localPath = findFirstWorkspacePath(useFileStore.getState().files);
           setTargetPath(localPath || null);
@@ -108,30 +140,34 @@ const WorkspaceIndexRoute = () => {
     return () => {
       cancelled = true;
     };
-  }, [setFiles, user, isGuest, fileStoreHydrated]);
+  }, [setFiles, user, loading, isGuest, showGuestWelcome, fileStoreHydrated]);
 
   if (targetPath) {
     return <Navigate to={targetPath} replace />;
   }
 
   if (!resolved) {
-    // 游客模式不应看到加载提示，直接显示欢迎信息
-    if (isGuest) {
-      return (
-        <div className="flex items-center justify-center h-full">
-          <div className="text-center max-w-md p-8">
-            <div className="w-16 h-16 mx-auto mb-4 bg-amber-100 rounded-full flex items-center justify-center">
-              <span className="text-2xl">👋</span>
-            </div>
-            <h2 className="text-xl font-semibold text-foreground mb-3">欢迎体验简单写作</h2>
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              当前正以游客身份访问网站，仅支持部分功能，注册登录后解锁全部功能，请开始体验吧！
-            </p>
-          </div>
-        </div>
-      );
-    }
     return <div className="p-6 text-sm text-muted-foreground">正在加载工作区...</div>;
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (isGuest && showGuestWelcome) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center max-w-md p-8">
+          <div className="w-16 h-16 mx-auto mb-4 bg-amber-100 rounded-full flex items-center justify-center">
+            <span className="text-2xl">👋</span>
+          </div>
+          <h2 className="text-xl font-semibold text-foreground mb-3">欢迎体验简单写作</h2>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            当前正以游客身份访问网站，仅支持部分功能，注册登录后解锁全部功能，请开始体验吧！
+          </p>
+        </div>
+      </div>
+    );
   }
 
   if (createWorkInProgress) {
@@ -171,17 +207,48 @@ const isUuid = (value?: string | null) => !!value && uuidPattern.test(value);
 
 const workAccessCache = new Map<string, boolean>();
 
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
+const hasLocalWork = (workId?: string | null) => {
+  if (!workId) return false;
+  const rootChildren = useFileStore.getState().files[0]?.children || [];
+  return rootChildren.some((node) => node.id === workId || Boolean(node.path?.includes(`/workspace/p/${workId}/`)));
+};
+
 const WorkAccessGuard = () => {
   const { workId } = useParams();
-  const { user } = useAuthStore();
+  const { user, loading } = useAuthStore();
   const [allowed, setAllowed] = React.useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     const resolve = async () => {
+      if (loading && !user) {
+        if (!cancelled) setAllowed(null);
+        return;
+      }
+
+      if (!user) {
+        if (!cancelled) setAllowed(false);
+        return;
+      }
+
       // 游客直接放行，不做数据库权限检查
-      if (!user || isGuestUser(user)) {
+      if (isGuestUser(user)) {
         if (!cancelled) setAllowed(true);
         return;
       }
@@ -200,22 +267,35 @@ const WorkAccessGuard = () => {
 
       setAllowed(null);
       try {
-        const { data, error } = await supabase
-          .from('works')
-          .select('id')
-          .eq('id', workId)
-          .eq('user_id', user.id)
-          .maybeSingle();
+        const { data, error } = await withTimeout(
+          Promise.resolve(
+            supabase
+              .from('works')
+              .select('id')
+              .eq('id', workId)
+              .eq('user_id', user.id)
+              .maybeSingle()
+          ),
+          6000,
+          '作品权限检查超时'
+        );
 
         const ok = Boolean(!error && data?.id);
         workAccessCache.set(cacheKey, ok);
         if (!cancelled) {
           setAllowed(ok);
         }
-      } catch {
-        workAccessCache.set(cacheKey, false);
+      } catch (error) {
+        const fallbackAllowed = hasLocalWork(workId);
+        workAccessCache.set(cacheKey, fallbackAllowed);
+        log.warn('Work access check fell back to local tree', {
+          userId: user.id,
+          workId,
+          allowed: fallbackAllowed,
+          reason: error instanceof Error ? error.message : String(error),
+        });
         if (!cancelled) {
-          setAllowed(false);
+          setAllowed(fallbackAllowed);
         }
       }
     };
@@ -225,13 +305,16 @@ const WorkAccessGuard = () => {
     return () => {
       cancelled = true;
     };
-  }, [user, workId]);
+  }, [user, loading, workId]);
 
   if (allowed === null) {
     return <div className="p-6 text-sm text-muted-foreground">正在加载作品...</div>;
   }
 
   if (!allowed) {
+    if (!user && !loading) {
+      return <Navigate to="/login" replace />;
+    }
     return <Navigate to="/workspace" replace />;
   }
 
@@ -240,13 +323,14 @@ const WorkAccessGuard = () => {
 
 // Placeholder Pages
 function App() {
-  const { setUser, setSession, setProfile, setDiamondBalance, fetchProfile } = useAuthStore();
+  const { setUser, setSession, setProfile, setLoading, setDiamondBalance, fetchProfile } = useAuthStore();
   const clearExpired = useTrashStore(state => state.clearExpired);
 
   useEffect(() => {
     const restoreGuestSession = () => {
       const guestSession = loadGuestSession();
       if (!guestSession) return false;
+      log.info('Restoring guest session', { guestId: guestSession.guestId });
       setSession(null);
       setUser(createGuestUser(guestSession.guestId));
       setProfile(createGuestProfile(guestSession.guestId));
@@ -255,42 +339,64 @@ function App() {
     };
 
     // Check active sessions and sets the user
+    setLoading(true);
     supabase.auth.getSession().then(({ data: { session } }: { data: { session: Session | null } }) => {
+      if (useAuthStore.getState().signingOut) {
+        log.info('Initial session restore skipped while signing out');
+        setLoading(false);
+        return;
+      }
       if (session?.user) {
+        log.info('Initial Supabase session restored', { userId: session.user.id });
         clearGuestSession();
         setSession(session);
         setUser(session.user);
         fetchProfile();
+        setLoading(false);
         return;
       }
       if (!restoreGuestSession()) {
+        log.info('No active session found on app load');
         setSession(null);
         setUser(null);
       }
+      setLoading(false);
+    }).catch((error: unknown) => {
+      log.error('Initial session restore failed', {}, error);
+      setSession(null);
+      setUser(null);
+      setLoading(false);
     });
 
     // Listen for changes on auth state (logged in, signed out, etc.)
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
+      log.info('Supabase auth state changed', { event: _event, userId: session?.user?.id || null });
+      if (useAuthStore.getState().signingOut) {
+        log.info('Auth state change skipped while signing out', { event: _event });
+        return;
+      }
       if (session?.user) {
         clearGuestSession();
         setSession(session);
         setUser(session.user);
         fetchProfile();
+        setLoading(false);
         return;
       }
       if (!restoreGuestSession()) {
         setSession(null);
         setUser(null);
       }
+      setLoading(false);
     });
 
     // Auto-clear expired trash items on app load
     void clearExpired();
 
     return () => subscription.unsubscribe();
-  }, [setUser, setSession, setProfile, setDiamondBalance, fetchProfile, clearExpired]);
+  }, [setUser, setSession, setProfile, setLoading, setDiamondBalance, fetchProfile, clearExpired]);
 
   return (
     <>

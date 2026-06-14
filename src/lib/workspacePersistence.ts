@@ -2,6 +2,7 @@ import { supabase } from '@/lib/supabase'
 import type { Edge, Node } from 'reactflow'
 import { v4 as uuidv4 } from 'uuid'
 import { createLogger } from '@/lib/logger'
+import { isGuestUser, useAuthStore } from '@/store/useAuthStore'
 
 const log = createLogger('Workspace')
 
@@ -70,6 +71,7 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const isUuid = (value?: string | null) => !!value && uuidPattern.test(value)
 const isMissingRelationError = (error: any) => error?.code === 'PGRST205'
 let mindMapsCapability: boolean | null = null
+const workspaceTreeInflight = new Map<string, Promise<WorkspaceFileNode[]>>()
 
 const getMindMapsCapability = () => mindMapsCapability
 
@@ -150,10 +152,15 @@ const readLocalMindMapContent = (node: WorkspaceFileNode) => {
     return node.savedMindMap
   }
 
+  const currentUser = useAuthStore.getState().user
+  const storageScope = currentUser && !isGuestUser(currentUser)
+    ? `user-${currentUser.id}`
+    : currentUser?.id || 'anonymous'
+
   if (node.path?.includes('/mindmap/')) {
     const recordId = node.path.split('/').pop()
     if (!recordId) return null
-    const saved = window.localStorage.getItem(`mindmap-${recordId}`)
+    const saved = window.localStorage.getItem(`${storageScope}-mindmap-${recordId}`)
     if (!saved) return null
     try {
       return JSON.parse(saved)
@@ -166,7 +173,7 @@ const readLocalMindMapContent = (node: WorkspaceFileNode) => {
   if (!workId) return null
   const route = node.path?.split('/').pop()
   const editorType = getEditorTypeFromRoute(route)
-  const saved = window.localStorage.getItem(`mindmap-${workId}-${editorType}`)
+  const saved = window.localStorage.getItem(`${storageScope}-mindmap-${workId}-${editorType}`)
   if (!saved) return null
 
   try {
@@ -360,21 +367,37 @@ const persistNestedNodes = async (
   }
 }
 
-export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNode[]> => {
+const loadWorkspaceTreeOnce = async (userId: string): Promise<WorkspaceFileNode[]> => {
+  const startedAt = performance.now()
   log.info('Loading workspace tree', { userId })
-  const canUseMindMaps = getMindMapsCapability() !== false
-  const mindMapsRequest = canUseMindMaps
-    ? supabase.from('mind_maps').select('*').order('created_at', { ascending: true })
-    : Promise.resolve({ data: [], error: null })
-
-  const [{ data: worksData, error: worksError }, { data: chaptersData, error: chaptersError }, { data: mindMapsData, error: mindMapsError }] =
-    await Promise.all([
-      supabase.from('works').select('*').eq('user_id', userId).order('created_at', { ascending: true }),
-      supabase.from('chapters').select('*').order('chapter_number', { ascending: true }),
-      mindMapsRequest,
-    ])
+  const { data: worksData, error: worksError } = await supabase
+    .from('works')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: true })
 
   if (worksError) throw worksError
+
+  const works = (worksData || []) as WorkRow[]
+  const workIds = works.map((work) => work.id)
+  if (workIds.length === 0) {
+    log.success('Workspace tree loaded', { userId, workCount: 0, chapterCount: 0, mindMapCount: 0, durationMs: Math.round(performance.now() - startedAt) })
+    return createRoot([])
+  }
+
+  const canUseMindMaps = getMindMapsCapability() !== false
+  const chaptersRequest = supabase
+    .from('chapters')
+    .select('*')
+    .in('work_id', workIds)
+    .order('chapter_number', { ascending: true })
+  const mindMapsRequest = canUseMindMaps
+    ? supabase.from('mind_maps').select('*').in('work_id', workIds).order('created_at', { ascending: true })
+    : Promise.resolve({ data: [], error: null })
+
+  const [{ data: chaptersData, error: chaptersError }, { data: mindMapsData, error: mindMapsError }] =
+    await Promise.all([chaptersRequest, mindMapsRequest])
+
   if (chaptersError) throw chaptersError
   if (mindMapsError && !isMissingRelationError(mindMapsError)) throw mindMapsError
   if (mindMapsError && isMissingRelationError(mindMapsError)) {
@@ -384,11 +407,16 @@ export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNo
     setMindMapsCapability(true)
   }
 
-  const works = (worksData || []) as WorkRow[]
   const chapters = (chaptersData || []) as ChapterRow[]
   const mindMaps = (mindMapsError && isMissingRelationError(mindMapsError) ? [] : (mindMapsData || [])) as MindMapRow[]
 
-  log.success('Workspace tree loaded', { userId, workCount: works.length, chapterCount: chapters.length, mindMapCount: mindMaps.length })
+  log.success('Workspace tree loaded', {
+    userId,
+    workCount: works.length,
+    chapterCount: chapters.length,
+    mindMapCount: mindMaps.length,
+    durationMs: Math.round(performance.now() - startedAt),
+  })
 
   const children: WorkspaceFileNode[] = works.map((work) => {
     const workChapters = chapters
@@ -451,6 +479,20 @@ export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNo
   })
 
   return createRoot(children)
+}
+
+export const loadWorkspaceTree = async (userId: string): Promise<WorkspaceFileNode[]> => {
+  const existing = workspaceTreeInflight.get(userId)
+  if (existing) {
+    log.info('Reusing in-flight workspace tree request', { userId })
+    return existing
+  }
+
+  const request = loadWorkspaceTreeOnce(userId).finally(() => {
+    workspaceTreeInflight.delete(userId)
+  })
+  workspaceTreeInflight.set(userId, request)
+  return request
 }
 
 export const persistWorkTree = async (userId: string, workNode: WorkspaceFileNode) => {
@@ -524,19 +566,48 @@ export const saveChapterContent = async (workId: string, chapterId: string, titl
 
   log.info('Saving chapter content', { workId, chapterId, title, contentLength: content?.length })
 
-  const { error } = await supabase.from('chapters').upsert(
-    {
-      id: chapterId,
-      work_id: workId,
-      title,
-      content,
-      word_count: getWordCount(content),
-      status: 'draft',
-    },
-    { onConflict: 'id' }
-  )
+  const { data: existing, error: lookupError } = await supabase
+    .from('chapters')
+    .select('id')
+    .eq('id', chapterId)
+    .maybeSingle()
+  throwPersistenceError(lookupError, '读取章节失败')
+
+  const payload = {
+    title,
+    content,
+    word_count: getWordCount(content),
+    status: 'draft',
+  }
+
+  if (existing?.id) {
+    const { error } = await supabase
+      .from('chapters')
+      .update(payload)
+      .eq('id', chapterId)
+      .eq('work_id', workId)
+    throwPersistenceError(error, '保存正文失败')
+    log.success('Chapter content saved', { workId, chapterId, title, mode: 'update' })
+    return
+  }
+
+  const { data: latestChapter, error: latestError } = await supabase
+    .from('chapters')
+    .select('chapter_number')
+    .eq('work_id', workId)
+    .order('chapter_number', { ascending: false })
+    .limit(1)
+  throwPersistenceError(latestError, '读取章节序号失败')
+
+  const nextChapterNumber = Number(latestChapter?.[0]?.chapter_number || 0) + 1
+  const { error } = await supabase.from('chapters').insert({
+    id: chapterId,
+    work_id: workId,
+    ...payload,
+    chapter_number: nextChapterNumber,
+  })
   throwPersistenceError(error, '保存正文失败')
-  log.success('Chapter content saved', { workId, chapterId, title })
+  log.success('Chapter content saved', { workId, chapterId, title, mode: 'insert', chapterNumber: nextChapterNumber })
 }
 
 export const loadMindMapContent = async (params: { workId: string; id?: string; type?: EditorType }) => {
@@ -627,7 +698,7 @@ export const loadMindMapRecord = async (params: { workId: string; id?: string; t
   return data ? { content: data.content, updatedAt: data.updated_at } : null
 }
 
-export const saveMindMapContent = async (params: {
+type SaveMindMapContentParams = {
   workId: string
   nodeId: string
   title: string
@@ -635,12 +706,32 @@ export const saveMindMapContent = async (params: {
   isDefault: boolean
   customIcon?: string
   content: { nodes: Node[]; edges: Edge[] }
-}) => {
+  updatedAt?: string
+}
+
+type SaveWaiter = {
+  resolve: () => void
+  reject: (error: unknown) => void
+}
+
+type MindMapSaveQueue = {
+  inFlight: boolean
+  pendingParams: SaveMindMapContentParams | null
+  pendingWaiters: SaveWaiter[]
+}
+
+const mindMapSaveQueues = new Map<string, MindMapSaveQueue>()
+const MIND_MAP_SAVE_RETRY_DELAYS_MS = [500, 1200, 2500]
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const saveMindMapContentOnce = async (params: SaveMindMapContentParams) => {
   const { workId, nodeId, title, type, isDefault, customIcon, content } = params
   log.info('Saving mind map content', { workId, nodeId, title, type, isDefault })
   if (getMindMapsCapability() === false) {
     throw new Error('数据库缺少 public.mind_maps 表，思维导图云端保存不可用，请先执行修复 SQL。')
   }
+  const updatedAt = params.updatedAt || new Date().toISOString()
   const { error } = await supabase.from('mind_maps').upsert(
     {
       id: nodeId,
@@ -650,13 +741,106 @@ export const saveMindMapContent = async (params: {
       is_default: isDefault,
       custom_icon: customIcon || null,
       content,
-      updated_at: new Date().toISOString(),
+      updated_at: updatedAt,
     },
     { onConflict: 'id' }
   )
   throwPersistenceError(error, '保存思维导图失败')
   setMindMapsCapability(true)
   log.success('Mind map content saved', { workId, nodeId, title })
+}
+
+const saveMindMapContentWithRetry = async (params: SaveMindMapContentParams, shouldSkipRetry: () => boolean) => {
+  let lastError: unknown = null
+
+  for (let attempt = 0; attempt <= MIND_MAP_SAVE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await saveMindMapContentOnce(params)
+      if (attempt > 0) {
+        log.success('Mind map content saved after retry', {
+          workId: params.workId,
+          nodeId: params.nodeId,
+          attempt,
+        })
+      }
+      return
+    } catch (error) {
+      lastError = error
+      if (shouldSkipRetry()) {
+        log.warn('Skipping stale mind map save retry because a newer save is queued', {
+          workId: params.workId,
+          nodeId: params.nodeId,
+          attempt,
+        })
+        return
+      }
+      const delay = MIND_MAP_SAVE_RETRY_DELAYS_MS[attempt]
+      if (delay === undefined) break
+      log.warn('Mind map save failed, retrying', {
+        workId: params.workId,
+        nodeId: params.nodeId,
+        attempt: attempt + 1,
+        retryInMs: delay,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      await wait(delay)
+    }
+  }
+
+  throw lastError
+}
+
+const runQueuedMindMapSave = async (key: string, params: SaveMindMapContentParams, waiters: SaveWaiter[]) => {
+  const queue = mindMapSaveQueues.get(key)
+  if (!queue) return
+
+  queue.inFlight = true
+  try {
+    await saveMindMapContentWithRetry(params, () => Boolean(queue.pendingParams))
+    waiters.forEach((waiter) => waiter.resolve())
+  } catch (error) {
+    waiters.forEach((waiter) => waiter.reject(error))
+  } finally {
+    const nextParams = queue.pendingParams
+    const nextWaiters = queue.pendingWaiters.splice(0)
+    queue.pendingParams = null
+
+    if (nextParams) {
+      void runQueuedMindMapSave(key, nextParams, nextWaiters)
+      return
+    }
+
+    queue.inFlight = false
+    if (queue.pendingWaiters.length === 0) {
+      mindMapSaveQueues.delete(key)
+    }
+  }
+}
+
+export const saveMindMapContent = async (params: SaveMindMapContentParams) => {
+  const key = params.nodeId
+
+  return new Promise<void>((resolve, reject) => {
+    let queue = mindMapSaveQueues.get(key)
+    if (!queue) {
+      queue = { inFlight: false, pendingParams: null, pendingWaiters: [] }
+      mindMapSaveQueues.set(key, queue)
+    }
+
+    const waiter = { resolve, reject }
+    if (!queue.inFlight) {
+      void runQueuedMindMapSave(key, params, [waiter])
+      return
+    }
+
+    queue.pendingParams = params
+    queue.pendingWaiters.push(waiter)
+    log.info('Queued latest mind map save while previous save is in-flight', {
+      workId: params.workId,
+      nodeId: params.nodeId,
+      pendingWaiterCount: queue.pendingWaiters.length,
+    })
+  })
 }
 
 export const createTrashSnapshot = async (node: WorkspaceFileNode) => enrichNodeForTrash(node)

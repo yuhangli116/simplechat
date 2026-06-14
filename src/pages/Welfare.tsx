@@ -295,20 +295,20 @@ const Welfare = () => {
   };
 
   return (
-    <div className="flex-1 h-full bg-gradient-to-b from-gray-50 to-white flex flex-col overflow-y-auto">
-      <div className="sticky top-0 z-10 bg-white/75 backdrop-blur-xl border-b border-gray-100">
+    <div className="flex-1 h-full bg-gradient-to-b from-gray-50 to-white dark:from-background dark:via-background dark:to-card flex flex-col overflow-y-auto">
+      <div className="sticky top-0 z-10 bg-white/75 dark:bg-background/80 backdrop-blur-xl border-b border-gray-100 dark:border-border">
         <div className="max-w-6xl mx-auto px-8 py-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200 dark:shadow-purple-950/40">
               <Gift className="w-6 h-6 text-white" />
             </div>
             <div className="flex flex-col">
-              <div className="text-xl font-bold text-gray-900">福利中心</div>
+              <div className="text-xl font-bold text-gray-900">奖励中心</div>
               <div className="text-sm text-gray-500">每日签到与任务，领取钻石奖励</div>
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="px-4 py-2 rounded-2xl bg-gray-50 border border-gray-100 flex items-center gap-2">
+            <div className="px-4 py-2 rounded-2xl bg-gray-50 dark:bg-card/80 border border-gray-100 dark:border-border flex items-center gap-2">
               <Coins className="w-5 h-5 text-amber-500" />
               <div className="text-sm text-gray-500">余额</div>
               <div className="text-sm font-semibold text-gray-900 font-mono">
@@ -317,7 +317,7 @@ const Welfare = () => {
             </div>
             <button
               onClick={() => navigate('/membership')}
-              className="px-5 py-2.5 rounded-2xl bg-gray-900 text-white text-sm font-semibold hover:bg-black transition-colors"
+              className="px-5 py-2.5 rounded-2xl bg-gray-900 dark:bg-purple-600 text-white text-sm font-semibold hover:bg-black dark:hover:bg-purple-500 transition-colors"
             >
               去充值
             </button>
@@ -326,10 +326,10 @@ const Welfare = () => {
       </div>
 
       <div className="max-w-6xl mx-auto w-full p-8 space-y-8">
-        <div className="rounded-3xl p-8 border border-gray-100 shadow-sm bg-gradient-to-br from-white to-indigo-50/60">
+        <div className="rounded-3xl p-8 border border-gray-100 dark:border-border shadow-sm dark:shadow-purple-950/10 bg-gradient-to-br from-white to-indigo-50/60 dark:from-card dark:to-indigo-500/10">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6 mb-8">
             <div className="flex items-start gap-4">
-              <div className="w-12 h-12 rounded-2xl bg-white border border-indigo-100 flex items-center justify-center shadow-sm">
+              <div className="w-12 h-12 rounded-2xl bg-white dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-400/20 flex items-center justify-center shadow-sm">
                 <Calendar className="w-6 h-6 text-indigo-600" />
               </div>
               <div className="flex flex-col">
@@ -338,7 +338,7 @@ const Welfare = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-white border border-indigo-50 shadow-sm">
+            <div className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-white dark:bg-card/80 border border-indigo-50 dark:border-indigo-400/20 shadow-sm">
               <Sparkles className="w-4 h-4 text-indigo-500" />
               <div className="text-sm text-gray-600 font-medium">已连续签到</div>
               <div className="text-base font-bold text-indigo-600 font-mono">
@@ -392,8 +392,8 @@ const Welfare = () => {
             disabled={!isNewbieCheckinActive || isCheckedInToday || loading}
             className={`w-full py-4 rounded-2xl text-center font-semibold text-lg transition-all duration-200 ${
               !isNewbieCheckinActive || isCheckedInToday
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                : 'bg-gray-900 hover:bg-black text-white shadow-sm'
+                ? 'bg-gray-100 dark:bg-muted text-gray-400 cursor-not-allowed border border-gray-200 dark:border-border'
+                : 'bg-gray-900 dark:bg-purple-600 hover:bg-black dark:hover:bg-purple-500 text-white shadow-sm'
             }`}
           >
             {!isNewbieCheckinActive ? '新手签到已结束' : isCheckedInToday ? '今日已签到' : '立即签到'}
@@ -410,7 +410,7 @@ const Welfare = () => {
           ) : null}
         </div>
 
-        <div className="bg-white rounded-3xl p-8 border border-gray-100 shadow-sm">
+        <div className="bg-white dark:bg-card rounded-3xl p-8 border border-gray-100 dark:border-border shadow-sm">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-100 flex items-center justify-center">
@@ -430,10 +430,10 @@ const Welfare = () => {
               return (
                 <div
                   key={task.id}
-                  className="group bg-white rounded-3xl p-6 border border-gray-100 hover:border-gray-200 transition-all duration-200 hover:shadow-md flex flex-col md:flex-row md:items-center justify-between gap-5"
+                  className="group bg-white dark:bg-muted/35 rounded-3xl p-6 border border-gray-100 dark:border-border hover:border-gray-200 dark:hover:border-purple-400/30 transition-all duration-200 hover:shadow-md dark:hover:shadow-purple-950/20 flex flex-col md:flex-row md:items-center justify-between gap-5"
                 >
                   <div className="flex items-center gap-5">
-                    <div className="w-14 h-14 bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl flex items-center justify-center shadow-inner shrink-0">
+                      <div className="w-14 h-14 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-muted dark:to-card rounded-2xl flex items-center justify-center shadow-inner shrink-0">
                       {task.icon}
                     </div>
                     <div>
@@ -452,8 +452,8 @@ const Welfare = () => {
                     disabled={isCompleted || loading}
                     className={`px-6 py-2.5 rounded-2xl text-sm font-semibold transition-colors shrink-0 ${
                       isCompleted
-                        ? 'bg-gray-100 text-gray-400 cursor-default'
-                        : 'bg-gray-900 text-white hover:bg-black'
+                        ? 'bg-gray-100 dark:bg-muted text-gray-400 cursor-default'
+                        : 'bg-gray-900 dark:bg-purple-600 text-white hover:bg-black dark:hover:bg-purple-500'
                     }`}
                   >
                     {isCompleted ? '已完成' : '去完成'}

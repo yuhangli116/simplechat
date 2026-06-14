@@ -235,8 +235,8 @@ const Records: React.FC = () => {
   // 只有当完全没有用户并且不是游客模式时，才显示登录提示
   if (!user) {
     return (
-      <div className="flex-1 h-full bg-gray-50 flex items-center justify-center">
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center">
+      <div className="flex-1 h-full bg-gray-50 dark:bg-background flex items-center justify-center">
+        <div className="bg-white dark:bg-card rounded-2xl border border-gray-100 dark:border-border shadow-sm p-8 text-center">
           <div className="text-lg font-semibold text-gray-800">需要登录后查看</div>
           <div className="mt-2 text-sm text-gray-500">登录后可查看钻石消费与充值记录</div>
           <button
@@ -254,10 +254,10 @@ const Records: React.FC = () => {
   const isGuest = isGuestUser(user);
 
   return (
-    <div className="flex-1 h-full bg-gray-50 overflow-y-auto p-8">
+    <div className="flex-1 h-full bg-gray-50 dark:bg-background overflow-y-auto p-8">
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">钻石记录</h1>
+          <h1 className="text-2xl font-bold text-gray-900">消费明细</h1>
         </div>
 
         <div className="flex items-center gap-2 border-b border-gray-200 mb-6">
@@ -267,12 +267,12 @@ const Records: React.FC = () => {
               setUsagePage(1);
             }}
             className={`pb-3 text-sm font-medium transition-colors relative flex items-center gap-2 ${
-              activeTab === 'usage' ? 'text-gray-900' : 'text-gray-500 hover:text-gray-700'
+              activeTab === 'usage' ? 'text-gray-900 dark:text-foreground' : 'text-gray-500 hover:text-gray-700 dark:hover:text-foreground'
             }`}
           >
             <Sparkles className="w-4 h-4" />
             消费记录
-            {activeTab === 'usage' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gray-900" />}
+            {activeTab === 'usage' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gray-900 dark:bg-purple-400" />}
           </button>
           <button
             onClick={() => {
@@ -280,16 +280,16 @@ const Records: React.FC = () => {
               setRechargePage(1);
             }}
             className={`pb-3 text-sm font-medium transition-colors relative flex items-center gap-2 ${
-              activeTab === 'recharge' ? 'text-gray-900' : 'text-gray-500 hover:text-gray-700'
+              activeTab === 'recharge' ? 'text-gray-900 dark:text-foreground' : 'text-gray-500 hover:text-gray-700 dark:hover:text-foreground'
             }`}
           >
             <Receipt className="w-4 h-4" />
             充值记录
-            {activeTab === 'recharge' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gray-900" />}
+            {activeTab === 'recharge' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gray-900 dark:bg-purple-400" />}
           </button>
         </div>
 
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+        <div className="bg-white dark:bg-card rounded-2xl border border-gray-100 dark:border-border shadow-sm overflow-hidden">
           {loading ? (
             <div className="flex flex-col items-center justify-center py-16">
               <Loader2 className="w-8 h-8 text-purple-600 animate-spin mb-4" />

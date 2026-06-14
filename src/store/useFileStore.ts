@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
-import { isGuestUser, useAuthStore } from './useAuthStore';
+import { hasGuestSession, isGuestUser, useAuthStore } from './useAuthStore';
 
 export interface FileNode {
   id: string;
@@ -33,7 +33,7 @@ export const guestDemoFileStructure: FileNode[] = [
     children: [
       {
         id: 'book-1',
-        name: '武夫当家',
+        name: '预设作品',
         type: 'folder',
         children: [
           {
@@ -74,7 +74,9 @@ export const initialFileStructure: FileNode[] = [
 
 const getFileStorageKey = (name: string) => {
   const user = useAuthStore?.getState?.()?.user;
-  return isGuestUser(user) ? `guest-${name}` : name;
+  // 防回归：刷新时 file store 可能先于 auth.user hydrate；只要游客 session 还在，就必须读 guest-my-works-tree。
+  // 否则游客刷新“我的作品”会误读 my-works-tree，表现为工作区内容丢失。
+  return isGuestUser(user) || (!user && hasGuestSession()) ? `guest-${name}` : name;
 };
 
 // 动态存储：游客模式下持久化到可清理的本地 key，登录用户使用原 key

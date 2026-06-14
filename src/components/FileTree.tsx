@@ -28,13 +28,16 @@ import { v4 as uuidv4 } from 'uuid';
 import CreateWorkDialog, { CreateWorkData } from './CreateWorkDialog';
 import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { useFileStore, FileNode, initialFileStructure, GUEST_LIMITS } from '@/store/useFileStore';
-import { useTrashStore } from '@/store/useTrashStore';
+import { useTrashStore, type TrashItem } from '@/store/useTrashStore';
 import { useToastStore } from '@/store/useToastStore';
 import { createTrashSnapshot, deleteWorkspaceNode, findWorkNodeForTarget, loadWorkspaceTree, loadWorkSnapshotForTrash, persistWorkTree } from '@/lib/workspacePersistence';
 import { createZip } from '@/lib/fileExport';
 import { supabase } from '@/lib/supabase';
+import { createLogger, flushLogs } from '@/lib/logger';
 
 export type { FileNode };
+
+const log = createLogger('FileTree');
 
 const CUSTOM_ICONS = [
   'Star', 'Heart', 'Flag', 'Bookmark', 'Tag', 'Zap', 'Award', 'Box', 'Circle', 'Hexagon'
@@ -48,6 +51,67 @@ type DragPayload = {
   nodeId: string;
   parentId: string;
   nodeType: 'file' | 'mindmap';
+};
+
+type AtomicTrashNodeKind = 'work' | 'chapter' | 'mindmap' | 'folder';
+
+type AtomicTrashParams = {
+  nodeKind: AtomicTrashNodeKind;
+  workId: string;
+  nodeId: string;
+};
+
+const isMissingRpcError = (error: any) =>
+  error?.code === 'PGRST202' ||
+  error?.code === '42883' ||
+  error?.status === 404 ||
+  String(error?.message || '').includes('move_workspace_node_to_trash');
+
+const getChapterIdFromPath = (path?: string) => path?.match(/\/story\/([^/]+)/)?.[1] || null;
+
+const getMindMapRecordId = (node: FileNode) => {
+  if (node.path?.includes('/mindmap/')) {
+    return node.path.split('/').pop() || node.id;
+  }
+  return node.id;
+};
+
+const mapTrashRow = (row: any): TrashItem => ({
+  id: row.id,
+  originalId: row.original_id,
+  type: row.type,
+  title: row.title,
+  content: row.content,
+  deletedAt: row.deleted_at,
+  expiresAt: row.expires_at,
+  originalPath: row.original_path || undefined,
+  parentId: row.parent_id || undefined,
+  workName: row.work_name || undefined,
+  extra: row.extra || undefined,
+});
+
+const collectPersistedChildIds = (node: FileNode) => {
+  const chapterIds: string[] = [];
+  const mindMapIds: string[] = [];
+
+  const walk = (entry: FileNode) => {
+    if (entry.type === 'file') {
+      const chapterId = getChapterIdFromPath(entry.path);
+      if (chapterId) chapterIds.push(chapterId);
+      return;
+    }
+    if (entry.type === 'mindmap') {
+      const recordId = getMindMapRecordId(entry);
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(recordId)) {
+        mindMapIds.push(recordId);
+      }
+      return;
+    }
+    entry.children?.forEach(walk);
+  };
+
+  walk(node);
+  return { chapterIds, mindMapIds };
 };
 
 const DRAG_MIME = 'application/x-simplechat-filetree';
@@ -492,18 +556,37 @@ const FileTree = () => {
   const { files, setFiles, setCreateWorkInProgress } = useFileStore();
   const { addToTrash, addExistingItem } = useTrashStore();
 
-  const refreshWorkspace = async () => {
-    if (!user || isGuestUser(user)) return;
+  const refreshWorkspace = async (options: { force?: boolean } = {}) => {
+    if (!user) {
+      log.info('Workspace refresh skipped because no user is available');
+      return;
+    }
+    if (isGuestUser(user)) {
+      log.info('Workspace refresh skipped for guest user', { userId: user.id });
+      return;
+    }
+    const hasLocalWorks = (useFileStore.getState().files[0]?.children?.length || 0) > 0;
+    if (!options.force && hasLocalWorks) {
+      log.info('Workspace refresh skipped because local works already exist', { userId: user.id });
+      return;
+    }
     try {
+      log.info('Refreshing workspace tree', { userId: user.id, force: !!options.force });
       const nextFiles = await loadWorkspaceTree(user.id);
       setFiles(nextFiles as FileNode[]);
+      log.success('Workspace tree refreshed', { userId: user.id, workCount: nextFiles[0]?.children?.length || 0 });
     } catch (error) {
       console.error('Failed to refresh workspace:', error);
+      log.error('Failed to refresh workspace', { userId: user.id }, error);
     }
   };
 
   const commitWorkTreeChange = async (nextFiles: FileNode[], targetId: string) => {
     if (!user || isGuestUser(user)) {
+      log.info('Committing workspace tree locally', {
+        isGuest: Boolean(user && isGuestUser(user)),
+        targetId,
+      });
       setFiles(nextFiles);
       return true;
     }
@@ -515,12 +598,15 @@ const FileTree = () => {
     }
 
     try {
+      log.info('Persisting workspace tree change', { userId: user.id, targetId, workId: workNode.id });
       await persistWorkTree(user.id, workNode as any);
       setFiles(nextFiles);
-      await refreshWorkspace();
+      await refreshWorkspace({ force: true });
+      log.success('Workspace tree change persisted', { userId: user.id, targetId, workId: workNode.id });
       return true;
     } catch (error) {
       console.error('Failed to persist work tree:', error);
+      log.error('Failed to persist workspace tree change', { userId: user.id, targetId }, error);
       const message = error instanceof Error ? error.message : '保存作品树失败';
       addToast(message, 'error');
       return false;
@@ -639,10 +725,20 @@ const FileTree = () => {
     };
 
     const nextFiles = addNodeRecursive(files);
+    log.info('Creating chapter', {
+      userId: user?.id,
+      isGuest: isGuestUser(user),
+      workId,
+      parentId,
+      chapterId: newChapterId,
+      name,
+    });
     const committed = await commitWorkTreeChange(nextFiles, parentId);
     if (!committed && user) {
       return;
     }
+    log.success('Chapter created', { workId, chapterId: newChapterId, name });
+    flushLogs();
 
     navigate(newChapter.path!, { state: { fileName: newChapter.name } });
   };
@@ -701,7 +797,19 @@ const FileTree = () => {
     };
 
     const nextFiles = addNodeRecursive(files);
-    await commitWorkTreeChange(nextFiles, parentId);
+    log.info('Creating custom mind map', {
+      userId: user?.id,
+      isGuest: isGuestUser(user),
+      workId,
+      parentId,
+      mindMapId: newId,
+      name,
+    });
+    const committed = await commitWorkTreeChange(nextFiles, parentId);
+    if (committed) {
+      log.success('Custom mind map created', { workId, mindMapId: newId, name });
+      flushLogs();
+    }
   };
 
   // Helper to find a node by ID (for getting workId)
@@ -739,6 +847,14 @@ const FileTree = () => {
 
     const newWorkId = uuidv4();
     setCreateWorkInProgress(true);
+    log.info('Creating work', {
+      userId: user?.id,
+      isGuest: isGuestUser(user),
+      workId: newWorkId,
+      name: data.name,
+      selectedPages: data.selectedPages,
+      chapterCount: data.chapterCount,
+    });
     
     // 1. Create Mind Map Nodes
     const mindMapNodes: FileNode[] = [];
@@ -830,9 +946,11 @@ const FileTree = () => {
       try {
         await persistWorkTree(user.id, newWork as any);
         setFiles(newFiles);
-        await refreshWorkspace();
+        await refreshWorkspace({ force: true });
+        log.success('Work created and persisted', { userId: user.id, workId: newWorkId, name: data.name });
       } catch (error) {
         console.error('Failed to create work:', error);
+        log.error('Failed to create work', { userId: user.id, workId: newWorkId, name: data.name }, error);
         try {
           await deleteWorkspaceNode(newWork as any);
         } catch (rollbackError) {
@@ -846,6 +964,7 @@ const FileTree = () => {
     } else {
       // 游客模式：仅前端保存
       setFiles(newFiles);
+      log.success('Guest work created locally', { workId: newWorkId, name: data.name });
     }
 
     setShowCreateDialog(false);
@@ -856,6 +975,7 @@ const FileTree = () => {
       state: fileName ? { fileName } : undefined
     });
     setCreateWorkInProgress(false);
+    flushLogs();
   };
 
   const handleRename = async (id: string, newName: string) => {
@@ -872,11 +992,26 @@ const FileTree = () => {
     };
 
     const nextFiles = updateNodeRecursive(files);
+    log.info('Renaming workspace node', {
+      userId: user?.id,
+      isGuest: isGuestUser(user),
+      nodeId: id,
+      newName,
+    });
     await commitWorkTreeChange(nextFiles, id);
+    log.success('Workspace node renamed', { nodeId: id, newName });
+    flushLogs();
   };
 
   const handleDelete = async (targetNode: FileNode) => {
-    if (!window.confirm(`确定要将 "${targetNode.name}" 移至回收站吗？`)) return;
+    if (!window.confirm(`确定要将 "${targetNode.name}" 移至废稿箱吗？`)) return;
+    log.info('Deleting workspace node to trash', {
+      userId: user?.id,
+      isGuest: isGuestUser(user),
+      nodeId: targetNode.id,
+      nodeType: targetNode.type,
+      nodeName: targetNode.name,
+    });
 
     // Find parent and work context before deleting
     let parentId: string | undefined;
@@ -918,7 +1053,7 @@ const FileTree = () => {
       : await createTrashSnapshot(targetNode as any);
 
     if (isDeletingWork && user && !isGuestUser(user) && !trashSnapshot) {
-      addToast('未找到作品数据，无法移入回收站', 'error');
+      addToast('未找到作品数据，无法移入废稿箱', 'error');
       return;
     }
 
@@ -952,33 +1087,119 @@ const FileTree = () => {
       ? getPreferredWorkPath(fallbackWork) || '/workspace'
       : null;
 
+    const getAtomicTrashParams = (): AtomicTrashParams | null => {
+      if (!user || isGuestUser(user)) return null;
+      const workId = isDeletingWork ? targetNode.id : targetNode.path?.match(/\/workspace\/p\/([^/]+)/)?.[1];
+      if (!workId) return null;
+      if (isDeletingWork) {
+        return { nodeKind: 'work', workId, nodeId: targetNode.id };
+      }
+      if (targetNode.type === 'file') {
+        const chapterId = getChapterIdFromPath(targetNode.path);
+        return chapterId ? { nodeKind: 'chapter', workId, nodeId: chapterId } : null;
+      }
+      if (targetNode.type === 'mindmap') {
+        return { nodeKind: 'mindmap', workId, nodeId: getMindMapRecordId(targetNode) };
+      }
+      if (targetNode.type === 'folder' && parentId !== 'root') {
+        return { nodeKind: 'folder', workId, nodeId: targetNode.id };
+      }
+      return null;
+    };
+
+    const moveToTrashAtomically = async () => {
+      const params = getAtomicTrashParams();
+      if (!params) return null;
+
+      log.info('Trying atomic workspace trash RPC', {
+        userId: user?.id,
+        nodeId: targetNode.id,
+        nodeType: targetNode.type,
+        nodeKind: params.nodeKind,
+      });
+
+      const folderIds = params.nodeKind === 'folder'
+        ? collectPersistedChildIds(targetNode)
+        : { chapterIds: [], mindMapIds: [] };
+
+      const { data, error } = await supabase.rpc('move_workspace_node_to_trash', {
+        p_node_kind: params.nodeKind,
+        p_work_id: params.workId,
+        p_node_id: params.nodeId,
+        p_title: targetNode.name,
+        p_original_path: targetNode.path || null,
+        p_parent_id: parentId || null,
+        p_work_name: workName || null,
+        p_extra: { isFullWork: isDeletingWork },
+        p_snapshot: params.nodeKind === 'folder' ? trashSnapshot : null,
+        p_chapter_ids: folderIds.chapterIds,
+        p_mindmap_ids: folderIds.mindMapIds,
+      });
+
+      if (error) {
+        if (isMissingRpcError(error)) {
+          log.warn('Atomic workspace trash RPC unavailable, falling back to client flow', {
+            nodeId: targetNode.id,
+            error: error.message,
+          });
+          return null;
+        }
+        throw error;
+      }
+
+      log.success('Atomic workspace trash RPC completed', {
+        nodeId: targetNode.id,
+        trashId: (data as any)?.id,
+        nodeKind: params.nodeKind,
+      });
+      return data ? mapTrashRow(data) : null;
+    };
+
+    let trashAlreadyRecorded = false;
+    let recordedTrashId = trashId;
+    let trashWriteMode: 'rpc' | 'fallback' | 'local' = user && !isGuestUser(user) ? 'fallback' : 'local';
+
     if (user && !isGuestUser(user)) {
       try {
-        if (isDeletingWork) {
-          const { error } = await supabase.from('trash_items').insert({
-            id: trashId,
-            user_id: user.id,
-            original_id: targetNode.id,
-            type: 'work',
-            title: targetNode.name,
-            content: trashSnapshot,
-            deleted_at: now,
-            expires_at: expiresAt,
-            original_path: targetNode.path,
-            parent_id: parentId,
-            work_name: workName,
-            extra: { isFullWork: true }
-          });
-          if (error) {
-            const message = error?.message || '回收站写入失败';
-            addToast(message, 'error');
-            return;
+        const atomicTrashItem = await moveToTrashAtomically();
+        if (atomicTrashItem) {
+          addExistingItem(atomicTrashItem);
+          trashAlreadyRecorded = true;
+          recordedTrashId = atomicTrashItem.id;
+          trashWriteMode = 'rpc';
+        } else {
+          if (isDeletingWork) {
+            const { error } = await supabase.from('trash_items').insert({
+              id: trashId,
+              user_id: user.id,
+              original_id: targetNode.id,
+              type: 'work',
+              title: targetNode.name,
+              content: trashSnapshot,
+              deleted_at: now,
+              expires_at: expiresAt,
+              original_path: targetNode.path,
+              parent_id: parentId,
+              work_name: workName,
+              extra: { isFullWork: true }
+            });
+            if (error) {
+              const message = error?.message || '废稿箱写入失败';
+              addToast(message, 'error');
+              return;
+            }
+            trashWriteMode = 'fallback';
           }
-        }
 
-        await deleteWorkspaceNode(targetNode as any);
+          await deleteWorkspaceNode(targetNode as any);
+        }
       } catch (error) {
         console.error('Failed to delete workspace node:', error);
+        log.error('Failed to delete workspace node', {
+          userId: user.id,
+          nodeId: targetNode.id,
+          nodeType: targetNode.type,
+        }, error);
         const message = error instanceof Error ? error.message : '删除节点失败';
         addToast(message, 'error');
         if (isDeletingWork) {
@@ -988,7 +1209,9 @@ const FileTree = () => {
       }
     }
 
-    if (isDeletingWork && user && !isGuestUser(user)) {
+    if (trashAlreadyRecorded) {
+      // Database already wrote the trash item (preferably via the atomic RPC), so avoid duplicating it.
+    } else if (isDeletingWork && user && !isGuestUser(user) && !useTrashStore.getState().items.some((item) => item.originalId === targetNode.id && item.type === 'work')) {
       addExistingItem({
         id: trashId,
         originalId: targetNode.id,
@@ -1020,8 +1243,18 @@ const FileTree = () => {
     setFiles(nextFiles);
 
     if (user && !isGuestUser(user)) {
-      await refreshWorkspace();
+      await refreshWorkspace({ force: true });
     }
+
+    log.success('Workspace node moved to trash', {
+      userId: user?.id,
+      isGuest: isGuestUser(user),
+      nodeId: targetNode.id,
+      nodeType: targetNode.type,
+      trashId: recordedTrashId,
+      trashWriteMode,
+    });
+    flushLogs();
 
     if (redirectPath) {
       navigate(redirectPath, { replace: true });

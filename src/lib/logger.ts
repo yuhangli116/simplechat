@@ -69,28 +69,54 @@ interface LogEntry {
 }
 
 const PERSIST_BUFFER: LogEntry[] = []
-const PERSIST_INTERVAL_MS = 2000 // 每 2 秒批量发送一次
+const PERSIST_INTERVAL_MS = 1000 // 每 1 秒批量发送一次
 const PERSIST_MAX_BUFFER = 50 // 缓冲区最大条数，超出立即发送
 let persistTimer: ReturnType<typeof setInterval> | null = null
 let persistInProgress = false
+let persistListenersAttached = false
+let pendingFlush: { batch: LogEntry[]; useBeacon: boolean } | null = null
 
 function formatTimestamp(date: Date = new Date()): string {
   return date.toISOString().replace('T', ' ').replace('Z', '')
 }
 
-function flushLogs(): void {
+function sendLogs(batch: LogEntry[], useBeacon = false): Promise<void> | void {
+  const payload = JSON.stringify({ logs: batch })
+
+  if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+    const sent = navigator.sendBeacon('/api/log', new Blob([payload], { type: 'application/json' }))
+    if (sent) return
+  }
+
+  return fetch('/api/log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+    keepalive: true,
+  }).then(() => undefined)
+}
+
+export function flushLogs(useBeacon = false): void {
   if (PERSIST_BUFFER.length === 0) return
-  if (persistInProgress) return
+  if (persistInProgress) {
+    const buffered = PERSIST_BUFFER.splice(0, PERSIST_BUFFER.length)
+    if (useBeacon) {
+      void sendLogs(buffered, true)
+      return
+    }
+    if (pendingFlush) {
+      pendingFlush.batch.push(...buffered)
+      pendingFlush.useBeacon = pendingFlush.useBeacon || useBeacon
+    } else {
+      pendingFlush = { batch: buffered, useBeacon }
+    }
+    return
+  }
 
   const batch = PERSIST_BUFFER.splice(0, PERSIST_BUFFER.length)
   persistInProgress = true
 
-  fetch('/api/log', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ logs: batch }),
-    keepalive: true,
-  }).catch(() => {
+  Promise.resolve(sendLogs(batch, useBeacon)).catch(() => {
     // 发送失败，将日志放回缓冲区（最多保留 PERSIST_MAX_BUFFER 条）
     const overflow = batch.length + PERSIST_BUFFER.length - PERSIST_MAX_BUFFER * 2
     if (overflow > 0) {
@@ -99,6 +125,12 @@ function flushLogs(): void {
     PERSIST_BUFFER.unshift(...batch.slice(-PERSIST_MAX_BUFFER))
   }).finally(() => {
     persistInProgress = false
+    if (pendingFlush) {
+      const pending = pendingFlush
+      pendingFlush = null
+      PERSIST_BUFFER.unshift(...pending.batch)
+      flushLogs(pending.useBeacon)
+    }
   })
 }
 
@@ -113,10 +145,18 @@ function persistLog(entry: LogEntry): void {
 
   // 启动定时器
   if (!persistTimer) {
-    persistTimer = setInterval(flushLogs, PERSIST_INTERVAL_MS)
+    persistTimer = setInterval(() => flushLogs(), PERSIST_INTERVAL_MS)
     // 页面关闭前发送剩余日志
-    if (typeof window !== 'undefined') {
-      window.addEventListener('beforeunload', flushLogs)
+    if (typeof window !== 'undefined' && !persistListenersAttached) {
+      const flushBeforePageLeaves = () => flushLogs(true)
+      window.addEventListener('beforeunload', flushBeforePageLeaves)
+      window.addEventListener('pagehide', flushBeforePageLeaves)
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+          flushLogs(true)
+        }
+      })
+      persistListenersAttached = true
     }
   }
 }
