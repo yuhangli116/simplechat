@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { generateTextServer, getRequestContext, sendJson, summarizeContextServer } from './aiProxy.js';
+import { generateTextServer, getRequestContext, sendJson, sendNdjson, streamGenerateTextServer, summarizeContextServer } from './aiProxy.js';
 import { createServerLogger, persistBatchLogs, initLogger, LOG_DIR } from './logger.js';
 
 const log = createServerLogger('Server');
@@ -77,6 +77,46 @@ app.all('/api/ai/generate', async (req, res) => {
   }
 });
 
+app.all('/api/ai/generate-stream', async (req, res) => {
+  if (req.method !== 'POST') {
+    return sendJson(res, 405, { error: 'Method not allowed' });
+  }
+
+  const requestContext = getRequestContext(req);
+  const model = req.body?.model || 'unknown';
+  const traceId = req.body?.traceId;
+  log.info('AI generate stream request received', {
+    traceId,
+    model,
+    ip: requestContext.ip,
+    workId: req.body?.workId,
+    chapterId: req.body?.chapterId,
+    deferChapterSave: req.body?.deferChapterSave,
+  });
+
+  return sendNdjson(res, async (write) => {
+    const result = await streamGenerateTextServer(req.body || {}, requestContext, {
+      emit: write,
+    });
+
+    if (result.error) {
+      log.warn('AI generate stream returned error', { traceId, model, error: result.error?.slice(0, 200) });
+      await write({ type: 'error', error: result.error, billing: result.billing });
+      return;
+    }
+
+    log.info('AI generate stream success', {
+      traceId,
+      model,
+      inputTokens: result.usage?.input_tokens,
+      outputTokens: result.usage?.output_tokens,
+      totalCost: result.usage?.total_cost,
+      contentLength: result.content?.length,
+    });
+    await write({ type: 'done', ...result });
+  });
+});
+
 // ─── AI 摘要端点 ───
 
 app.all('/api/ai/summarize', async (req, res) => {
@@ -86,17 +126,21 @@ app.all('/api/ai/summarize', async (req, res) => {
 
   const requestContext = getRequestContext(req);
   const model = req.body?.model || 'unknown';
+  const traceId = req.body?.traceId;
+  const billingGroupId = req.body?.billingGroupId;
 
-  log.info('AI summarize request received', { model, ip: requestContext.ip });
+  log.info('AI summarize request received', { traceId, model, billingGroupId, ip: requestContext.ip });
 
   try {
     const result = await summarizeContextServer(req.body || {}, requestContext);
 
     if (result.error) {
-      log.warn('AI summarize returned error', { model, error: result.error?.slice(0, 200) });
+      log.warn('AI summarize returned error', { traceId, model, billingGroupId, error: result.error?.slice(0, 200) });
     } else {
       log.info('AI summarize success', {
+        traceId,
         model,
+        billingGroupId,
         inputTokens: result.usage?.input_tokens,
         outputTokens: result.usage?.output_tokens,
         totalCost: result.usage?.total_cost,
@@ -105,7 +149,7 @@ app.all('/api/ai/summarize', async (req, res) => {
 
     return sendJson(res, 200, result);
   } catch (error) {
-    log.error('AI summarize unhandled error', { model }, error);
+    log.error('AI summarize unhandled error', { traceId, model, billingGroupId }, error);
     return sendJson(res, 500, {
       error: error instanceof Error ? error.message : 'AI summarize failed',
     });

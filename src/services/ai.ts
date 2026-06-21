@@ -33,11 +33,18 @@ interface AIRequest {
   context?: string;
   userId?: string; // Required for billing
   billingGroupId?: string;
+  traceId?: string;
   workId?: string;
   chapterId?: string;
   chapterTitle?: string;
   baseContentHtml?: string;
   deferChapterSave?: boolean;
+}
+
+interface AIStreamCallbacks {
+  onPhase?: (event: { phase?: string; label?: string; generatedChars?: number }) => void;
+  onDelta?: (delta: string, event: { generatedChars?: number; label?: string }) => void;
+  onError?: (message: string) => void;
 }
 
 const estimateTokens = (text: string) => {
@@ -131,6 +138,37 @@ const callAIEndpoint = async (
   };
 };
 
+const parseNdjsonStream = async (
+  response: Response,
+  onEvent: (event: any) => void
+) => {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('当前浏览器不支持流式读取');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      onEvent(JSON.parse(trimmed));
+    }
+  }
+
+  const tail = `${buffer}${decoder.decode()}`.trim();
+  if (tail) {
+    onEvent(JSON.parse(tail));
+  }
+};
+
 const getFriendlyErrorMessage = (error: any, provider: string): string => {
   const msg = error?.message || '';
 
@@ -185,7 +223,8 @@ export const aiService = {
     context: string,
     userId?: string,
     model: ModelKey = 'deepseek-v4-flash',
-    billingGroupId?: string
+    billingGroupId?: string,
+    traceId?: string
   ): Promise<AIResponse> {
     if (!context || context.length < 10) return { content: context };
     const resolvedUserId = resolveUserId(userId);
@@ -194,7 +233,7 @@ export const aiService = {
       return { content: '', error: '请先登录后再使用 AI 创作功能。' };
     }
 
-    log.info('Summarize context started', { model, contextLength: context.length });
+    log.info('Summarize context started', { traceId, model, contextLength: context.length, billingGroupId });
     await syncModelPricingFromDb();
 
     const modelKey: ModelKey = model;
@@ -206,6 +245,7 @@ export const aiService = {
         model: modelKey,
         userId: resolvedUserId,
         billingGroupId,
+        traceId,
       });
       const content = response.content;
       const promptTokens = response.usage?.input_tokens ?? estimateTokens(context);
@@ -222,9 +262,9 @@ export const aiService = {
       }
 
       if (response.error) {
-        log.warn('Summarize context returned error', { model, error: response.error?.slice(0, 200) });
+        log.warn('Summarize context returned error', { traceId, model, error: response.error?.slice(0, 200) });
       } else {
-        log.success('Summarize context completed', { model, promptTokens, completionTokens, totalCost });
+        log.success('Summarize context completed', { traceId, model, promptTokens, completionTokens, totalCost });
       }
 
       return {
@@ -240,7 +280,7 @@ export const aiService = {
         },
       };
     } catch (error: any) {
-      log.error('Summarize context failed', { model }, error);
+      log.error('Summarize context failed', { traceId, model }, error);
       return { content: '', error: '总结上下文失败：' + (error.message || '未知错误') };
     }
   },
@@ -325,6 +365,192 @@ export const aiService = {
       return { 
         content: '', 
         error: friendlyMsg 
+      };
+    }
+  },
+
+  async generateTextStream(request: AIRequest, callbacks: AIStreamCallbacks = {}): Promise<AIResponse> {
+    const resolvedUserId = resolveUserId(request.userId);
+    if (!resolvedUserId) {
+      log.warn('Generate text stream rejected: user not authenticated');
+      return { content: '', error: '请先登录后再使用 AI 创作功能。' };
+    }
+
+    await syncModelPricingFromDb();
+    const config = MODEL_PRICING[request.model];
+    if (!config) {
+      log.warn('Generate text stream rejected: model not supported', { model: request.model });
+      return { content: '', error: `Model ${request.model} not supported` };
+    }
+
+    const accessToken = await getAccessToken();
+    let streamedContent = '';
+    let finalResponse: AIResponse | null = null;
+    let streamError = '';
+    let firstDeltaAt = 0;
+    const startedAt = performance.now();
+
+    log.info('Generate text stream started', {
+      traceId: request.traceId,
+      model: request.model,
+      promptLength: request.prompt?.length,
+      contextLength: request.context?.length,
+      hasToken: !!accessToken,
+    });
+
+    try {
+      const response = await fetch('/api/ai/generate-stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({
+          prompt: request.prompt,
+          model: request.model,
+          context: request.context,
+          userId: resolvedUserId,
+          billingGroupId: request.billingGroupId,
+          traceId: request.traceId,
+          workId: request.workId,
+          chapterId: request.chapterId,
+          chapterTitle: request.chapterTitle,
+          baseContentHtml: request.baseContentHtml,
+          deferChapterSave: request.deferChapterSave,
+        }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json().catch(() => null);
+        throw new Error(result?.error || `HTTP ${response.status}`);
+      }
+
+      await parseNdjsonStream(response, (event) => {
+        if (!event || typeof event !== 'object') return;
+
+        if (event.type === 'phase') {
+          log.info('Generate text stream phase', {
+            traceId: request.traceId,
+            phase: event.phase,
+            label: event.label,
+            elapsedMs: Math.round(performance.now() - startedAt),
+          });
+          callbacks.onPhase?.({
+            phase: event.phase,
+            label: event.label,
+            generatedChars: event.generatedChars,
+          });
+          return;
+        }
+
+        if (event.type === 'delta') {
+          const delta = String(event.delta || '');
+          if (!firstDeltaAt) {
+            firstDeltaAt = performance.now();
+            log.info('Generate text stream first delta received', {
+              traceId: request.traceId,
+              firstDeltaMs: Math.round(firstDeltaAt - startedAt),
+              deltaLength: delta.length,
+            });
+          }
+          streamedContent += delta;
+          callbacks.onDelta?.(delta, {
+            generatedChars: event.generatedChars,
+            label: event.label,
+          });
+          return;
+        }
+
+        if (event.type === 'error') {
+          streamError = event.error || 'AI生成失败';
+          log.warn('Generate text stream error event received', {
+            traceId: request.traceId,
+            error: streamError,
+            streamedLength: streamedContent.length,
+            elapsedMs: Math.round(performance.now() - startedAt),
+          });
+          callbacks.onError?.(streamError);
+          finalResponse = {
+            content: streamedContent,
+            error: streamError,
+            billing: event.billing,
+          };
+          return;
+        }
+
+        if (event.type === 'done') {
+          log.info('Generate text stream done event received', {
+            traceId: request.traceId,
+            contentLength: event.content?.length || streamedContent.length,
+            usage: event.usage,
+            billing: event.billing,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            firstDeltaMs: firstDeltaAt ? Math.round(firstDeltaAt - startedAt) : null,
+          });
+          finalResponse = {
+            content: event.content || streamedContent,
+            error: event.error,
+            savedChapterContent: event.savedChapterContent,
+            savedToChapter: event.savedToChapter,
+            generatedHtml: event.generatedHtml,
+            previewChapterContent: event.previewChapterContent,
+            usage: event.usage,
+            billing: event.billing,
+          };
+        }
+      });
+
+      const responsePayload: AIResponse = finalResponse || { content: streamedContent };
+      if (responsePayload.error) {
+        log.warn('Generate text stream returned error', { model: request.model, error: responsePayload.error?.slice(0, 200) });
+        return responsePayload;
+      }
+
+      const promptTokens =
+        responsePayload.usage?.input_tokens ??
+        estimateTokens(`${request.context || ''}\n${request.prompt}`);
+      const completionTokens = responsePayload.usage?.output_tokens ?? estimateTokens(responsePayload.content);
+      const reasoningTokens = responsePayload.usage?.reasoning_tokens ?? 0;
+      const cacheHitTokens = responsePayload.usage?.cache_hit_tokens ?? 0;
+      const totalCost =
+        responsePayload.usage?.total_cost ??
+        calculateDiamonds(request.model, promptTokens, completionTokens, reasoningTokens, cacheHitTokens);
+
+      const normalizedResponse = {
+        ...responsePayload,
+        usage: {
+          input_tokens: promptTokens,
+          output_tokens: completionTokens,
+          reasoning_tokens: reasoningTokens,
+          cache_hit_tokens: cacheHitTokens,
+          total_cost: totalCost,
+        },
+      };
+
+      applyServerBalance(normalizedResponse);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('welfare:ai_used'));
+      }
+
+      log.success('Generate text stream completed', {
+        traceId: request.traceId,
+        model: request.model,
+        promptTokens,
+        completionTokens,
+        totalCost,
+        contentLength: normalizedResponse.content?.length,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        firstDeltaMs: firstDeltaAt ? Math.round(firstDeltaAt - startedAt) : null,
+      });
+
+      return normalizedResponse;
+    } catch (error: any) {
+      const friendlyMsg = getFriendlyErrorMessage(error, config.provider);
+      log.error('Generate text stream failed', { model: request.model, provider: config.provider }, error);
+      callbacks.onError?.(friendlyMsg);
+      return {
+        content: streamedContent,
+        error: friendlyMsg,
       };
     }
   },

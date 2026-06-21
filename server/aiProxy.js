@@ -29,6 +29,112 @@ const ANOMALY_HOURLY_DIAMONDS = Number(process.env.AI_ANOMALY_HOURLY_DIAMONDS ||
 const ANOMALY_LOOKBACK_DAYS = Number(process.env.AI_ANOMALY_LOOKBACK_DAYS || 7);
 const SUMMARIZE_FETCH_TIMEOUT_MS = Number(process.env.AI_SUMMARIZE_FETCH_TIMEOUT_MS || 60000);
 const SUPABASE_QUERY_RETRY_DELAYS = [0, 600, 1200];
+const AUTH_RLS_VALIDATION_TIMEOUT_MS = Number(process.env.AI_AUTH_RLS_VALIDATION_TIMEOUT_MS || 2500);
+const MODEL_PRICING_CACHE_TTL_MS = Number(process.env.AI_MODEL_PRICING_CACHE_TTL_MS || 10 * 60 * 1000);
+const MODEL_PRICING_REFRESH_GRACE_MS = Number(process.env.AI_MODEL_PRICING_REFRESH_GRACE_MS || 60 * 1000);
+
+const DEFAULT_MODEL_PRICING = {
+  'deepseek-v4-flash': {
+    model_key: 'deepseek-v4-flash',
+    model_name: 'DeepSeek V4 Flash',
+    input_multiplier: 0.5,
+    output_multiplier: 1,
+    reasoning_multiplier: 1,
+    cache_multiplier: 0.01,
+    provider: 'deepseek',
+    model_api_name: 'deepseek-v4-flash',
+  },
+  'deepseek-v4-pro': {
+    model_key: 'deepseek-v4-pro',
+    model_name: 'DeepSeek V4 Pro',
+    input_multiplier: 1.5,
+    output_multiplier: 3,
+    reasoning_multiplier: 3,
+    cache_multiplier: 0.0125,
+    provider: 'deepseek',
+    model_api_name: 'deepseek-v4-pro',
+  },
+  'deepseek-v3': {
+    model_key: 'deepseek-v3',
+    model_name: 'DeepSeek V3',
+    input_multiplier: 1,
+    output_multiplier: 4,
+    reasoning_multiplier: 0,
+    cache_multiplier: 0.25,
+    provider: 'deepseek',
+    model_api_name: 'deepseek-chat',
+  },
+  'claude-haiku': {
+    model_key: 'claude-haiku',
+    model_name: 'Claude Haiku',
+    input_multiplier: 3.5,
+    output_multiplier: 17.5,
+    reasoning_multiplier: 0,
+    cache_multiplier: 0.35,
+    provider: 'anthropic',
+    model_api_name: 'claude-haiku-4-5-20251001',
+  },
+  'claude-sonnet': {
+    model_key: 'claude-sonnet',
+    model_name: 'Claude Sonnet',
+    input_multiplier: 10.5,
+    output_multiplier: 52.5,
+    reasoning_multiplier: 0,
+    cache_multiplier: 1.05,
+    provider: 'anthropic',
+    model_api_name: 'claude-sonnet-4-6',
+  },
+  'claude-opus': {
+    model_key: 'claude-opus',
+    model_name: 'Claude Opus',
+    input_multiplier: 17.5,
+    output_multiplier: 87.5,
+    reasoning_multiplier: 0,
+    cache_multiplier: 1.75,
+    provider: 'anthropic',
+    model_api_name: 'claude-opus-4-7',
+  },
+  'gpt-4-turbo': {
+    model_key: 'gpt-4-turbo',
+    model_name: 'GPT-4 Turbo',
+    input_multiplier: 7,
+    output_multiplier: 28,
+    reasoning_multiplier: 0,
+    cache_multiplier: 0,
+    provider: 'openai',
+    model_api_name: 'gpt-4-turbo',
+  },
+  'gpt-4o': {
+    model_key: 'gpt-4o',
+    model_name: 'GPT-4o',
+    input_multiplier: 8.75,
+    output_multiplier: 35,
+    reasoning_multiplier: 0,
+    cache_multiplier: 0,
+    provider: 'openai',
+    model_api_name: 'gpt-4o',
+  },
+  'gemini-2.5-pro': {
+    model_key: 'gemini-2.5-pro',
+    model_name: 'Gemini 2.5 Pro',
+    input_multiplier: 4.375,
+    output_multiplier: 35,
+    reasoning_multiplier: 0,
+    cache_multiplier: 0,
+    provider: 'google',
+    model_api_name: 'google/gemini-2.5-pro',
+  },
+  'gemini-3.1-pro': {
+    model_key: 'gemini-3.1-pro',
+    model_name: 'Gemini 3.1 Pro',
+    input_multiplier: 7,
+    output_multiplier: 42,
+    reasoning_multiplier: 0,
+    cache_multiplier: 0.7,
+    provider: 'google',
+    model_api_name: 'google/gemini-3.1-pro',
+  },
+};
 
 const estimateTokens = (text = '') => {
   const normalized = String(text || '').trim();
@@ -198,11 +304,15 @@ const shouldRetryFetchError = (error) => {
   if (!error) return false;
   if (error.name === 'AbortError') return true;
   const message = String(error.message || '').toLowerCase();
+  const details = String(error.details || '').toLowerCase();
+  const combined = `${message}\n${details}`;
   if (error instanceof TypeError && message.includes('fetch')) return true;
-  if (message.includes('fetch failed')) return true;
-  if (message.includes('network')) return true;
-  if (message.includes('timeout')) return true;
-  if (message.includes('terminated')) return true;
+  if (combined.includes('fetch failed')) return true;
+  if (combined.includes('network')) return true;
+  if (combined.includes('timeout')) return true;
+  if (combined.includes('terminated')) return true;
+  if (combined.includes('connect timeout')) return true;
+  if (combined.includes('und_err_connect_timeout')) return true;
   return false;
 };
 
@@ -346,10 +456,186 @@ const extractMessageContent = (content) => {
   return '';
 };
 
+const streamTextFromReadable = async (readable, onText) => {
+  if (!readable) return '';
+
+  const reader = readable.getReader();
+  const decoder = new TextDecoder();
+  let fullText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value, { stream: true });
+    if (!text) continue;
+    fullText += text;
+    await onText?.(text);
+  }
+
+  const tail = decoder.decode();
+  if (tail) {
+    fullText += tail;
+    await onText?.(tail);
+  }
+
+  return fullText;
+};
+
+const parseJsonSafe = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return null;
+  }
+};
+
+const parseOpenAIStreamChunk = (chunk) => {
+  const delta = chunk?.choices?.[0]?.delta;
+  const message = chunk?.choices?.[0]?.message;
+  return extractMessageContent(delta?.content ?? message?.content ?? '');
+};
+
+const readOpenAICompatibleStream = async (response, onDelta) => {
+  let buffer = '';
+  let content = '';
+  let usage = null;
+  let rawFinal = null;
+
+  await streamTextFromReadable(response.body, async (text) => {
+    buffer += text;
+    const frames = buffer.split(/\r?\n\r?\n/);
+    buffer = frames.pop() || '';
+
+    for (const frame of frames) {
+      const lines = frame
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.replace(/^data:\s*/, ''));
+
+      for (const line of lines) {
+        if (!line || line === '[DONE]') continue;
+        const json = parseJsonSafe(line);
+        if (!json) continue;
+        rawFinal = json;
+        if (json.usage) usage = normalizeUsage(json.usage);
+
+        const delta = parseOpenAIStreamChunk(json);
+        if (delta) {
+          content += delta;
+          await onDelta?.(delta);
+        }
+      }
+    }
+  });
+
+  if (buffer.trim()) {
+    const lines = buffer
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.replace(/^data:\s*/, ''));
+    for (const line of lines) {
+      if (!line || line === '[DONE]') continue;
+      const json = parseJsonSafe(line);
+      if (!json) continue;
+      rawFinal = json;
+      if (json.usage) usage = normalizeUsage(json.usage);
+      const delta = parseOpenAIStreamChunk(json);
+      if (delta) {
+        content += delta;
+        await onDelta?.(delta);
+      }
+    }
+  }
+
+  return { content, usage: usage || normalizeUsage(rawFinal?.usage), raw: rawFinal };
+};
+
+const readAnthropicStream = async (response, onDelta) => {
+  let buffer = '';
+  let content = '';
+  let usage = null;
+  let currentEvent = '';
+  let rawFinal = null;
+
+  const processFrame = async (frame) => {
+    const eventLine = frame.split(/\r?\n/).find((line) => line.startsWith('event:'));
+    const dataLines = frame
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.replace(/^data:\s*/, ''));
+
+    if (eventLine) {
+      currentEvent = eventLine.replace(/^event:\s*/, '').trim();
+    }
+
+    for (const line of dataLines) {
+      if (!line || line === '[DONE]') continue;
+      const json = parseJsonSafe(line);
+      if (!json) continue;
+      rawFinal = json;
+
+      const delta = json?.delta?.text || json?.content_block?.text || '';
+      if (delta) {
+        content += delta;
+        await onDelta?.(delta);
+      }
+
+      if (json?.message?.usage || json?.usage) {
+        usage = normalizeUsage(json.message?.usage || json.usage);
+      }
+
+      if (currentEvent === 'message_delta' && json?.usage) {
+        usage = normalizeUsage({ ...(usage || {}), ...json.usage });
+      }
+    }
+  };
+
+  await streamTextFromReadable(response.body, async (text) => {
+    buffer += text;
+    const frames = buffer.split(/\r?\n\r?\n/);
+    buffer = frames.pop() || '';
+    for (const frame of frames) {
+      await processFrame(frame);
+    }
+  });
+
+  if (buffer.trim()) {
+    await processFrame(buffer);
+  }
+
+  return { content, usage: usage || normalizeUsage(rawFinal?.usage), raw: rawFinal };
+};
+
 const getRequestAccessToken = (headers = {}) => {
   const raw = headers.authorization || headers.Authorization || '';
   const match = String(raw).match(/^Bearer\s+(.+)$/i);
   return match?.[1] || '';
+};
+
+const safeBase64UrlDecode = (str = '') => {
+  const base64 = String(str).replace(/-/g, '+').replace(/_/g, '/');
+  const pad = base64.length % 4 ? '='.repeat(4 - (base64.length % 4)) : '';
+  return Buffer.from(base64 + pad, 'base64');
+};
+
+const parseJwtPayload = (token = '') => {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) return null;
+
+  try {
+    return JSON.parse(safeBase64UrlDecode(parts[1]).toString('utf8'));
+  } catch (error) {
+    log.error('JWT parsing failed', null, error);
+    return null;
+  }
+};
+
+const isJwtExpired = (payload) => {
+  const exp = Number(payload?.exp ?? 0);
+  return Number.isFinite(exp) && exp > 0 && exp * 1000 <= Date.now();
 };
 
 export const getRequestContext = (req) => {
@@ -402,48 +688,148 @@ const getSupabaseClientForRequest = (accessToken) => {
 const getAuthenticatedUser = async (supabase, accessToken) => {
   log.info('Authenticating user');
 
-  // Supabase JS v2 的 getUser 参数应直接传 access token。传 { jwt } 会被当成 token 字符串，
-  // 导致服务端每次都报 invalid Bearer token，进而拖慢 AI 请求的扣费前置流程。
   const startedAt = Date.now();
-  const { data, error } = await supabase.auth.getUser(accessToken);
+  const payload = parseJwtPayload(accessToken);
+  if (payload?.sub && !isJwtExpired(payload)) {
+    log.info('User authenticated via JWT claims', { userId: payload.sub, durationMs: Date.now() - startedAt });
+    return { id: payload.sub };
+  }
 
+  // If the local claim path cannot establish a usable subject, fall back to Supabase Auth.
+  const { data, error } = await supabase.auth.getUser(accessToken);
   if (!error && data?.user) {
-    log.info('User authenticated via getUser', { userId: data.user.id, durationMs: Date.now() - startedAt });
+    log.info('User authenticated via getUser fallback', { userId: data.user.id, durationMs: Date.now() - startedAt });
     return data.user;
   }
 
-  // 方案二：如果 getUser 失败，尝试直接解析 JWT（备用方案）
-  log.warn('getUser failed, falling back to JWT parsing', {
+  log.warn('User authentication failed', {
+    hasPayload: !!payload,
+    expired: isJwtExpired(payload),
     error: error?.message,
     durationMs: Date.now() - startedAt,
   });
-  const safeBase64UrlDecode = (str) => {
-    const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = base64.length % 4 ? "=".repeat(4 - (base64.length % 4)) : "";
-    return Buffer.from(base64 + pad, 'base64');
-  };
-  const parseJwt = (token) => {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    try {
-      const payload = JSON.parse(safeBase64UrlDecode(parts[1]).toString('utf8'));
-      return payload;
-    } catch (e) {
-      log.error('JWT parsing failed', null, e);
-      return null;
-    }
-  };
 
-  const payload = parseJwt(accessToken);
-  if (!payload?.sub) {
-    log.error('JWT parsing also failed, user cannot be authenticated');
+  if (!payload?.sub || isJwtExpired(payload)) {
     return null;
   }
-  log.info('User authenticated via JWT fallback', { userId: payload.sub });
+
+  // The Supabase client still carries the bearer token, so all RLS checks and billing RPCs
+  // continue to validate auth.uid() even when this fallback user object is returned.
+  log.info('User authenticated via JWT fallback after getUser miss', { userId: payload.sub });
   return { id: payload.sub };
 };
 
-const getModelPricingFromDb = async (supabase, modelKey) => {
+const validateRequestAuth = async ({ supabase, userId, traceId, kind }) => {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), AUTH_RLS_VALIDATION_TIMEOUT_MS);
+
+  let error = null;
+  try {
+    let query = supabase
+      .from('usage_logs')
+      .select('id')
+      .eq('user_id', userId)
+      .limit(1);
+
+    if (typeof query.abortSignal === 'function') {
+      query = query.abortSignal(controller.signal);
+    }
+
+    const result = await query;
+    error = result?.error || null;
+  } catch (caughtError) {
+    error = caughtError;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (error) {
+    if (shouldRetryFetchError(error)) {
+      log.warn('Request token RLS validation unavailable; continuing with JWT subject and downstream RLS/RPC checks', {
+        userId,
+        traceId,
+        kind,
+        durationMs: Date.now() - startedAt,
+        timeoutMs: AUTH_RLS_VALIDATION_TIMEOUT_MS,
+        error: formatDbError(error),
+      });
+      return { softPassed: true, reason: 'rls_validation_network_unavailable' };
+    }
+
+    log.warn('Request token rejected by Supabase RLS validation', {
+      userId,
+      traceId,
+      kind,
+      durationMs: Date.now() - startedAt,
+      error: formatDbError(error),
+    });
+    throw new Error('AUTH_RLS_VALIDATION_FAILED');
+  }
+
+  log.info('Request token accepted by Supabase RLS validation', {
+    userId,
+    traceId,
+    kind,
+    durationMs: Date.now() - startedAt,
+  });
+  return { softPassed: false };
+};
+
+const modelPricingCache = new Map();
+const modelPricingRefreshInflight = new Map();
+
+const normalizePricingRow = (row) => ({
+  ...row,
+  input_multiplier: Number(row.input_multiplier ?? 0),
+  output_multiplier: Number(row.output_multiplier ?? 0),
+  reasoning_multiplier: Number(row.reasoning_multiplier ?? 0),
+  cache_multiplier: Number(row.cache_multiplier ?? 0),
+});
+
+const getDefaultModelPricing = (modelKey) => {
+  const pricing = DEFAULT_MODEL_PRICING[modelKey];
+  return pricing ? normalizePricingRow(pricing) : null;
+};
+
+const setModelPricingCache = (modelKey, pricing, source = 'db') => {
+  modelPricingCache.set(modelKey, {
+    pricing: normalizePricingRow(pricing),
+    source,
+    cachedAt: Date.now(),
+    expiresAt: Date.now() + MODEL_PRICING_CACHE_TTL_MS,
+  });
+};
+
+const refreshModelPricingInBackground = (supabase, modelKey, reason = 'background') => {
+  if (modelPricingRefreshInflight.has(modelKey)) return;
+
+  const promise = (async () => {
+    log.info('Model pricing background refresh started', { modelKey, reason });
+    try {
+      const pricing = await fetchModelPricingFromDb(supabase, modelKey);
+      setModelPricingCache(modelKey, pricing, 'db');
+      log.success('Model pricing background refresh completed', {
+        modelKey,
+        reason,
+        inputMult: pricing.input_multiplier,
+        outputMult: pricing.output_multiplier,
+      });
+    } catch (error) {
+      log.warn('Model pricing background refresh failed', {
+        modelKey,
+        reason,
+        error: formatDbError(error) || { message: error?.message, name: error?.name },
+      });
+    } finally {
+      modelPricingRefreshInflight.delete(modelKey);
+    }
+  })();
+
+  modelPricingRefreshInflight.set(modelKey, promise);
+};
+
+const fetchModelPricingFromDb = async (supabase, modelKey) => {
   log.info('Fetching model pricing from DB', { modelKey });
 
   const { data, error } = await withSupabaseRetry(
@@ -468,13 +854,45 @@ const getModelPricingFromDb = async (supabase, modelKey) => {
   }
 
   log.info('Model pricing fetched', { modelKey, inputMult: data.input_multiplier, outputMult: data.output_multiplier });
-  return {
-    ...data,
-    input_multiplier: Number(data.input_multiplier ?? 0),
-    output_multiplier: Number(data.output_multiplier ?? 0),
-    reasoning_multiplier: Number(data.reasoning_multiplier ?? 0),
-    cache_multiplier: Number(data.cache_multiplier ?? 0),
-  };
+  return normalizePricingRow(data);
+};
+
+const getModelPricingFromDb = async (supabase, modelKey, options = {}) => {
+  const { allowFallback = false } = options;
+  const cached = modelPricingCache.get(modelKey);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    log.info('Model pricing cache hit', {
+      modelKey,
+      source: cached.source,
+      ageMs: now - (cached.cachedAt || now),
+    });
+    return cached.pricing;
+  }
+
+  const defaultPricing = getDefaultModelPricing(modelKey);
+  if (allowFallback && defaultPricing) {
+    const recentlyTried =
+      cached?.source === 'default' &&
+      cached.cachedAt &&
+      now - cached.cachedAt < MODEL_PRICING_REFRESH_GRACE_MS;
+
+    setModelPricingCache(modelKey, defaultPricing, 'default');
+    log.info('Model pricing default fallback used for preflight', {
+      modelKey,
+      reason: cached ? 'cache-expired-or-default' : 'cache-miss',
+      refreshQueued: !recentlyTried,
+      ttlMs: MODEL_PRICING_CACHE_TTL_MS,
+    });
+    if (!recentlyTried) {
+      refreshModelPricingInBackground(supabase, modelKey, 'preflight-fallback');
+    }
+    return defaultPricing;
+  }
+
+  const pricing = await fetchModelPricingFromDb(supabase, modelKey);
+  setModelPricingCache(modelKey, pricing, 'db');
+  return pricing;
 };
 
 const getEffectiveBalance = async (supabase, userId) => {
@@ -566,11 +984,21 @@ const createUserFacingError = (message, meta = {}) => {
 };
 
 const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, context }) => {
-  const balance = await getEffectiveBalance(supabase, userId);
+  const startedAt = Date.now();
+  const balancePromise = getEffectiveBalance(supabase, userId);
+  const pricingPromise = getModelPricingFromDb(supabase, model, { allowFallback: true });
+  const [balanceResult, pricingResult] = await Promise.allSettled([balancePromise, pricingPromise]);
+
+  if (balanceResult.status === 'rejected') {
+    throw balanceResult.reason;
+  }
+
+  const balance = balanceResult.value;
   let pricing;
-  try {
-    pricing = await getModelPricingFromDb(supabase, model);
-  } catch (error) {
+  if (pricingResult.status === 'fulfilled') {
+    pricing = pricingResult.value;
+  } else {
+    const error = pricingResult.reason;
     let host = '';
     try {
       host = SUPABASE_URL ? new URL(SUPABASE_URL).hostname : '';
@@ -596,6 +1024,9 @@ const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, co
     estimatedDiamonds,
     available: balance.totalRemaining,
     kind,
+    durationMs: Date.now() - startedAt,
+    balanceLoaded: balanceResult.status === 'fulfilled',
+    pricingLoaded: pricingResult.status === 'fulfilled',
   });
 
   if (estimatedDiamonds > SINGLE_CALL_DIAMOND_CAP) {
@@ -861,7 +1292,7 @@ const deductUsageOnServer = async ({ supabase, userId, model, usage, billingGrou
   return data;
 };
 
-const requestOpenAICompatible = async ({ config, messages, temperature }) => {
+const requestOpenAICompatible = async ({ config, messages, temperature, stream = false, onDelta, traceId }) => {
   if (!config.apiKey) {
     log.error('API Key missing for OpenAI-compatible provider', { provider: config.provider });
     throw new Error(`${config.provider} API Key is missing`);
@@ -873,19 +1304,24 @@ const requestOpenAICompatible = async ({ config, messages, temperature }) => {
     messages,
     temperature,
     max_tokens: config.maxOutputTokens || MAX_OUTPUT_TOKENS,
-    stream: false,
+    stream,
+    ...(stream && config.includeStreamUsage !== false ? { stream_options: { include_usage: true } } : {}),
   };
 
   log.info('Requesting OpenAI-compatible API', {
+    traceId,
     provider: config.provider,
     model: config.modelName,
     baseURL: config.baseURL,
+    stream,
   });
 
   let lastError;
   const maxAttempts = Math.max(1, Number(config.retries || 0) + 1);
+  let retriedWithoutStreamOptions = false;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const attemptStartedAt = Date.now();
     const controller = config.timeoutMs ? new AbortController() : null;
     const timeoutId =
       controller && config.timeoutMs ? setTimeout(() => controller.abort(), config.timeoutMs) : null;
@@ -902,29 +1338,63 @@ const requestOpenAICompatible = async ({ config, messages, temperature }) => {
         signal: controller?.signal,
       });
 
-      const data = await response.json().catch(() => null);
-
       if (!response.ok) {
+        const data = await response.json().catch(() => null);
         const message =
           data?.error?.message ||
           data?.message ||
           `${response.status} ${response.statusText}`;
         log.warn('OpenAI-compatible API returned error', {
+          traceId,
           provider: config.provider,
           model: config.modelName,
           status: response.status,
           errorMsg: message?.slice(0, 200),
           attempt: attempt + 1,
+          durationMs: Date.now() - attemptStartedAt,
         });
+
+        if (
+          stream &&
+          requestBody.stream_options &&
+          !retriedWithoutStreamOptions &&
+          response.status >= 400 &&
+          response.status < 500 &&
+          /stream_options|include_usage|unknown|unsupported|extra/i.test(message || '')
+        ) {
+          delete requestBody.stream_options;
+          retriedWithoutStreamOptions = true;
+          log.info('Retrying stream request without stream_options', { traceId, provider: config.provider, model: config.modelName });
+          attempt -= 1;
+          continue;
+        }
+
         throw new Error(message);
       }
 
+      if (stream) {
+        const streamed = await readOpenAICompatibleStream(response, onDelta);
+        log.info('OpenAI-compatible API stream success', {
+          traceId,
+          provider: config.provider,
+          model: config.modelName,
+          inputTokens: streamed.usage?.input_tokens || 0,
+          outputTokens: streamed.usage?.output_tokens || 0,
+          contentLength: streamed.content?.length || 0,
+          durationMs: Date.now() - attemptStartedAt,
+        });
+        return streamed;
+      }
+
+      const data = await response.json().catch(() => null);
       log.info('OpenAI-compatible API success', {
+        traceId,
         provider: config.provider,
         model: config.modelName,
         inputTokens: normalizeUsage(data?.usage).input_tokens,
         outputTokens: normalizeUsage(data?.usage).output_tokens,
         contentLength: data?.choices?.[0]?.message?.content?.length || 0,
+        durationMs: Date.now() - attemptStartedAt,
       });
 
       return {
@@ -935,7 +1405,7 @@ const requestOpenAICompatible = async ({ config, messages, temperature }) => {
     } catch (error) {
       lastError = error;
       if (attempt < maxAttempts - 1 && shouldRetryFetchError(error)) {
-        log.info('Retrying OpenAI-compatible request', { provider: config.provider, attempt: attempt + 1 });
+        log.info('Retrying OpenAI-compatible request', { traceId, provider: config.provider, attempt: attempt + 1 });
         await sleep(250 * (attempt + 1));
         continue;
       }
@@ -946,11 +1416,11 @@ const requestOpenAICompatible = async ({ config, messages, temperature }) => {
   }
 
   const suffix = config.provider ? ` (${config.provider})` : '';
-  log.error('OpenAI-compatible request failed after all attempts', { provider: config.provider, model: config.modelName }, lastError);
+  log.error('OpenAI-compatible request failed after all attempts', { traceId, provider: config.provider, model: config.modelName }, lastError);
   throw new Error(`${lastError?.message || 'fetch failed'}${suffix}`);
 };
 
-const requestAnthropic = async ({ config, messages, temperature }) => {
+const requestAnthropic = async ({ config, messages, temperature, stream = false, onDelta, traceId }) => {
   if (!config.apiKey) {
     log.error('Anthropic API Key missing');
     throw new Error('Anthropic API Key is missing');
@@ -959,7 +1429,8 @@ const requestAnthropic = async ({ config, messages, temperature }) => {
   const systemMessage = messages.find((message) => message.role === 'system')?.content || '';
   const userMessages = messages.filter((message) => message.role !== 'system');
 
-  log.info('Requesting Anthropic API', { model: config.modelName });
+  const startedAt = Date.now();
+  log.info('Requesting Anthropic API', { traceId, model: config.modelName, stream });
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -974,29 +1445,47 @@ const requestAnthropic = async ({ config, messages, temperature }) => {
       temperature,
       system: systemMessage,
       messages: userMessages,
+      stream,
     }),
   });
 
-  const data = await response.json().catch(() => null);
-
   if (!response.ok) {
+    const data = await response.json().catch(() => null);
     const message =
       data?.error?.message ||
       data?.message ||
       `${response.status} ${response.statusText}`;
     log.warn('Anthropic API returned error', {
+      traceId,
       model: config.modelName,
       status: response.status,
       errorMsg: message?.slice(0, 200),
+      durationMs: Date.now() - startedAt,
     });
     throw new Error(message);
   }
 
+  if (stream) {
+    const streamed = await readAnthropicStream(response, onDelta);
+    log.info('Anthropic API stream success', {
+      traceId,
+      model: config.modelName,
+      inputTokens: streamed.usage?.input_tokens || 0,
+      outputTokens: streamed.usage?.output_tokens || 0,
+      contentLength: streamed.content.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return streamed;
+  }
+
+  const data = await response.json().catch(() => null);
   log.info('Anthropic API success', {
+    traceId,
     model: config.modelName,
     inputTokens: normalizeUsage(data?.usage).input_tokens,
     outputTokens: normalizeUsage(data?.usage).output_tokens,
     contentLength: extractMessageContent(data?.content).length,
+    durationMs: Date.now() - startedAt,
   });
 
   return {
@@ -1006,7 +1495,7 @@ const requestAnthropic = async ({ config, messages, temperature }) => {
   };
 };
 
-const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig }) => {
+const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig, stream = false, onDelta, traceId }) => {
   const modelRegistry = getModelRegistry();
   const config = modelRegistry[model];
 
@@ -1018,10 +1507,10 @@ const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig 
   const finalConfig = runtimeConfig ? { ...config, ...runtimeConfig } : config;
 
   if (finalConfig.type === 'anthropic') {
-    return requestAnthropic({ config: finalConfig, messages, temperature });
+    return requestAnthropic({ config: finalConfig, messages, temperature, stream, onDelta, traceId });
   }
 
-  return requestOpenAICompatible({ config: finalConfig, messages, temperature });
+  return requestOpenAICompatible({ config: finalConfig, messages, temperature, stream, onDelta, traceId });
 };
 
 const saveGeneratedChapterContent = async ({
@@ -1136,9 +1625,26 @@ const saveGeneratedChapterContent = async ({
   return { savedToChapter: true, savedChapterContent: finalContent, generatedHtml, previewChapterContent: finalContent };
 };
 
-const executeAiTask = async ({ kind, prompt = '', context = '', model, messages, temperature, requestContext, billingGroupId, billingStep, afterSuccess }) => {
+const executeAiTask = async ({
+  kind,
+  prompt = '',
+  context = '',
+  model,
+  messages,
+  temperature,
+  requestContext,
+  billingGroupId,
+  billingStep,
+  afterSuccess,
+  stream = false,
+  onDelta,
+  onPhase,
+  traceId,
+}) => {
   const effectiveBillingGroupId = billingGroupId || randomUUID();
   const effectiveBillingStep = billingStep || kind;
+  const taskStartedAt = Date.now();
+  let phaseStartedAt = taskStartedAt;
 
   log.info('Executing AI task', {
     kind,
@@ -1148,6 +1654,7 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
     ip: requestContext?.ip,
     billingGroupId: effectiveBillingGroupId,
     billingStep: effectiveBillingStep,
+    traceId,
   });
 
   const accessToken = requestContext?.accessToken || '';
@@ -1157,11 +1664,33 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
     return { content: '', error: '请先登录后再使用 AI 创作功能。' };
   }
 
+  await onPhase?.({ phase: 'authenticating', label: '正在校验登录状态' });
   const user = await getAuthenticatedUser(supabase, accessToken);
   if (!user) {
     log.warn('AI task rejected: user authentication failed');
     return { content: '', error: '请先登录后再使用 AI 创作功能。' };
   }
+
+  try {
+    const authValidation = await validateRequestAuth({ supabase, userId: user.id, traceId, kind });
+    if (authValidation?.softPassed) {
+      log.warn('AI task auth validation soft-passed', {
+        traceId,
+        kind,
+        userId: user.id,
+        reason: authValidation.reason,
+      });
+    }
+  } catch (error) {
+    if (error?.message !== 'AUTH_RLS_VALIDATION_FAILED') throw error;
+    return { content: '', error: '请先登录后再使用 AI 创作功能。' };
+  }
+  log.info('AI task phase completed', {
+    traceId,
+    phase: 'authenticating',
+    userId: user.id,
+    durationMs: Date.now() - phaseStartedAt,
+  });
 
   let finalModel = model;
   if (finalModel === undefined) {
@@ -1175,6 +1704,9 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
   finalModel = finalModel.trim();
 
   try {
+    phaseStartedAt = Date.now();
+    await onPhase?.({ phase: 'preflight', label: '正在校验额度' });
+    log.info('AI task phase started', { traceId, phase: 'preflight', userId: user.id, model: finalModel });
     const preflight = await ensureBudgetPreflight({
       supabase,
       userId: user.id,
@@ -1183,7 +1715,19 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
       prompt,
       context,
     });
+    log.info('AI task phase completed', {
+      traceId,
+      phase: 'preflight',
+      userId: user.id,
+      model: finalModel,
+      durationMs: Date.now() - phaseStartedAt,
+      estimatedDiamonds: preflight.estimatedDiamonds,
+      available: preflight.balance.totalRemaining,
+    });
 
+    phaseStartedAt = Date.now();
+    await onPhase?.({ phase: 'requesting_model', label: '正在请求模型' });
+    log.info('AI task phase started', { traceId, phase: 'requesting_model', userId: user.id, model: finalModel });
     const result = await requestModel({
       model: finalModel,
       messages,
@@ -1195,8 +1739,33 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
               timeoutMs: SUMMARIZE_FETCH_TIMEOUT_MS,
             }
           : undefined,
+      stream,
+      onDelta,
+      traceId,
+    });
+    log.info('AI task phase completed', {
+      traceId,
+      phase: 'requesting_model',
+      userId: user.id,
+      model: finalModel,
+      durationMs: Date.now() - phaseStartedAt,
+      contentLength: result.content?.length || 0,
+    });
+    await onPhase?.({
+      phase: 'output_ready',
+      label: 'AI 输出完成',
+      generatedChars: result.content?.length || 0,
     });
 
+    phaseStartedAt = Date.now();
+    await onPhase?.({ phase: 'billing', label: '正在结算扣费' });
+    log.info('AI task model result received', {
+      traceId,
+      userId: user.id,
+      model: finalModel,
+      contentLength: result.content?.length || 0,
+      usage: result.usage,
+    });
     const usage = {
       input_tokens:
         result.usage?.input_tokens ??
@@ -1213,6 +1782,15 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
     };
 
     const actualDiamonds = calculateDiamondCost(preflight.pricing, usage);
+    log.info('AI task actual usage calculated', {
+      traceId,
+      userId: user.id,
+      model: finalModel,
+      actualDiamonds,
+      estimatedDiamonds: preflight.estimatedDiamonds,
+      availableBefore: preflight.balance.totalRemaining,
+      usage,
+    });
     if (actualDiamonds > SINGLE_CALL_DIAMOND_CAP) {
       log.warn('AI task result exceeds diamond cap after generation', {
         userId: user.id,
@@ -1238,8 +1816,26 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
       billingGroupId: effectiveBillingGroupId,
       billingStep: effectiveBillingStep,
     });
+    log.info('AI task phase completed', {
+      traceId,
+      phase: 'billing',
+      userId: user.id,
+      model: finalModel,
+      durationMs: Date.now() - phaseStartedAt,
+      diamondsConsumed: billing?.diamonds_consumed,
+      totalRemaining: billing?.total_remaining,
+    });
+    log.info('AI task billing completed', {
+      traceId,
+      userId: user.id,
+      model: finalModel,
+      diamondsConsumed: billing?.diamonds_consumed,
+      totalRemaining: billing?.total_remaining,
+      billingGroupId: effectiveBillingGroupId,
+      billingStep: effectiveBillingStep,
+    });
 
-    const warning = await detectAbnormalUsage({
+    const warningPromise = detectAbnormalUsage({
       supabase,
       userId: user.id,
       latestDiamonds: billing?.diamonds_consumed ?? actualDiamonds,
@@ -1247,6 +1843,9 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
 
     let afterSuccessPayload = {};
     if (typeof afterSuccess === 'function') {
+      phaseStartedAt = Date.now();
+      await onPhase?.({ phase: 'saving', label: '正在保存' });
+      log.info('AI task afterSuccess started', { traceId, userId: user.id, model: finalModel });
       afterSuccessPayload = await afterSuccess({
         supabase,
         user,
@@ -1254,7 +1853,16 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
         usage,
         billing,
       });
+      log.info('AI task afterSuccess completed', {
+        traceId,
+        userId: user.id,
+        model: finalModel,
+        savedToChapter: afterSuccessPayload?.savedToChapter,
+        generatedHtmlLength: afterSuccessPayload?.generatedHtml?.length || 0,
+        durationMs: Date.now() - phaseStartedAt,
+      });
     }
+    const warning = await warningPromise;
 
     log.info('AI task completed successfully', {
       kind,
@@ -1269,6 +1877,8 @@ const executeAiTask = async ({ kind, prompt = '', context = '', model, messages,
       hasWarning: !!warning,
       billingGroupId: effectiveBillingGroupId,
       billingStep: effectiveBillingStep,
+      traceId,
+      durationMs: Date.now() - taskStartedAt,
     });
 
     return {
@@ -1313,6 +1923,7 @@ export const generateTextServer = async ({
   model = 'deepseek-v4-flash',
   context,
   billingGroupId,
+  traceId,
   workId,
   chapterId,
   chapterTitle,
@@ -1340,6 +1951,7 @@ export const generateTextServer = async ({
     temperature: 0.7,
     requestContext,
     billingGroupId,
+    traceId,
     afterSuccess: isUuid(workId) && isUuid(chapterId)
       ? ({ supabase, user, content }) => saveGeneratedChapterContent({
           supabase,
@@ -1356,7 +1968,83 @@ export const generateTextServer = async ({
   });
 };
 
-export const summarizeContextServer = async ({ context, model = 'deepseek-v4-flash', billingGroupId }, requestContext = {}) => {
+export const streamGenerateTextServer = async ({
+  prompt,
+  model = 'deepseek-v4-flash',
+  context,
+  billingGroupId,
+  traceId,
+  workId,
+  chapterId,
+  chapterTitle,
+  baseContentHtml,
+  deferChapterSave,
+}, requestContext = {}, stream = {}) => {
+  const emit = typeof stream.emit === 'function' ? stream.emit : async () => {};
+  let generatedChars = 0;
+  log.info('AI generate stream server started', {
+    traceId,
+    model,
+    contextLength: context?.length || 0,
+    workId,
+    chapterId,
+    deferChapterSave,
+  });
+
+  const messages = [
+    {
+      role: 'system',
+      content:
+        '你是一个专业的小说续写助手。请严格参考以下背景设定与前文剧情（Context），确保新生成的情节或节点符合既有的人物性格与剧情发展逻辑，同时满足用户的具体要求（Task）。如果要求生成思维导图子节点，请返回 JSON。注意：单次输出请控制在 5000 字以内。如果内容较长，请在合适的段落处自然收尾并提示用户可继续生成。',
+    },
+    {
+      role: 'user',
+      content: `Context: ${context || '无'}\n\nTask: ${prompt}`,
+    },
+  ];
+
+  return executeAiTask({
+    kind: 'generate',
+    prompt,
+    context,
+    model,
+    messages,
+    temperature: 0.7,
+    requestContext,
+    billingGroupId,
+    traceId,
+    stream: true,
+    onPhase: (event) => emit({ type: 'phase', ...event }),
+    onDelta: async (delta) => {
+      generatedChars += delta.length;
+      if (generatedChars === delta.length || generatedChars % 500 < delta.length) {
+        log.info('AI stream delta emitted', { traceId, generatedChars, deltaLength: delta.length });
+      }
+      await emit({
+        type: 'delta',
+        delta,
+        generatedChars,
+        phase: 'streaming',
+        label: `AI 正在输出，已生成 ${generatedChars} 字`,
+      });
+    },
+    afterSuccess: isUuid(workId) && isUuid(chapterId)
+      ? ({ supabase, user, content }) => saveGeneratedChapterContent({
+          supabase,
+          userId: user.id,
+          workId,
+          chapterId,
+          chapterTitle,
+          baseContentHtml,
+          generatedContent: content,
+          prompt,
+          deferChapterSave,
+        })
+      : undefined,
+  });
+};
+
+export const summarizeContextServer = async ({ context, model = 'deepseek-v4-flash', billingGroupId, traceId }, requestContext = {}) => {
   const messages = [
     {
       role: 'system',
@@ -1377,6 +2065,7 @@ export const summarizeContextServer = async ({ context, model = 'deepseek-v4-fla
     temperature: 0.3,
     requestContext,
     billingGroupId,
+    traceId,
   });
 };
 
@@ -1406,4 +2095,50 @@ export const sendJson = (res, statusCode, payload) => {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(payload));
+};
+
+export const sendNdjson = async (res, producer) => {
+  const setHeader = (name, value) => {
+    if (typeof res.setHeader === 'function') {
+      res.setHeader(name, value);
+    } else if (typeof res.set === 'function') {
+      res.set(name, value);
+    }
+  };
+
+  if (typeof res.status === 'function') {
+    res.status(200);
+  } else {
+    res.statusCode = 200;
+  }
+
+  setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  setHeader('Cache-Control', 'no-cache, no-transform');
+  setHeader('Connection', 'keep-alive');
+  setHeader('X-Accel-Buffering', 'no');
+
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
+  const write = async (event) => {
+    const line = `${JSON.stringify(event)}\n`;
+    if (typeof res.write !== 'function') return;
+    if (!res.write(line)) {
+      await new Promise((resolve) => res.once?.('drain', resolve) || resolve());
+    }
+  };
+
+  try {
+    await producer(write);
+  } catch (error) {
+    await write({
+      type: 'error',
+      error: error instanceof Error ? error.message : 'AI request failed',
+    });
+  } finally {
+    if (typeof res.end === 'function' && !res.writableEnded) {
+      res.end();
+    }
+  }
 };

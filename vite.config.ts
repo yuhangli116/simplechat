@@ -1,7 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
-import { generateTextServer, getRequestContext, parseRequestBody, sendJson, summarizeContextServer } from './server/aiProxy.js'
+import { generateTextServer, getRequestContext, parseRequestBody, sendJson, sendNdjson, streamGenerateTextServer, summarizeContextServer } from './server/aiProxy.js'
 import { createServerLogger, persistBatchLogs, initLogger } from './server/logger.js'
 
 const log = createServerLogger('ViteDev')
@@ -64,6 +64,39 @@ export default defineConfig(({ mode }) => {
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI request failed' })
             }
           })
+          server.middlewares.use('/api/ai/generate-stream', async (req, res) => {
+            if (req.method !== 'POST') {
+              sendJson(res, 405, { error: 'Method not allowed' })
+              return
+            }
+            try {
+              const body = await parseRequestBody(req)
+              const requestContext = getRequestContext(req)
+              log.info('AI generate stream request (dev)', {
+                traceId: body.traceId,
+                model: body.model,
+                ip: requestContext.ip,
+                workId: body.workId,
+                chapterId: body.chapterId,
+                deferChapterSave: body.deferChapterSave,
+              })
+              await sendNdjson(res, async (write) => {
+                const result = await streamGenerateTextServer(body, requestContext, {
+                  emit: write,
+                })
+                if (result.error) {
+                  log.warn('AI generate stream returned error (dev)', { traceId: body.traceId, model: body.model, error: result.error?.slice(0, 200) })
+                  await write({ type: 'error', error: result.error, billing: result.billing })
+                  return
+                }
+                log.info('AI generate stream success (dev)', { traceId: body.traceId, model: body.model, totalCost: result.usage?.total_cost })
+                await write({ type: 'done', ...result })
+              })
+            } catch (error) {
+              log.error('AI generate stream unhandled error (dev)', {}, error)
+              sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI request failed' })
+            }
+          })
           server.middlewares.use('/api/ai/summarize', async (req, res) => {
             if (req.method !== 'POST') {
               sendJson(res, 405, { error: 'Method not allowed' })
@@ -72,12 +105,27 @@ export default defineConfig(({ mode }) => {
             try {
               const body = await parseRequestBody(req)
               const requestContext = getRequestContext(req)
-              log.info('AI summarize request (dev)', { model: body.model, ip: requestContext.ip })
+              log.info('AI summarize request (dev)', {
+                traceId: body.traceId,
+                model: body.model,
+                billingGroupId: body.billingGroupId,
+                ip: requestContext.ip,
+              })
               const result = await summarizeContextServer(body, requestContext)
               if (result.error) {
-                log.warn('AI summarize returned error (dev)', { model: body.model, error: result.error?.slice(0, 200) })
+                log.warn('AI summarize returned error (dev)', {
+                  traceId: body.traceId,
+                  model: body.model,
+                  billingGroupId: body.billingGroupId,
+                  error: result.error?.slice(0, 200),
+                })
               } else {
-                log.info('AI summarize success (dev)', { model: body.model, totalCost: result.usage?.total_cost })
+                log.info('AI summarize success (dev)', {
+                  traceId: body.traceId,
+                  model: body.model,
+                  billingGroupId: body.billingGroupId,
+                  totalCost: result.usage?.total_cost,
+                })
               }
               sendJson(res, 200, result)
             } catch (error) {

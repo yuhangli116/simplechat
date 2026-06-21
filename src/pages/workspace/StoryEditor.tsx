@@ -55,9 +55,320 @@ type PendingAiVersion = {
   prompt: string;
   model: string;
   usage: { input_tokens: number; output_tokens: number; total_cost: number } | null;
+  status?: 'streaming' | 'output_ready' | 'ready' | 'error';
+  phaseLabel?: string;
+  error?: string;
+};
+
+type AiApplyOptions = {
+  snapshotCurrentAs?: Parameters<typeof createChapterVersion>[0]['source'];
+  snapshotNextAs?: Parameters<typeof createChapterVersion>[0]['source'];
+  prompt?: string | null;
+  model?: string | null;
+};
+
+type ReferenceSummaryNotice = {
+  tone: 'info' | 'success' | 'warning';
+  text: string;
 };
 
 const STORY_SAVE_RETRY_DELAYS = [500, 1200, 2500];
+const AI_REFERENCE_SUMMARY_THRESHOLD = 3000;
+const AI_REFERENCE_SUMMARY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const AI_REFERENCE_SUMMARY_CACHE_PREFIX = 'story-ai-summary-v2';
+const AI_REFERENCE_SUMMARY_CACHE_MAX_ENTRIES = 20;
+const AI_REFERENCE_SUMMARY_CACHE_MAX_BYTES = 500 * 1024;
+const AI_REFERENCE_NODE_SUMMARY_THRESHOLD = 1200;
+
+type ReferenceSummaryCacheEntry = {
+  version: 2;
+  userId: string;
+  model: string;
+  contentHash: string;
+  sourceName: string;
+  summary: string;
+  originalLength: number;
+  createdAt: number;
+  lastUsedAt: number;
+};
+
+const hashText = (value: string) => {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const getReferenceSummaryCacheKey = (userId: string | undefined, model: string, content: string) =>
+  `${AI_REFERENCE_SUMMARY_CACHE_PREFIX}-${userId || 'anonymous'}-${model}-${hashText(content)}`;
+
+const getLegacyReferenceSummaryCacheKey = (userId: string | undefined, model: string, references: string) =>
+  `story-ai-summary-v1-${userId || 'anonymous'}-${model}-${hashText(references)}`;
+
+const getLocalStorageSize = (value: string) => new Blob([value]).size;
+
+const listReferenceSummaryCacheEntries = (userId?: string) => {
+  if (typeof window === 'undefined') return [];
+  const entries: Array<{ key: string; raw: string; value: ReferenceSummaryCacheEntry; size: number }> = [];
+  const prefix = `${AI_REFERENCE_SUMMARY_CACHE_PREFIX}-${userId || 'anonymous'}-`;
+
+  for (let i = 0; i < window.localStorage.length; i += 1) {
+    const key = window.localStorage.key(i);
+    if (!key || !key.startsWith(prefix)) continue;
+    const raw = window.localStorage.getItem(key);
+    if (!raw) continue;
+    try {
+      const value = JSON.parse(raw) as ReferenceSummaryCacheEntry;
+      if (!value.summary || !value.createdAt || !value.lastUsedAt) {
+        window.localStorage.removeItem(key);
+        continue;
+      }
+      entries.push({ key, raw, value, size: getLocalStorageSize(raw) });
+    } catch {
+      window.localStorage.removeItem(key);
+    }
+  }
+
+  return entries;
+};
+
+const cleanupReferenceSummaryCache = (userId?: string, reason = 'maintenance') => {
+  if (typeof window === 'undefined') return { removed: 0, kept: 0, totalBytes: 0 };
+  const now = Date.now();
+  let removed = 0;
+  let entries = listReferenceSummaryCacheEntries(userId);
+
+  for (const entry of entries) {
+    if (now - entry.value.createdAt > AI_REFERENCE_SUMMARY_CACHE_TTL_MS) {
+      window.localStorage.removeItem(entry.key);
+      removed += 1;
+    }
+  }
+
+  entries = listReferenceSummaryCacheEntries(userId).sort((a, b) => b.value.lastUsedAt - a.value.lastUsedAt);
+  let totalBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+  const overflow = entries.slice(AI_REFERENCE_SUMMARY_CACHE_MAX_ENTRIES);
+  for (const entry of overflow) {
+    window.localStorage.removeItem(entry.key);
+    totalBytes -= entry.size;
+    removed += 1;
+  }
+
+  entries = listReferenceSummaryCacheEntries(userId).sort((a, b) => a.value.lastUsedAt - b.value.lastUsedAt);
+  totalBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+  for (const entry of entries) {
+    if (totalBytes <= AI_REFERENCE_SUMMARY_CACHE_MAX_BYTES) break;
+    window.localStorage.removeItem(entry.key);
+    totalBytes -= entry.size;
+    removed += 1;
+  }
+
+  const kept = listReferenceSummaryCacheEntries(userId);
+  const keptBytes = kept.reduce((sum, entry) => sum + entry.size, 0);
+  log.info('AI reference summary cache cleanup completed', {
+    userId,
+    reason,
+    removed,
+    kept: kept.length,
+    totalBytes: keptBytes,
+    maxEntries: AI_REFERENCE_SUMMARY_CACHE_MAX_ENTRIES,
+    maxBytes: AI_REFERENCE_SUMMARY_CACHE_MAX_BYTES,
+  });
+  return { removed, kept: kept.length, totalBytes: keptBytes };
+};
+
+const readReferenceSummaryCache = (params: {
+  key: string;
+  legacyKey?: string;
+  userId?: string;
+  traceId?: string;
+  sourceName?: string;
+}) => {
+  if (typeof window === 'undefined') return null;
+  cleanupReferenceSummaryCache(params.userId, 'read-before');
+  try {
+    const raw = window.localStorage.getItem(params.key);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ReferenceSummaryCacheEntry;
+      if (!parsed.summary || !parsed.createdAt) return null;
+      if (Date.now() - parsed.createdAt > AI_REFERENCE_SUMMARY_CACHE_TTL_MS) {
+        window.localStorage.removeItem(params.key);
+        log.info('AI reference summary cache expired', {
+          traceId: params.traceId,
+          key: params.key,
+          sourceName: params.sourceName,
+          ageMs: Date.now() - parsed.createdAt,
+        });
+        return null;
+      }
+      const next: ReferenceSummaryCacheEntry = { ...parsed, lastUsedAt: Date.now() };
+      window.localStorage.setItem(params.key, JSON.stringify(next));
+      log.info('AI reference summary cache hit', {
+        traceId: params.traceId,
+        key: params.key,
+        sourceName: params.sourceName || parsed.sourceName,
+        summaryLength: parsed.summary.length,
+        ageMs: Date.now() - parsed.createdAt,
+        totalEntries: listReferenceSummaryCacheEntries(params.userId).length,
+      });
+      return parsed.summary;
+    }
+
+    if (params.legacyKey) {
+      const legacyRaw = window.localStorage.getItem(params.legacyKey);
+      if (!legacyRaw) return null;
+      const legacy = JSON.parse(legacyRaw) as { content?: string; createdAt?: number };
+      if (!legacy.content || !legacy.createdAt) return null;
+      if (Date.now() - legacy.createdAt > AI_REFERENCE_SUMMARY_CACHE_TTL_MS) {
+        window.localStorage.removeItem(params.legacyKey);
+        return null;
+      }
+      log.info('AI reference summary legacy cache hit', {
+        traceId: params.traceId,
+        legacyKey: params.legacyKey,
+        sourceName: params.sourceName,
+        summaryLength: legacy.content.length,
+      });
+      return legacy.content;
+    }
+
+    return null;
+  } catch {
+    log.warn('AI reference summary cache read failed', {
+      traceId: params.traceId,
+      key: params.key,
+      sourceName: params.sourceName,
+    });
+    return null;
+  }
+};
+
+const writeReferenceSummaryCache = (params: {
+  key: string;
+  userId?: string;
+  model: string;
+  contentHash: string;
+  sourceName: string;
+  summary: string;
+  originalLength: number;
+  traceId?: string;
+}) => {
+  if (typeof window === 'undefined' || !params.summary.trim()) return;
+  try {
+    cleanupReferenceSummaryCache(params.userId, 'write-before');
+    const entry: ReferenceSummaryCacheEntry = {
+      version: 2,
+      userId: params.userId || 'anonymous',
+      model: params.model,
+      contentHash: params.contentHash,
+      sourceName: params.sourceName,
+      summary: params.summary,
+      originalLength: params.originalLength,
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+    };
+    const raw = JSON.stringify(entry);
+    if (getLocalStorageSize(raw) > AI_REFERENCE_SUMMARY_CACHE_MAX_BYTES) {
+      log.warn('AI reference summary cache write skipped: entry too large', {
+        traceId: params.traceId,
+        key: params.key,
+        sourceName: params.sourceName,
+        bytes: getLocalStorageSize(raw),
+        maxBytes: AI_REFERENCE_SUMMARY_CACHE_MAX_BYTES,
+      });
+      return;
+    }
+    window.localStorage.setItem(params.key, raw);
+    const stats = cleanupReferenceSummaryCache(params.userId, 'write-after');
+    log.success('AI reference summary cached', {
+      traceId: params.traceId,
+      key: params.key,
+      sourceName: params.sourceName,
+      summaryLength: params.summary.length,
+      originalLength: params.originalLength,
+      totalEntries: stats.kept,
+      totalBytes: stats.totalBytes,
+    });
+  } catch {
+    log.warn('AI reference summary cache write failed', {
+      traceId: params.traceId,
+      key: params.key,
+      sourceName: params.sourceName,
+    });
+  }
+};
+
+const readReferenceNodeSummaryCache = (params: {
+  userId?: string;
+  model: string;
+  context: { nodeId: string; content: string; sourceName: string };
+  traceId?: string;
+}) => {
+  const key = getReferenceSummaryCacheKey(params.userId, params.model, params.context.content);
+  return readReferenceSummaryCache({
+    key,
+    userId: params.userId,
+    traceId: params.traceId,
+    sourceName: params.context.sourceName,
+  });
+};
+
+const writeReferenceNodeSummaryCache = (params: {
+  userId?: string;
+  model: string;
+  context: { nodeId: string; content: string; sourceName: string };
+  summary: string;
+  traceId?: string;
+}) => {
+  writeReferenceSummaryCache({
+    key: getReferenceSummaryCacheKey(params.userId, params.model, params.context.content),
+    userId: params.userId,
+    model: params.model,
+    contentHash: hashText(params.context.content),
+    sourceName: params.context.sourceName,
+    summary: params.summary,
+    originalLength: params.context.content.length,
+    traceId: params.traceId,
+  });
+};
+
+const getReferenceCombinedCacheKeys = (userId: string | undefined, model: string, references: string) => ({
+  key: getReferenceSummaryCacheKey(userId, model, references),
+  legacyKey: getLegacyReferenceSummaryCacheKey(userId, model, references),
+});
+
+const buildReferenceContextWithCachedNodeSummaries = (params: {
+  contexts: Array<{ nodeId: string; content: string; sourceName: string }>;
+  userId?: string;
+  model: string;
+  traceId?: string;
+}) => {
+  const parts: string[] = [];
+  let hits = 0;
+  let misses = 0;
+  for (const context of params.contexts) {
+    if (context.content.length <= AI_REFERENCE_NODE_SUMMARY_THRESHOLD) {
+      parts.push(`来源: ${context.sourceName}\n内容:\n${context.content}`);
+      misses += 1;
+      continue;
+    }
+    const summary = readReferenceNodeSummaryCache({
+      userId: params.userId,
+      model: params.model,
+      context,
+      traceId: params.traceId,
+    });
+    if (summary) {
+      parts.push(`来源: ${context.sourceName}\n摘要:\n${summary}`);
+      hits += 1;
+    } else {
+      parts.push(`来源: ${context.sourceName}\n内容:\n${context.content}`);
+      misses += 1;
+    }
+  }
+  return { references: parts.join('\n\n'), hits, misses };
+};
 
 const TEXT_COLOR_PALETTE = [
   '#111827',
@@ -128,6 +439,13 @@ const isMeaningfulHtml = (content: string | null | undefined) => {
   return plain.length > 0;
 };
 
+const appendHtml = (baseContentHtml = '', generatedHtml = '') => {
+  const base = String(baseContentHtml || '').trim();
+  const generated = String(generatedHtml || '').trim();
+  if (!base || base === '<p></p>') return generated;
+  return `${base}${generated}`;
+};
+
 const formatVersionDate = (value: string) =>
   new Date(value).toLocaleString('zh-CN', {
     month: '2-digit',
@@ -165,6 +483,9 @@ const StoryEditor = () => {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState('');
   const [pendingAiVersion, setPendingAiVersion] = useState<PendingAiVersion | null>(null);
+  const [pendingAiApplyRequested, setPendingAiApplyRequested] = useState(false);
+  const [referenceSummaryNotice, setReferenceSummaryNotice] = useState<ReferenceSummaryNotice | null>(null);
+  const pendingAiApplyRequestedRef = React.useRef(false);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   const [chapterVersions, setChapterVersions] = useState<ChapterVersion[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
@@ -176,6 +497,12 @@ const StoryEditor = () => {
   const saveInFlightRef = React.useRef(false);
   const saveQueuedRef = React.useRef(false);
   const suppressEditorUpdateRef = React.useRef(false);
+  const aiVisibleCompletionRef = React.useRef(false);
+  const referenceSummaryInflightRef = React.useRef<Map<string, Promise<{
+    summary: string;
+    usage: { input_tokens: number; output_tokens: number; total_cost: number } | null;
+    billingGroupId: string;
+  }>>>(new Map());
 
   useEffect(() => {
     syncModelPricingFromDb().catch((error) => {
@@ -430,12 +757,7 @@ const StoryEditor = () => {
   const applyChapterContent = useCallback(async (
     content: string,
     reason: string,
-    options: {
-      snapshotCurrentAs?: Parameters<typeof createChapterVersion>[0]['source'];
-      snapshotNextAs?: Parameters<typeof createChapterVersion>[0]['source'];
-      prompt?: string | null;
-      model?: string | null;
-    } = {}
+    options: AiApplyOptions & { deferSave?: boolean } = {}
   ) => {
     if (!editor || !workId || !chapterId) return;
 
@@ -456,6 +778,16 @@ const StoryEditor = () => {
     window.setTimeout(() => {
       suppressEditorUpdateRef.current = false;
     }, 0);
+
+    if (options.deferSave) {
+      log.info('Chapter content preview applied without persistence', {
+        workId,
+        chapterId,
+        reason,
+        contentLength: content?.length || 0,
+      });
+      return;
+    }
 
     await persistChapterWithRetry(content || '', reason);
 
@@ -666,9 +998,65 @@ const StoryEditor = () => {
   const handleContextSelect = (context: { nodeId: string, content: string, sourceName: string }) => {
     setAiContexts(prev => {
       if (prev.some(c => c.nodeId === context.nodeId)) {
+        log.info('AI reference context selection ignored because it already exists', {
+          workId,
+          chapterId,
+          nodeId: context.nodeId,
+          sourceName: context.sourceName,
+        });
         return prev;
       }
       return [...prev, context];
+    });
+
+    if (!selectedModel || !(selectedModel in MODEL_PRICING)) {
+      log.info('AI reference pre-summary skipped: no selected model', {
+        workId,
+        chapterId,
+        nodeId: context.nodeId,
+        sourceName: context.sourceName,
+      });
+      return;
+    }
+
+    if (context.content.length <= AI_REFERENCE_NODE_SUMMARY_THRESHOLD) {
+      showReferenceSummaryNotice({
+        tone: 'info',
+        text: `「${context.sourceName}」参考内容较短，将直接用于续写，不需要单独总结`,
+      }, { autoClearMs: 5000 });
+      log.info('AI reference pre-summary skipped: content below node threshold', {
+        workId,
+        chapterId,
+        nodeId: context.nodeId,
+        sourceName: context.sourceName,
+        contentLength: context.content.length,
+        threshold: AI_REFERENCE_NODE_SUMMARY_THRESHOLD,
+      });
+      return;
+    }
+
+    const traceId = uuidv4();
+    const cached = readReferenceNodeSummaryCache({
+      userId: user?.id,
+      model: selectedModel as LocalModelKey,
+      context,
+      traceId,
+    });
+    if (cached) {
+      showReferenceSummaryNotice({
+        tone: 'success',
+        text: `已复用「${context.sourceName}」参考摘要，本次参考处理不消耗钻石`,
+      }, { autoClearMs: 5000 });
+      return;
+    }
+
+    void summarizeReferenceContext({
+      context,
+      model: selectedModel as LocalModelKey,
+      traceId,
+      reason: 'prewarm',
+    }).catch(() => {
+      // Failure is already logged and shown; AI 续写时仍可重试。
     });
   };
 
@@ -706,7 +1094,7 @@ const StoryEditor = () => {
       const line = lines[0];
       const trimmed = String(line ?? '').trim();
       const normalizedLine = normalize(trimmed);
-      const normalizedLineStripped = normalize(trimmed.replace(/^[\-\*\u2022>\s"'“”‘’]+/g, ''));
+      const normalizedLineStripped = normalize(trimmed.replace(/^[-*\u2022>\s"'“”‘’]+/g, ''));
 
       const isExact =
         normalizedLine === normalizedPrompt || normalizedLineStripped === normalizedPrompt;
@@ -741,33 +1129,6 @@ const StoryEditor = () => {
     return lines.join('\n').trimStart();
   };
 
-  const insertContentGradually = async (content: string) => {
-    if (!editor) return;
-
-    const normalizedContent = content.trim();
-    if (!normalizedContent) return;
-
-    // 按双换行符分割段落（支持 \n\n 或 \r\n\r\n）
-    const paragraphs = normalizedContent
-      .split(/\n\s*\n/)
-      .map(p => p.trim())
-      .filter(p => p.length > 0);
-
-    // 逐段落插入
-    for (let i = 0; i < paragraphs.length; i++) {
-      const paragraph = paragraphs[i];
-      
-      // 将段落内的单个换行符替换为空格（处理行内换行）
-      const paragraphText = paragraph.replace(/\n/g, ' ');
-      
-      // 插入新段落
-      editor.commands.insertContent(`<p>${escapeHtml(paragraphText)}</p>`);
-      
-      // 添加短暂延迟，让用户看到插入过程
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
-    }
-  };
-
   const textToParagraphHtml = (content: string) => {
     const paragraphs = String(content || '')
       .trim()
@@ -776,6 +1137,175 @@ const StoryEditor = () => {
       .filter(Boolean);
     return paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join('');
   };
+
+  const setLastUsageTemporarily = (usage: PendingAiVersion['usage']) => {
+    if (!usage) return;
+    setLastUsage(usage);
+    setTimeout(() => setLastUsage(null), 5000);
+  };
+
+  const showReferenceSummaryNotice = useCallback((
+    notice: ReferenceSummaryNotice | null,
+    options: { autoClearMs?: number } = {}
+  ) => {
+    setReferenceSummaryNotice(notice);
+    if (notice && options.autoClearMs) {
+      window.setTimeout(() => {
+        setReferenceSummaryNotice((current) => current?.text === notice.text ? null : current);
+      }, options.autoClearMs);
+    }
+  }, []);
+
+  const summarizeReferenceContext = useCallback(async ({
+    context,
+    model,
+    traceId,
+    reason,
+  }: {
+    context: { nodeId: string; content: string; sourceName: string };
+    model: LocalModelKey;
+    traceId: string;
+    reason: 'prewarm' | 'continue';
+  }) => {
+    const cacheKey = getReferenceSummaryCacheKey(user?.id, model, context.content);
+    const cached = readReferenceSummaryCache({
+      key: cacheKey,
+      userId: user?.id,
+      traceId,
+      sourceName: context.sourceName,
+    });
+    if (cached) {
+      showReferenceSummaryNotice({
+        tone: 'success',
+        text: `已复用「${context.sourceName}」参考摘要，本次参考处理不消耗钻石`,
+      }, { autoClearMs: 5000 });
+      log.info('AI reference summary reused without billing', {
+        traceId,
+        workId,
+        chapterId,
+        model,
+        reason,
+        nodeId: context.nodeId,
+        sourceName: context.sourceName,
+        contentLength: context.content.length,
+        summaryLength: cached.length,
+      });
+      return { summary: cached, usage: null, billingGroupId: '' };
+    }
+
+    const existing = referenceSummaryInflightRef.current.get(cacheKey);
+    if (existing) {
+      showReferenceSummaryNotice({
+        tone: 'info',
+        text: `正在准备「${context.sourceName}」参考摘要，请稍候`,
+      });
+      log.info('AI reference summary awaiting in-flight request', {
+        traceId,
+        workId,
+        chapterId,
+        model,
+        reason,
+        nodeId: context.nodeId,
+        sourceName: context.sourceName,
+      });
+      return existing;
+    }
+
+    const billingGroupId = uuidv4();
+    showReferenceSummaryNotice({
+      tone: 'warning',
+      text: `正在总结「${context.sourceName}」参考大纲，本次总结会消耗钻石`,
+    });
+    log.info('AI reference summary started; billing will be charged', {
+      traceId,
+      workId,
+      chapterId,
+      model,
+      reason,
+      nodeId: context.nodeId,
+      sourceName: context.sourceName,
+      contentLength: context.content.length,
+      billingGroupId,
+    });
+
+    const promise = aiService
+      .summarizeContext(context.content, user?.id, model, billingGroupId, traceId)
+      .then((summaryRes) => {
+        if (summaryRes.error) {
+          throw new Error(summaryRes.error);
+        }
+        writeReferenceNodeSummaryCache({
+          userId: user?.id,
+          model,
+          context,
+          summary: summaryRes.content,
+          traceId,
+        });
+        showReferenceSummaryNotice({
+          tone: 'success',
+          text: `参考摘要已生成并缓存，下次相同参考可直接复用`,
+        }, { autoClearMs: 6000 });
+        log.success('AI reference summary completed and cached', {
+          traceId,
+          workId,
+          chapterId,
+          model,
+          reason,
+          nodeId: context.nodeId,
+          sourceName: context.sourceName,
+          contentLength: context.content.length,
+          summaryLength: summaryRes.content.length,
+          totalCost: summaryRes.usage?.total_cost,
+          billingGroupId,
+        });
+        return {
+          summary: summaryRes.content,
+          usage: summaryRes.usage || null,
+          billingGroupId,
+        };
+      })
+      .catch((error) => {
+        showReferenceSummaryNotice({
+          tone: 'warning',
+          text: `参考摘要生成失败，请重试`,
+        }, { autoClearMs: 6000 });
+        log.error('AI reference summary failed', {
+          traceId,
+          workId,
+          chapterId,
+          model,
+          reason,
+          nodeId: context.nodeId,
+          sourceName: context.sourceName,
+          billingGroupId,
+        }, error);
+        throw error;
+      })
+      .finally(() => {
+        referenceSummaryInflightRef.current.delete(cacheKey);
+      });
+
+    referenceSummaryInflightRef.current.set(cacheKey, promise);
+    return promise;
+  }, [chapterId, showReferenceSummaryNotice, user, workId]);
+
+  const setEditorPreviewContent = useCallback((content: string, traceId?: string) => {
+    if (!editor || !workId || !chapterId) return;
+    suppressEditorUpdateRef.current = true;
+    editor.commands.setContent(content || '');
+    latestContentRef.current = content || '';
+    setSaveState('dirty');
+    setSaveError('');
+    window.setTimeout(() => {
+      suppressEditorUpdateRef.current = false;
+    }, 0);
+    log.info('AI stream preview rendered in editor', {
+      traceId,
+      workId,
+      chapterId,
+      contentLength: content?.length || 0,
+    });
+  }, [chapterId, editor, workId]);
 
   const openVersionHistory = async () => {
     if (!user || isGuestUser(user)) {
@@ -807,32 +1337,68 @@ const StoryEditor = () => {
     log.info('Pending AI version cancelled', {
       workId,
       chapterId,
+      status: pendingAiVersion.status,
       currentLength: pendingAiVersion.currentContent.length,
       nextLength: pendingAiVersion.nextContent.length,
+      generatedLength: pendingAiVersion.generatedHtml.length,
     });
     setPendingAiVersion(null);
+    setPendingAiApplyRequested(false);
+    pendingAiApplyRequestedRef.current = false;
   };
 
-  const handleApplyPendingAiVersion = async () => {
-    if (!pendingAiVersion) return;
+  const applyPendingAiVersion = useCallback(async (version: PendingAiVersion) => {
     try {
-      await applyChapterContent(pendingAiVersion.nextContent, 'ai-version-apply', {
+      log.info('Applying pending AI version', {
+        workId,
+        chapterId,
+        status: version.status,
+        currentLength: version.currentContent.length,
+        generatedLength: version.generatedHtml.length,
+        nextLength: version.nextContent.length,
+        totalCost: version.usage?.total_cost,
+      });
+      await applyChapterContent(version.nextContent, 'ai-version-apply', {
         snapshotCurrentAs: 'ai-current-before-replace',
         snapshotNextAs: 'ai-applied',
-        prompt: pendingAiVersion.prompt,
-        model: pendingAiVersion.model,
+        prompt: version.prompt,
+        model: version.model,
       });
-      if (pendingAiVersion.usage) {
-        setLastUsage(pendingAiVersion.usage);
-        setTimeout(() => setLastUsage(null), 5000);
-      }
+      setLastUsageTemporarily(version.usage);
       setPendingAiVersion(null);
+      setPendingAiApplyRequested(false);
+      pendingAiApplyRequestedRef.current = false;
       setPromptText('');
       if (user && !isGuestUser(user)) fetchBalance();
+      log.success('Pending AI version applied', { workId, chapterId });
     } catch (error) {
       log.error('Failed to apply pending AI version', { workId, chapterId }, error);
       alert('应用 AI 新版本失败，请检查网络后重试');
     }
+  }, [applyChapterContent, chapterId, fetchBalance, setLastUsageTemporarily, user, workId]);
+
+  const handleApplyPendingAiVersion = async () => {
+    if (!pendingAiVersion) return;
+    if ((pendingAiVersion.status || 'ready') === 'output_ready') {
+      pendingAiApplyRequestedRef.current = true;
+      setPendingAiApplyRequested(true);
+      log.info('Pending AI version apply requested before billing completion', {
+        workId,
+        chapterId,
+        generatedLength: pendingAiVersion.generatedHtml.length,
+      });
+      return;
+    }
+    if ((pendingAiVersion.status || 'ready') !== 'ready' || !pendingAiVersion.generatedHtml) {
+      log.warn('Pending AI version apply blocked before ready', {
+        workId,
+        chapterId,
+        status: pendingAiVersion.status,
+        generatedLength: pendingAiVersion.generatedHtml.length,
+      });
+      return;
+    }
+    await applyPendingAiVersion(pendingAiVersion);
   };
 
   const handleRestoreVersion = async () => {
@@ -879,10 +1445,15 @@ const StoryEditor = () => {
     setIsAiGenerating(true);
     setIsAiTiming(true);
     setAiPhase('正在准备上下文');
+    aiVisibleCompletionRef.current = false;
+    const traceId = uuidv4();
     
     try {
       const modelKey = selectedModel as LocalModelKey;
       const textContext = editor.getText().slice(-2000);
+      const currentContentBeforeAi = editor.getHTML();
+      const hasExistingContent = isMeaningfulHtml(currentContentBeforeAi);
+      const saveStateBeforeAi = saveState;
       
       let finalContext = textContext;
       let summarizationUsage = null;
@@ -890,23 +1461,172 @@ const StoryEditor = () => {
       
       // Combine user prompt with context
       const userPrompt = promptText.trim() || "请续写这段小说情节，保持风格一致，情节紧凑。";
+      log.info('AI continue started', {
+        traceId,
+        workId,
+        chapterId,
+        model: modelKey,
+        promptLength: userPrompt.length,
+        textContextLength: textContext.length,
+        referencedContextCount: aiContexts.length,
+        hasExistingContent,
+      });
       
       if (aiContexts.length > 0) {
-        const references = aiContexts.map(c => `来源: ${c.sourceName}\n内容:\n${c.content}`).join('\n\n');
+        const cachedNodeContext = buildReferenceContextWithCachedNodeSummaries({
+          contexts: aiContexts,
+          userId: user?.id,
+          model: modelKey,
+          traceId,
+        });
+        let references = cachedNodeContext.references;
+        log.info('AI reference context prepared with node cache', {
+          traceId,
+          workId,
+          chapterId,
+          model: modelKey,
+          contextCount: aiContexts.length,
+          nodeCacheHits: cachedNodeContext.hits,
+          nodeCacheMisses: cachedNodeContext.misses,
+          referencesLength: references.length,
+        });
         
-        if (references.length > 3000) {
-          billingGroupId = uuidv4();
-          setAiPhase('正在总结参考大纲');
-          const summaryRes = await aiService.summarizeContext(references, user?.id, modelKey, billingGroupId);
-          if (summaryRes.error) {
-            alert(`总结大纲/设定失败: ${summaryRes.error}`);
-            setIsAiGenerating(false);
-            setIsAiTiming(false);
-            setAiPhase('等待开始');
-            return;
+        if (references.length > AI_REFERENCE_SUMMARY_THRESHOLD) {
+          const summaryCacheKey = getReferenceSummaryCacheKey(user?.id, modelKey, references);
+          const { legacyKey } = getReferenceCombinedCacheKeys(user?.id, modelKey, references);
+          const cachedSummary = readReferenceSummaryCache({
+            key: summaryCacheKey,
+            legacyKey,
+            userId: user?.id,
+            traceId,
+            sourceName: '组合参考大纲',
+          });
+
+          if (cachedSummary) {
+            finalContext = `【经过精简的参考大纲/设定】\n${cachedSummary}\n\n【当前章节前文内容】\n${textContext}`;
+            showReferenceSummaryNotice({
+              tone: 'success',
+              text: '已复用参考摘要，本次参考处理不消耗钻石',
+            }, { autoClearMs: 5000 });
+            log.info('AI combined reference summary reused without billing', {
+              traceId,
+              workId,
+              chapterId,
+              model: modelKey,
+              referencesLength: references.length,
+              summaryLength: cachedSummary.length,
+            });
+          } else {
+            const largeContexts = aiContexts.filter((context) => context.content.length > AI_REFERENCE_NODE_SUMMARY_THRESHOLD);
+            const missingNodeContexts = largeContexts.filter((context) => !readReferenceNodeSummaryCache({
+              userId: user?.id,
+              model: modelKey,
+              context,
+              traceId,
+            }));
+
+            if (missingNodeContexts.length > 0) {
+              setAiPhase('正在准备参考摘要');
+              showReferenceSummaryNotice({
+                tone: 'warning',
+                text: '正在总结参考大纲，本次总结会消耗钻石',
+              });
+              let nodeSummaryFailed = false;
+              const nodeSummaries = await Promise.all(missingNodeContexts.map((context) =>
+                summarizeReferenceContext({
+                  context,
+                  model: modelKey,
+                  traceId,
+                  reason: 'continue',
+                })
+              )).catch((error) => {
+                alert(`总结大纲/设定失败: ${error instanceof Error ? error.message : '请稍后重试'}`);
+                setIsAiGenerating(false);
+                setIsAiTiming(false);
+                setAiPhase('等待开始');
+                nodeSummaryFailed = true;
+                return [];
+              });
+              if (nodeSummaryFailed) return;
+              summarizationUsage = nodeSummaries.reduce((total, item) => {
+                if (!item.usage) return total;
+                return {
+                  input_tokens: total.input_tokens + item.usage.input_tokens,
+                  output_tokens: total.output_tokens + item.usage.output_tokens,
+                  total_cost: total.total_cost + item.usage.total_cost,
+                };
+              }, { input_tokens: 0, output_tokens: 0, total_cost: 0 });
+              const refreshed = buildReferenceContextWithCachedNodeSummaries({
+                contexts: aiContexts,
+                userId: user?.id,
+                model: modelKey,
+                traceId,
+              });
+              references = refreshed.references;
+              log.info('AI reference context refreshed after node summaries', {
+                traceId,
+                workId,
+                chapterId,
+                model: modelKey,
+                nodeCacheHits: refreshed.hits,
+                nodeCacheMisses: refreshed.misses,
+                referencesLength: references.length,
+                summarizationCost: summarizationUsage.total_cost,
+              });
+            }
+
+            if (references.length > AI_REFERENCE_SUMMARY_THRESHOLD) {
+              const combinedCacheKey = getReferenceSummaryCacheKey(user?.id, modelKey, references);
+              billingGroupId = uuidv4();
+              setAiPhase('正在总结参考大纲');
+              showReferenceSummaryNotice({
+                tone: 'warning',
+                text: '正在总结参考大纲，本次总结会消耗钻石',
+              });
+              log.info('AI combined reference summary cache miss; summarizing references', {
+                traceId,
+                workId,
+                chapterId,
+                model: modelKey,
+                referencesLength: references.length,
+                billingGroupId,
+              });
+              const summaryRes = await aiService.summarizeContext(references, user?.id, modelKey, billingGroupId, traceId);
+              if (summaryRes.error) {
+                alert(`总结大纲/设定失败: ${summaryRes.error}`);
+                setIsAiGenerating(false);
+                setIsAiTiming(false);
+                setAiPhase('等待开始');
+                return;
+              }
+              finalContext = `【经过精简的参考大纲/设定】\n${summaryRes.content}\n\n【当前章节前文内容】\n${textContext}`;
+              writeReferenceSummaryCache({
+                key: combinedCacheKey,
+                userId: user?.id,
+                model: modelKey,
+                contentHash: hashText(references),
+                sourceName: '组合参考大纲',
+                summary: summaryRes.content,
+                originalLength: references.length,
+                traceId,
+              });
+              showReferenceSummaryNotice({
+                tone: 'success',
+                text: '参考摘要已生成并缓存，下次相同参考可直接复用',
+              }, { autoClearMs: 6000 });
+              if (summaryRes.usage) {
+                summarizationUsage = summarizationUsage
+                  ? {
+                      input_tokens: summarizationUsage.input_tokens + summaryRes.usage.input_tokens,
+                      output_tokens: summarizationUsage.output_tokens + summaryRes.usage.output_tokens,
+                      total_cost: summarizationUsage.total_cost + summaryRes.usage.total_cost,
+                    }
+                  : summaryRes.usage;
+              }
+            } else {
+              finalContext = `【参考大纲/设定摘要】\n${references}\n\n【当前章节前文内容】\n${textContext}`;
+            }
           }
-          finalContext = `【经过精简的参考大纲/设定】\n${summaryRes.content}\n\n【当前章节前文内容】\n${textContext}`;
-          if (summaryRes.usage) summarizationUsage = summaryRes.usage;
         } else {
           finalContext = `【参考大纲/设定】\n${references}\n\n【当前章节前文内容】\n${textContext}`;
         }
@@ -915,29 +1635,170 @@ const StoryEditor = () => {
       }
 
       setAiPhase('正在创作正文');
+      let streamedContent = '';
+      let latestPreviewHtml = '';
+      let firstDeltaAt = 0;
+      const generationStartedAt = performance.now();
+
+      if (hasExistingContent) {
+        log.info('AI continue UX mode selected', {
+          traceId,
+          workId,
+          chapterId,
+          mode: 'dialog-stream-preview',
+        });
+        setPendingAiVersion({
+          currentContent: currentContentBeforeAi,
+          nextContent: '',
+          generatedHtml: '',
+          prompt: userPrompt,
+          model: modelKey,
+          usage: null,
+          status: 'streaming',
+          phaseLabel: '正在请求模型',
+        });
+      } else {
+        log.info('AI continue UX mode selected', {
+          traceId,
+          workId,
+          chapterId,
+          mode: 'editor-direct-stream',
+        });
+      }
       
-      const response = await aiService.generateText({
-        prompt: userPrompt,
-        model: modelKey,
-        context: finalContext,
-        userId: user?.id,
-        billingGroupId,
-        workId,
-        chapterId,
-        chapterTitle: currentChapterName,
-        baseContentHtml: editor.getHTML(),
-        deferChapterSave: true,
-      });
+      const response = await aiService.generateTextStream(
+        {
+          prompt: userPrompt,
+          model: modelKey,
+          context: finalContext,
+          userId: user?.id,
+          billingGroupId,
+          traceId,
+          workId,
+          chapterId,
+          chapterTitle: currentChapterName,
+          baseContentHtml: currentContentBeforeAi,
+          deferChapterSave: true,
+        },
+        {
+          onPhase: (event) => {
+            if (event.phase === 'output_ready') {
+              aiVisibleCompletionRef.current = true;
+              if (hasExistingContent && latestPreviewHtml) {
+                const appendedContent = appendHtml(currentContentBeforeAi, latestPreviewHtml);
+                setPendingAiVersion((prev) => prev ? {
+                  ...prev,
+                  nextContent: appendedContent,
+                  generatedHtml: latestPreviewHtml,
+                  status: 'output_ready',
+                  phaseLabel: 'AI 输出完成',
+                } : prev);
+              }
+              setAiPhase('AI 输出完成');
+              setIsAiGenerating(false);
+              setIsAiTiming(false);
+              log.info('AI continue marked complete for user; background billing/save continues', {
+                traceId,
+                workId,
+                chapterId,
+                hasExistingContent,
+                generatedHtmlLength: latestPreviewHtml.length,
+              });
+              return;
+            }
+            if (event.phase === 'saving' || event.phase === 'billing') {
+              log.info('AI continue background phase hidden from UI', {
+                traceId,
+                workId,
+                chapterId,
+                phase: event.phase,
+                label: event.label,
+                hasExistingContent,
+              });
+            } else if (hasExistingContent && event.label) {
+              setPendingAiVersion((prev) => prev ? { ...prev, phaseLabel: event.label } : prev);
+              setAiPhase(event.label);
+            } else if (event.label) {
+              setAiPhase(event.label);
+            }
+          },
+          onDelta: (delta, event) => {
+            if (!firstDeltaAt) {
+              firstDeltaAt = performance.now();
+              log.info('AI continue first delta rendered', {
+                traceId,
+                workId,
+                chapterId,
+                mode: hasExistingContent ? 'dialog-stream-preview' : 'editor-direct-stream',
+                firstDeltaMs: Math.round(firstDeltaAt - generationStartedAt),
+                deltaLength: delta.length,
+              });
+            }
+            streamedContent += delta;
+            const cleaned = sanitizeAiContinuationOutput(userPrompt, streamedContent);
+            latestPreviewHtml = textToParagraphHtml(cleaned);
+            setAiPhase(event.label || `AI 正在输出，已生成 ${event.generatedChars || cleaned.length} 字`);
+            if (hasExistingContent) {
+              setPendingAiVersion((prev) => prev ? {
+                ...prev,
+                nextContent: latestPreviewHtml,
+                generatedHtml: latestPreviewHtml,
+                status: 'streaming',
+                phaseLabel: event.label || `AI 正在输出，已生成 ${event.generatedChars || cleaned.length} 字`,
+              } : prev);
+            } else {
+              setEditorPreviewContent(latestPreviewHtml, traceId);
+            }
+          },
+          onError: (message) => {
+            if (hasExistingContent) {
+              setPendingAiVersion((prev) => prev ? { ...prev, status: 'error', error: message, phaseLabel: message } : prev);
+            } else {
+              suppressEditorUpdateRef.current = true;
+              editor.commands.setContent(currentContentBeforeAi || '');
+              latestContentRef.current = currentContentBeforeAi || '';
+              setSaveState(saveStateBeforeAi);
+              window.setTimeout(() => {
+                suppressEditorUpdateRef.current = false;
+              }, 0);
+              log.warn('AI stream failed; editor preview rolled back', {
+                traceId,
+                workId,
+                chapterId,
+                message,
+                restoredLength: currentContentBeforeAi.length,
+              });
+            }
+          },
+        }
+      );
+
+      if (response.error) {
+        log.warn('AI continue failed after stream response', {
+          traceId,
+          workId,
+          chapterId,
+          model: modelKey,
+          error: response.error,
+          streamedLength: streamedContent.length,
+        });
+        alert(`AI生成失败: ${response.error}`);
+        return;
+      }
 
       if (response.content) {
-        setAiPhase('正在写入正文');
-        const currentContent = editor.getHTML();
+        log.info('AI continue stream response ready for client finalize', {
+          traceId,
+          workId,
+          chapterId,
+          hasExistingContent,
+          contentLength: response.content.length,
+        });
         const cleaned = sanitizeAiContinuationOutput(userPrompt, response.content);
-        const generatedHtml = response.generatedHtml || textToParagraphHtml(cleaned);
-        // 版本比较里的“继续应用”是用本次 AI 输出完整替换当前正文，不做旧正文合并。
-        // 服务端 previewChapterContent 仅保留给其他预览场景，正文落库以 generatedHtml 为准。
+        const generatedHtml = response.generatedHtml || latestPreviewHtml || textToParagraphHtml(cleaned);
+        // 版本比较右侧只预览本次 AI 新增内容；点击继续应用时再追加到当前正文，避免覆盖用户原文。
+        // 服务端 previewChapterContent 仅保留给其他预览场景，正文落库以客户端确认后的内容为准。
         const nextContent = generatedHtml || '';
-        const hasExistingContent = isMeaningfulHtml(currentContent);
         const combinedUsage = response.usage
           ? {
               input_tokens: response.usage.input_tokens + (summarizationUsage ? summarizationUsage.input_tokens : 0),
@@ -952,46 +1813,63 @@ const StoryEditor = () => {
         }
 
         if (hasExistingContent) {
-          setPendingAiVersion({
-            currentContent,
-            nextContent,
+          const appendedContent = appendHtml(currentContentBeforeAi, generatedHtml);
+          const readyVersion: PendingAiVersion = {
+            currentContent: currentContentBeforeAi,
+            nextContent: appendedContent,
             generatedHtml,
             prompt: userPrompt,
             model: modelKey,
             usage: combinedUsage,
-          });
+            status: 'ready',
+            phaseLabel: 'AI 输出完成',
+          };
+          setPendingAiVersion(readyVersion);
           log.info('Pending AI version comparison opened', {
+            traceId,
             workId,
             chapterId,
-            currentLength: currentContent.length,
+            currentLength: currentContentBeforeAi.length,
             generatedLength: generatedHtml.length,
-            nextLength: nextContent.length,
-            replaceMode: 'replace-with-generated',
+            nextLength: appendedContent.length,
+            applyMode: 'append-generated',
+            applyRequested: pendingAiApplyRequestedRef.current,
           });
+          if (pendingAiApplyRequestedRef.current) {
+            await applyPendingAiVersion(readyVersion);
+          }
         } else {
           await applyChapterContent(nextContent, 'ai-first-apply', {
             snapshotNextAs: 'ai-applied',
             prompt: userPrompt,
             model: modelKey,
           });
-          if (combinedUsage) {
-            setLastUsage(combinedUsage);
-            setTimeout(() => setLastUsage(null), 5000);
-          }
+          setLastUsageTemporarily(combinedUsage);
           setPromptText('');
           if (user && !isGuestUser(user)) fetchBalance();
         }
+        log.success('AI continue completed', {
+          traceId,
+          workId,
+          chapterId,
+          model: modelKey,
+          hasExistingContent,
+          outputHtmlLength: nextContent.length,
+          totalCost: combinedUsage?.total_cost,
+          elapsedMs: Math.round(performance.now() - generationStartedAt),
+          firstDeltaMs: firstDeltaAt ? Math.round(firstDeltaAt - generationStartedAt) : null,
+        });
         setIsAiTiming(false);
-      } else if (response.error) {
-        alert(`AI生成失败: ${response.error}`);
       }
     } catch (error) {
       console.error('Generation failed:', error);
       alert('AI生成发生错误，请重试');
     } finally {
-      setIsAiGenerating(false);
-      setIsAiTiming(false);
-      setAiPhase('等待开始');
+      if (!aiVisibleCompletionRef.current) {
+        setIsAiGenerating(false);
+        setIsAiTiming(false);
+        setAiPhase('等待开始');
+      }
     }
   };
 
@@ -1244,6 +2122,20 @@ const StoryEditor = () => {
                 <span>输入: {lastUsage.input_tokens} / 输出: {lastUsage.output_tokens}</span>
               </div>
             )}
+
+            {referenceSummaryNotice && (
+              <div className={`flex items-center text-xs px-3 py-1.5 rounded-lg border ${
+                referenceSummaryNotice.tone === 'success'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                  : referenceSummaryNotice.tone === 'warning'
+                    ? 'bg-amber-50 text-amber-700 border-amber-100'
+                    : 'bg-blue-50 text-blue-700 border-blue-100'
+              }`}>
+                <FileText className="w-3.5 h-3.5 mr-1.5" />
+                <span>{referenceSummaryNotice.text}</span>
+              </div>
+            )}
+
           </div>
         )}
         
@@ -1418,12 +2310,13 @@ const StoryEditor = () => {
         pageSize={6}
       />
 
-      {pendingAiVersion && (
-        <AiVersionCompareDialog
-          version={pendingAiVersion}
-          onCancel={handleCancelPendingAiVersion}
-          onApply={handleApplyPendingAiVersion}
-        />
+        {pendingAiVersion && (
+          <AiVersionCompareDialog
+            version={pendingAiVersion}
+            applyRequested={pendingAiApplyRequested}
+            onCancel={handleCancelPendingAiVersion}
+            onApply={handleApplyPendingAiVersion}
+          />
       )}
 
       {showVersionHistory && (
@@ -1544,10 +2437,12 @@ const ToolbarButton = ({
 
 const AiVersionCompareDialog = ({
   version,
+  applyRequested,
   onCancel,
   onApply,
 }: {
   version: PendingAiVersion;
+  applyRequested: boolean;
   onCancel: () => void;
   onApply: () => void;
 }) => {
@@ -1559,6 +2454,10 @@ const AiVersionCompareDialog = ({
     const plain = version.generatedHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, '').trim();
     return plain.length;
   }, [version.generatedHtml]);
+  const status = version.status || 'ready';
+  const canApply = (status === 'ready' || status === 'output_ready') && Boolean(version.generatedHtml) && !applyRequested;
+  const isGenerating = status === 'streaming';
+  const isOutputReady = status === 'ready' || status === 'output_ready';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-6 backdrop-blur-[2px]">
@@ -1600,15 +2499,31 @@ const AiVersionCompareDialog = ({
             <div className="flex items-center justify-between border-b border-emerald-100 bg-emerald-50 px-5 py-3">
               <div>
                 <div className="text-sm font-semibold text-emerald-950">新版本</div>
-                <div className="mt-0.5 text-xs text-emerald-700">{generatedWords} 字</div>
+                <div className="mt-0.5 text-xs text-emerald-700">
+                  {isGenerating ? version.phaseLabel || 'AI 正在输出' : `${generatedWords} 字`}
+                </div>
               </div>
-              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700">待保存</span>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                status === 'error'
+                  ? 'bg-red-100 text-red-700'
+                  : isOutputReady
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-purple-100 text-purple-700'
+              }`}>
+                {status === 'error' ? '生成失败' : isOutputReady ? '可应用' : '生成中'}
+              </span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto bg-white px-6 py-5">
-              <div
-                className="story-editor-content prose prose-sm max-w-none"
-                dangerouslySetInnerHTML={{ __html: version.generatedHtml }}
-              />
+              {version.generatedHtml ? (
+                <div
+                  className="story-editor-content prose prose-sm max-w-none"
+                  dangerouslySetInnerHTML={{ __html: version.generatedHtml }}
+                />
+              ) : (
+                <div className="flex h-full min-h-[240px] items-center justify-center text-sm text-gray-400">
+                  {status === 'error' ? version.error || 'AI 输出失败' : version.phaseLabel || '等待 AI 输出...'}
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -1626,9 +2541,10 @@ const AiVersionCompareDialog = ({
             </button>
             <button
               onClick={onApply}
-              className="rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-gray-800"
+              disabled={!canApply}
+              className="rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              继续应用
+              {applyRequested ? '正在应用...' : isOutputReady ? '继续应用' : status === 'error' ? '无法应用' : '生成中...'}
             </button>
           </div>
         </div>
