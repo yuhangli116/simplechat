@@ -305,9 +305,12 @@ const shouldRetryFetchError = (error) => {
   if (error.name === 'AbortError') return true;
   const message = String(error.message || '').toLowerCase();
   const details = String(error.details || '').toLowerCase();
-  const combined = `${message}\n${details}`;
+  const hint = String(error.hint || '').toLowerCase();
+  const combined = `${message}\n${details}\n${hint}`;
   if (error instanceof TypeError && message.includes('fetch')) return true;
   if (combined.includes('fetch failed')) return true;
+  if (combined.includes('aborterror')) return true;
+  if (combined.includes('aborted')) return true;
   if (combined.includes('network')) return true;
   if (combined.includes('timeout')) return true;
   if (combined.includes('terminated')) return true;
@@ -1169,15 +1172,19 @@ const findExistingBillingLog = async ({ supabase, userId, billingGroupId, billin
 };
 
 let billingIdempotencyReadyCache = null;
-const isBillingIdempotencyReady = async (supabase) => {
+const isBillingIdempotencyReady = async (supabase, { billingGroupId, billingStep } = {}) => {
   if (billingIdempotencyReadyCache !== null) return billingIdempotencyReadyCache;
 
   const { data, error } = await supabase.rpc('billing_idempotency_ready');
   if (error) {
-    log.warn('Billing idempotency check unavailable; RPC retry will stay conservative', {
+    const hasIdempotencyKey = Boolean(billingGroupId && billingStep);
+    log.warn('Billing idempotency check unavailable; fallback selected', {
+      retryEnabled: hasIdempotencyKey,
+      billingGroupId,
+      billingStep,
       error: formatDbError(error),
     });
-    return false;
+    return hasIdempotencyKey;
   } else {
     billingIdempotencyReadyCache = data === true;
     log.info('Billing idempotency check completed', { ready: billingIdempotencyReadyCache });
@@ -1238,7 +1245,7 @@ const deductUsageOnServer = async ({ supabase, userId, model, usage, billingGrou
     return result;
   };
 
-  const idempotencyReady = await isBillingIdempotencyReady(supabase);
+  const idempotencyReady = await isBillingIdempotencyReady(supabase, { billingGroupId, billingStep });
   const { data, error } = idempotencyReady
     ? await withSupabaseRetry('Deduct diamonds RPC', callDeductRpc, { userId, model, billingGroupId, billingStep })
     : await callDeductRpc();

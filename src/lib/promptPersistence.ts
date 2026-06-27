@@ -7,6 +7,8 @@ const log = createLogger('PromptPersistence');
 
 type UserPromptRow = Database['public']['Tables']['user_prompts']['Row'];
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export const mapUserPromptRow = (row: UserPromptRow): Prompt => ({
   id: row.id,
   title: row.title,
@@ -39,10 +41,19 @@ export const createUserPrompt = async (
   prompt: Omit<Prompt, 'id'> & { id?: string }
 ): Promise<Prompt> => {
   log.info('Creating user prompt', { userId, title: prompt.title, category: prompt.index });
+  const shouldUseProvidedId = typeof prompt.id === 'string' && UUID_RE.test(prompt.id);
+  if (prompt.id && !shouldUseProvidedId) {
+    log.warn('Ignoring non-UUID prompt id before database insert', {
+      userId,
+      promptId: prompt.id,
+      title: prompt.title,
+    });
+  }
+
   const { data, error } = await supabase
     .from('user_prompts')
     .insert({
-      ...(prompt.id ? { id: prompt.id } : {}),
+      ...(shouldUseProvidedId ? { id: prompt.id } : {}),
       user_id: userId,
       title: prompt.title || '未命名指令',
       category: prompt.index,

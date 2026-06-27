@@ -308,6 +308,15 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       setTheme(newTheme);
       localStorage.setItem(themeKey, newTheme);
       setShowThemeSelector(false);
+      log.info('Mind map theme changed', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        theme: newTheme,
+        storageKey: themeKey,
+      });
+      flushLogs();
   };
 
   // Ref to ReactFlow instance for coordinate projection
@@ -1135,6 +1144,14 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   // --- Operations ---
   const handleUndo = useCallback(() => {
+    log.info('Mind map undo requested', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      historyIndex,
+      historyLength: history.length,
+    });
     const previousIndex = historyIndex - 1;
     const hasRecordedPreviousState = previousIndex >= 0 && Boolean(history[previousIndex]);
 
@@ -1143,6 +1160,17 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       const shouldClear = window.confirm(
         '前一步没有再记录用户操作（超出可撤销记录范围）。\n继续执行向左撤销会清空当前思维导图的所有节点，是否继续？'
       );
+
+      log.warn('Mind map undo clear-all confirmation shown', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        accepted: shouldClear,
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+      });
+      flushLogs();
 
       if (!shouldClear) return;
 
@@ -1158,6 +1186,14 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       // Keep one-step redo available so users can recover after accidental clear.
       setHistory([{ nodes: [], edges: [] }, snapshotBeforeClear]);
       setHistoryIndex(0);
+      log.success('Mind map undo succeeded', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        mode: 'clear-all',
+      });
+      flushLogs();
       return;
     }
 
@@ -1174,10 +1210,39 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
       }
       return newHistory;
     });
-  }, [historyIndex, history, nodes, edges, setNodes, setEdges]);
+    log.success('Mind map undo succeeded', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      historyIndex: previousIndex,
+      nodeCount: state.nodes.length,
+      edgeCount: state.edges.length,
+    });
+    flushLogs();
+  }, [historyIndex, history, nodes, edges, setNodes, setEdges, user?.id, workId, id, type]);
 
   const handleRedo = useCallback(() => {
-    if (historyIndex >= history.length - 1) return;
+    log.info('Mind map redo requested', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      historyIndex,
+      historyLength: history.length,
+    });
+    if (historyIndex >= history.length - 1) {
+      log.warn('Mind map redo skipped because no redo state exists', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        historyIndex,
+        historyLength: history.length,
+      });
+      flushLogs();
+      return;
+    }
     
     const newIndex = historyIndex + 1;
     const state = history[newIndex];
@@ -1186,7 +1251,17 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
         setEdges(JSON.parse(JSON.stringify(state.edges)));
     }
     setHistoryIndex(newIndex);
-  }, [historyIndex, history, setNodes, setEdges]);
+    log.success('Mind map redo succeeded', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      historyIndex: newIndex,
+      nodeCount: state?.nodes.length || 0,
+      edgeCount: state?.edges.length || 0,
+    });
+    flushLogs();
+  }, [historyIndex, history, setNodes, setEdges, user?.id, workId, id, type]);
 
   const toggleThemeSelector = useCallback(() => {
     setShowThemeSelector((v) => !v);
@@ -1287,43 +1362,201 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
   // Left align: move the entire mind map to the left visually
   const handleAlignLeft = useCallback(() => {
-    if (!reactFlowInstance) return;
+    if (!reactFlowInstance) {
+      log.warn('Mind map viewport action failed', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        action: 'align-left',
+        reason: 'missing-react-flow-instance',
+      });
+      flushLogs();
+      return;
+    }
     const { x, y } = reactFlowInstance.getViewport();
     reactFlowInstance.setViewport({ x: x - 150, y, zoom: reactFlowInstance.getZoom() }, { duration: 300 });
-  }, [reactFlowInstance]);
+    log.success('Mind map viewport action succeeded', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      action: 'align-left',
+      beforeX: x,
+      afterX: x - 150,
+    });
+    flushLogs();
+  }, [reactFlowInstance, user?.id, workId, id, type]);
 
   // Right align: move the entire mind map to the right visually
   const handleAlignRight = useCallback(() => {
-    if (!reactFlowInstance) return;
+    if (!reactFlowInstance) {
+      log.warn('Mind map viewport action failed', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        action: 'align-right',
+        reason: 'missing-react-flow-instance',
+      });
+      flushLogs();
+      return;
+    }
     const { x, y } = reactFlowInstance.getViewport();
     reactFlowInstance.setViewport({ x: x + 150, y, zoom: reactFlowInstance.getZoom() }, { duration: 300 });
-  }, [reactFlowInstance]);
+    log.success('Mind map viewport action succeeded', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      action: 'align-right',
+      beforeX: x,
+      afterX: x + 150,
+    });
+    flushLogs();
+  }, [reactFlowInstance, user?.id, workId, id, type]);
 
   // Fit view + auto layout to keep all nodes structured and centered.
   const handleFitView = useCallback(() => {
-    if (nodes.length === 0) return;
+    log.info('Mind map viewport action requested', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      action: 'fit-view',
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+    });
+    if (nodes.length === 0) {
+      log.warn('Mind map viewport action failed', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        action: 'fit-view',
+        reason: 'empty-map',
+      });
+      flushLogs();
+      return;
+    }
     applyStructuredLayoutAndFit(nodes, edges);
-  }, [nodes, edges, applyStructuredLayoutAndFit]);
+    log.success('Mind map viewport action succeeded', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      action: 'fit-view',
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+    });
+    flushLogs();
+  }, [nodes, edges, applyStructuredLayoutAndFit, user?.id, workId, id, type]);
 
   const handleExport = useCallback(() => {
+    log.info('Mind map export requested', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      action: 'open-dialog',
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+    });
+    flushLogs();
     setShowExportDialog(true);
-  }, []);
+  }, [user?.id, workId, id, type, nodes.length, edges.length]);
 
   const handleExportFormat = useCallback(async (format: string) => {
     const title = mindMapTitle || '思维导图';
-    
-    switch (format) {
-      case 'json':
-        exportMindMap(nodes, edges, title);
-        break;
-      case 'image':
-        await exportMindMapAsImage(nodes, edges, title, theme);
-        break;
-      case 'text':
-        exportMindMapAsText(nodes, edges, title);
-        break;
+    log.info('Mind map export requested', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      format,
+      title,
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+    });
+
+    try {
+      switch (format) {
+        case 'json':
+          exportMindMap(nodes, edges, title);
+          break;
+        case 'image':
+          await exportMindMapAsImage(nodes, edges, title, theme);
+          break;
+        case 'text':
+          exportMindMapAsText(nodes, edges, title);
+          break;
+      }
+      log.success('Mind map export succeeded', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        format,
+        title,
+      });
+    } catch (error) {
+      log.error('Mind map export failed', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        format,
+        title,
+      }, error);
+      throw error;
+    } finally {
+      flushLogs();
     }
-  }, [nodes, edges, mindMapTitle, theme]);
+  }, [nodes, edges, mindMapTitle, theme, user?.id, workId, id, type]);
+
+  const handleZoom = useCallback((direction: 'in' | 'out') => {
+    if (!reactFlowInstance) {
+      log.warn('Mind map zoom failed', {
+        userId: user?.id,
+        workId,
+        nodeId: id || `mm-${type}-${workId}`,
+        type,
+        direction,
+        reason: 'missing-react-flow-instance',
+      });
+      flushLogs();
+      return;
+    }
+
+    const beforeZoom = reactFlowInstance.getZoom();
+    if (direction === 'in') {
+      reactFlowInstance.zoomIn({ duration: 300 });
+    } else {
+      reactFlowInstance.zoomOut({ duration: 300 });
+    }
+    log.info('Mind map zoom changed', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      direction,
+      beforeZoom,
+    });
+    flushLogs();
+  }, [reactFlowInstance, user?.id, workId, id, type]);
+
+  const handleLockToggle = useCallback(() => {
+    const nextLocked = !isLocked;
+    setIsLocked(nextLocked);
+    log.info('Mind map lock toggled', {
+      userId: user?.id,
+      workId,
+      nodeId: id || `mm-${type}-${workId}`,
+      type,
+      locked: nextLocked,
+    });
+    flushLogs();
+  }, [isLocked, user?.id, workId, id, type]);
 
   const exportOptions = [
     {
@@ -1653,6 +1886,22 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     if (!selectedNode) return;
 
     setIsGenerating(true);
+    const startedAt = Date.now();
+    let generatedNodeCount = 0;
+    let usedSummary = false;
+    let generationBillingGroupId: string | undefined;
+    log.info('Mind map AI generation requested', {
+      userId: user?.id,
+      workId,
+      mindMapId: id || `mm-${type}-${workId}`,
+      type,
+      targetNodeId,
+      model,
+      promptLength: userPrompt.length,
+      contextCount: aiContexts.length,
+      contextChars: aiContexts.reduce((sum, ctx) => sum + ctx.content.length, 0),
+    });
+    flushLogs();
 
     try {
         let finalContext = '';
@@ -1667,8 +1916,22 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             
             if (combinedContext.length > 3000) {
                 billingGroupId = uuidv4();
+                generationBillingGroupId = billingGroupId;
+                usedSummary = true;
                 const summaryRes = await aiService.summarizeContext(combinedContext, user?.id, model, billingGroupId);
                 if (summaryRes.error) {
+                    log.error('Mind map AI generation failed', {
+                      userId: user?.id,
+                      workId,
+                      mindMapId: id || `mm-${type}-${workId}`,
+                      type,
+                      targetNodeId,
+                      model,
+                      billingGroupId,
+                      phase: 'summarize',
+                      error: summaryRes.error,
+                    });
+                    flushLogs();
                     alert(`总结上下文失败: ${summaryRes.error}`);
                     setIsGenerating(false);
                     return;
@@ -1716,6 +1979,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             userId: user?.id,
             billingGroupId
         });
+        generationBillingGroupId = billingGroupId;
 
         if (response.content) {
             try {
@@ -1807,6 +2071,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                     const parentNode = currentNodes.find((node) => node.id === targetNodeId);
                     if (parentNode) {
                       processChildren(targetNodeId, result.children, parentNode.position.x, parentNode.position.y, 0);
+                      generatedNodeCount = newNodesToAdd.length;
                       currentNodes = [...currentNodes, ...newNodesToAdd];
                       currentEdges = [...currentEdges, ...newEdgesToAdd];
                       stateChanged = true;
@@ -1842,16 +2107,70 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                 }
 
                 fetchBalance();
+                log.success('Mind map AI generation succeeded', {
+                  userId: user?.id,
+                  workId,
+                  mindMapId: id || `mm-${type}-${workId}`,
+                  type,
+                  targetNodeId,
+                  model,
+                  billingGroupId: generationBillingGroupId || null,
+                  usedSummary,
+                  contextCount: aiContexts.length,
+                  generatedNodeCount,
+                  stateChanged,
+                  durationMs: Date.now() - startedAt,
+                  inputTokens: response.usage?.input_tokens,
+                  outputTokens: response.usage?.output_tokens,
+                  diamondsConsumed: response.usage?.total_cost,
+                });
+                flushLogs();
 
             } catch (e) {
                 console.error('JSON Parse Error:', e);
+                log.error('Mind map AI generation failed', {
+                  userId: user?.id,
+                  workId,
+                  mindMapId: id || `mm-${type}-${workId}`,
+                  type,
+                  targetNodeId,
+                  model,
+                  billingGroupId: generationBillingGroupId || null,
+                  phase: 'parse',
+                }, e);
+                flushLogs();
                 alert('AI生成格式错误，请重试');
             }
         } else if (response.error) {
+            log.error('Mind map AI generation failed', {
+              userId: user?.id,
+              workId,
+              mindMapId: id || `mm-${type}-${workId}`,
+              type,
+              targetNodeId,
+              model,
+              billingGroupId: generationBillingGroupId || null,
+              phase: 'generate',
+              error: response.error,
+              durationMs: Date.now() - startedAt,
+            });
+            flushLogs();
             alert(`AI生成失败: ${response.error}`);
         }
     } catch (error) {
         console.error('AI Gen Error:', error);
+        log.error('Mind map AI generation failed', {
+          userId: user?.id,
+          workId,
+          mindMapId: id || `mm-${type}-${workId}`,
+          type,
+          targetNodeId,
+          model,
+          billingGroupId: generationBillingGroupId || null,
+          phase: 'unexpected',
+          durationMs: Date.now() - startedAt,
+        }, error);
+        flushLogs();
         alert('AI生成发生错误');
     } finally {
         setIsGenerating(false);
@@ -1963,13 +2282,13 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                 />
                 <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-gray-600' : 'bg-gray-300'}`} />
                 <ToolbarButton 
-                  onClick={() => reactFlowInstance?.zoomIn({ duration: 300 })}
+                  onClick={() => handleZoom('in')}
                   icon={<ZoomIn className="w-4 h-4" />} 
                   tooltip="放大" 
                   theme={theme}
                 />
                 <ToolbarButton 
-                  onClick={() => reactFlowInstance?.zoomOut({ duration: 300 })}
+                  onClick={() => handleZoom('out')}
                   icon={<ZoomOut className="w-4 h-4" />} 
                   tooltip="缩小" 
                   theme={theme}
@@ -2033,7 +2352,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                   theme={theme}
                 />
                 <ToolbarButton 
-                  onClick={() => setIsLocked(!isLocked)}
+                  onClick={handleLockToggle}
                   icon={isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />} 
                   tooltip={isLocked ? "解锁编辑" : "锁住页面"} 
                   theme={theme}

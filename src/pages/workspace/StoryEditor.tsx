@@ -74,11 +74,11 @@ type ReferenceSummaryNotice = {
 
 const STORY_SAVE_RETRY_DELAYS = [500, 1200, 2500];
 const AI_REFERENCE_SUMMARY_THRESHOLD = 3000;
-const AI_REFERENCE_SUMMARY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const AI_REFERENCE_SUMMARY_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const AI_REFERENCE_SUMMARY_CACHE_PREFIX = 'story-ai-summary-v2';
 const AI_REFERENCE_SUMMARY_CACHE_MAX_ENTRIES = 20;
 const AI_REFERENCE_SUMMARY_CACHE_MAX_BYTES = 500 * 1024;
-const AI_REFERENCE_NODE_SUMMARY_THRESHOLD = 1200;
+const AI_REFERENCE_NODE_SUMMARY_THRESHOLD = 800;
 
 type ReferenceSummaryCacheEntry = {
   version: 2;
@@ -100,11 +100,8 @@ const hashText = (value: string) => {
   return (hash >>> 0).toString(36);
 };
 
-const getReferenceSummaryCacheKey = (userId: string | undefined, model: string, content: string) =>
-  `${AI_REFERENCE_SUMMARY_CACHE_PREFIX}-${userId || 'anonymous'}-${model}-${hashText(content)}`;
-
-const getLegacyReferenceSummaryCacheKey = (userId: string | undefined, model: string, references: string) =>
-  `story-ai-summary-v1-${userId || 'anonymous'}-${model}-${hashText(references)}`;
+const getReferenceSummaryCacheKey = (userId: string | undefined, content: string) =>
+  `${AI_REFERENCE_SUMMARY_CACHE_PREFIX}-${userId || 'anonymous'}-${hashText(content)}`;
 
 const getLocalStorageSize = (value: string) => new Blob([value]).size;
 
@@ -180,7 +177,6 @@ const cleanupReferenceSummaryCache = (userId?: string, reason = 'maintenance') =
 
 const readReferenceSummaryCache = (params: {
   key: string;
-  legacyKey?: string;
   userId?: string;
   traceId?: string;
   sourceName?: string;
@@ -213,24 +209,6 @@ const readReferenceSummaryCache = (params: {
         totalEntries: listReferenceSummaryCacheEntries(params.userId).length,
       });
       return parsed.summary;
-    }
-
-    if (params.legacyKey) {
-      const legacyRaw = window.localStorage.getItem(params.legacyKey);
-      if (!legacyRaw) return null;
-      const legacy = JSON.parse(legacyRaw) as { content?: string; createdAt?: number };
-      if (!legacy.content || !legacy.createdAt) return null;
-      if (Date.now() - legacy.createdAt > AI_REFERENCE_SUMMARY_CACHE_TTL_MS) {
-        window.localStorage.removeItem(params.legacyKey);
-        return null;
-      }
-      log.info('AI reference summary legacy cache hit', {
-        traceId: params.traceId,
-        legacyKey: params.legacyKey,
-        sourceName: params.sourceName,
-        summaryLength: legacy.content.length,
-      });
-      return legacy.content;
     }
 
     return null;
@@ -305,7 +283,7 @@ const readReferenceNodeSummaryCache = (params: {
   context: { nodeId: string; content: string; sourceName: string };
   traceId?: string;
 }) => {
-  const key = getReferenceSummaryCacheKey(params.userId, params.model, params.context.content);
+  const key = getReferenceSummaryCacheKey(params.userId, params.context.content);
   return readReferenceSummaryCache({
     key,
     userId: params.userId,
@@ -322,7 +300,7 @@ const writeReferenceNodeSummaryCache = (params: {
   traceId?: string;
 }) => {
   writeReferenceSummaryCache({
-    key: getReferenceSummaryCacheKey(params.userId, params.model, params.context.content),
+    key: getReferenceSummaryCacheKey(params.userId, params.context.content),
     userId: params.userId,
     model: params.model,
     contentHash: hashText(params.context.content),
@@ -333,9 +311,8 @@ const writeReferenceNodeSummaryCache = (params: {
   });
 };
 
-const getReferenceCombinedCacheKeys = (userId: string | undefined, model: string, references: string) => ({
-  key: getReferenceSummaryCacheKey(userId, model, references),
-  legacyKey: getLegacyReferenceSummaryCacheKey(userId, model, references),
+const getReferenceCombinedCacheKeys = (userId: string | undefined, references: string) => ({
+  key: getReferenceSummaryCacheKey(userId, references),
 });
 
 const buildReferenceContextWithCachedNodeSummaries = (params: {
@@ -1167,7 +1144,7 @@ const StoryEditor = () => {
     traceId: string;
     reason: 'prewarm' | 'continue';
   }) => {
-    const cacheKey = getReferenceSummaryCacheKey(user?.id, model, context.content);
+    const cacheKey = getReferenceSummaryCacheKey(user?.id, context.content);
     const cached = readReferenceSummaryCache({
       key: cacheKey,
       userId: user?.id,
@@ -1492,11 +1469,9 @@ const StoryEditor = () => {
         });
         
         if (references.length > AI_REFERENCE_SUMMARY_THRESHOLD) {
-          const summaryCacheKey = getReferenceSummaryCacheKey(user?.id, modelKey, references);
-          const { legacyKey } = getReferenceCombinedCacheKeys(user?.id, modelKey, references);
+          const { key: summaryCacheKey } = getReferenceCombinedCacheKeys(user?.id, references);
           const cachedSummary = readReferenceSummaryCache({
             key: summaryCacheKey,
-            legacyKey,
             userId: user?.id,
             traceId,
             sourceName: '组合参考大纲',
@@ -1576,7 +1551,7 @@ const StoryEditor = () => {
             }
 
             if (references.length > AI_REFERENCE_SUMMARY_THRESHOLD) {
-              const combinedCacheKey = getReferenceSummaryCacheKey(user?.id, modelKey, references);
+              const combinedCacheKey = getReferenceSummaryCacheKey(user?.id, references);
               billingGroupId = uuidv4();
               setAiPhase('正在总结参考大纲');
               showReferenceSummaryNotice({
@@ -2455,9 +2430,10 @@ const AiVersionCompareDialog = ({
     return plain.length;
   }, [version.generatedHtml]);
   const status = version.status || 'ready';
-  const canApply = (status === 'ready' || status === 'output_ready') && Boolean(version.generatedHtml) && !applyRequested;
+  const canApply = status === 'ready' && Boolean(version.generatedHtml) && !applyRequested;
   const isGenerating = status === 'streaming';
   const isOutputReady = status === 'ready' || status === 'output_ready';
+  const isBillingPending = status === 'output_ready';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-6 backdrop-blur-[2px]">
@@ -2506,11 +2482,13 @@ const AiVersionCompareDialog = ({
               <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${
                 status === 'error'
                   ? 'bg-red-100 text-red-700'
-                  : isOutputReady
+                  : status === 'ready'
                     ? 'bg-emerald-100 text-emerald-700'
+                    : isBillingPending
+                      ? 'bg-amber-100 text-amber-700'
                     : 'bg-purple-100 text-purple-700'
               }`}>
-                {status === 'error' ? '生成失败' : isOutputReady ? '可应用' : '生成中'}
+                {status === 'error' ? '生成失败' : status === 'ready' ? '可应用' : isBillingPending ? '结算中' : '生成中'}
               </span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto bg-white px-6 py-5">
@@ -2544,7 +2522,7 @@ const AiVersionCompareDialog = ({
               disabled={!canApply}
               className="rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {applyRequested ? '正在应用...' : isOutputReady ? '继续应用' : status === 'error' ? '无法应用' : '生成中...'}
+              {applyRequested ? '等待结算...' : status === 'ready' ? '继续应用' : isBillingPending ? '结算中...' : status === 'error' ? '无法应用' : '生成中...'}
             </button>
           </div>
         </div>

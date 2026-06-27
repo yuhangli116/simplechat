@@ -1836,9 +1836,20 @@ const Community = () => {
     const author = profile?.username || user?.email?.split('@')[0] || '用户';
 
     if (editingTemplateId) {
+      log.info('Community work template update requested', {
+        userId: user?.id,
+        templateId: editingTemplateId,
+        title,
+        category,
+      });
       const target = resources.find((t) => t.id === editingTemplateId);
       if (!target || target.creator_id !== user!.id || target.is_official) {
         alert('只能编辑你自己创建的模板');
+        log.warn('Community work template update blocked', {
+          userId: user?.id,
+          templateId: editingTemplateId,
+        });
+        flushLogs();
         return;
       }
 
@@ -1857,6 +1868,12 @@ const Community = () => {
         .single();
 
       if (error || !data) {
+        log.error('Community work template update failed', {
+          userId: user?.id,
+          templateId: editingTemplateId,
+          error: error?.message,
+        }, error);
+        flushLogs();
         alert('更新失败，请稍后重试');
         return;
       }
@@ -1869,15 +1886,34 @@ const Community = () => {
       setMineTab('templates');
       exitCreate();
       alert('模板已更新');
+      log.success('Community work template update succeeded', {
+        userId: user?.id,
+        templateId: (data as any).id,
+        title,
+      });
+      flushLogs();
       return;
     }
 
     if (userWorkTemplateCount >= 10) {
+      log.warn('Community work template create blocked by limit', {
+        userId: user?.id,
+        title,
+        currentCount: userWorkTemplateCount,
+      });
+      flushLogs();
       alert('你创建的作品模板已达到上限（10个），无法继续创建');
       return;
     }
 
     const coverColor = coverColors[Math.floor(Math.random() * coverColors.length)] || null;
+    log.info('Community work template create requested', {
+      userId: user?.id,
+      title,
+      category,
+      mindMapCount: newTemplateMindMaps.length,
+      chapterCount: newTemplateChapterCount,
+    });
 
     const { data, error } = await supabase
       .from('community_templates')
@@ -1900,6 +1936,12 @@ const Community = () => {
       .single();
 
     if (error || !data) {
+      log.error('Community work template create failed', {
+        userId: user?.id,
+        title,
+        error: error?.message,
+      }, error);
+      flushLogs();
       if ((error as any)?.message?.includes('template limit reached')) {
         alert('你创建的作品模板已达到上限（10个），无法继续创建');
         return;
@@ -1913,6 +1955,12 @@ const Community = () => {
     setMineTab('templates');
     exitCreate();
     alert('模板已创建');
+    log.success('Community work template create succeeded', {
+      userId: user?.id,
+      templateId: (data as any).id,
+      title,
+    });
+    flushLogs();
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('welfare:template_created'));
     }
@@ -1934,9 +1982,20 @@ const Community = () => {
 
     const author = profile?.username || user?.email?.split('@')[0] || '用户';
     if (editingSkillId) {
+      log.info('Community skill template update requested', {
+        userId: user?.id,
+        skillId: editingSkillId,
+        title,
+        category: newSkillCategory,
+      });
       const target = userSkills.find((s) => s.id === editingSkillId);
       if (!target || target.creator_id !== user!.id || target.is_official) {
         alert('只能编辑你自己创建的提示词模板');
+        log.warn('Community skill template update blocked', {
+          userId: user?.id,
+          skillId: editingSkillId,
+        });
+        flushLogs();
         return;
       }
 
@@ -1955,6 +2014,12 @@ const Community = () => {
         .single();
 
       if (error || !data) {
+        log.error('Community skill template update failed', {
+          userId: user?.id,
+          skillId: editingSkillId,
+          error: error?.message,
+        }, error);
+        flushLogs();
         alert('更新失败，请稍后重试');
         return;
       }
@@ -1980,15 +2045,33 @@ const Community = () => {
       setMineTab('skills');
       exitCreate();
       alert('提示词模板已更新');
+      log.success('Community skill template update succeeded', {
+        userId: user?.id,
+        skillId: skill.id,
+        title,
+      });
+      flushLogs();
       return;
     }
 
     if (userSkillTemplateCount >= 20) {
+      log.warn('Community skill template create blocked by limit', {
+        userId: user?.id,
+        title,
+        currentCount: userSkillTemplateCount,
+      });
+      flushLogs();
       alert('你创建的提示词模板已达到上限（20个），无法继续创建');
       return;
     }
 
     const coverColor = coverColors[Math.floor(Math.random() * coverColors.length)] || null;
+    log.info('Community skill template create requested', {
+      userId: user?.id,
+      title,
+      category: newSkillCategory,
+      promptLength: promptText.length,
+    });
 
     const { data, error } = await supabase
       .from('community_skill_templates')
@@ -2010,6 +2093,12 @@ const Community = () => {
       .single();
 
     if (error || !data) {
+      log.error('Community skill template create failed', {
+        userId: user?.id,
+        title,
+        error: error?.message,
+      }, error);
+      flushLogs();
       if ((error as any)?.message?.includes('skill template limit reached')) {
         alert('你创建的提示词模板已达到上限（20个），无法继续创建');
         return;
@@ -2039,6 +2128,12 @@ const Community = () => {
     setMineTab('skills');
     exitCreate();
     alert('提示词已创建');
+    log.success('Community skill template create succeeded', {
+      userId: user?.id,
+      skillId: skill.id,
+      title,
+    });
+    flushLogs();
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('welfare:template_created'));
     }
@@ -2054,8 +2149,19 @@ const Community = () => {
     }
     if (!confirm(`确定要删除模板 "${template.title}" 吗？\n删除后不可恢复。`)) return;
 
+    log.info('Community work template delete requested', {
+      userId: user?.id,
+      templateId: template.id,
+      title: template.title,
+    });
     const { error } = await supabase.from('community_templates').delete().eq('id', template.id).eq('creator_id', user!.id);
     if (error) {
+      log.error('Community work template delete failed', {
+        userId: user?.id,
+        templateId: template.id,
+        error: error.message,
+      }, error);
+      flushLogs();
       alert('删除失败，请稍后重试');
       return;
     }
@@ -2067,6 +2173,12 @@ const Community = () => {
       closeTemplatePreview();
     }
     alert('模板已删除');
+    log.success('Community work template delete succeeded', {
+      userId: user?.id,
+      templateId: template.id,
+      title: template.title,
+    });
+    flushLogs();
   };
 
   const handleDeleteSkillTemplate = async (skill: Skill, e: React.MouseEvent) => {
@@ -2079,8 +2191,19 @@ const Community = () => {
     }
     if (!confirm(`确定要删除提示词模板 "${skill.title}" 吗？\n删除后不可恢复。`)) return;
 
+    log.info('Community skill template delete requested', {
+      userId: user?.id,
+      skillId: skill.id,
+      title: skill.title,
+    });
     const { error } = await supabase.from('community_skill_templates').delete().eq('id', skill.id).eq('creator_id', user!.id);
     if (error) {
+      log.error('Community skill template delete failed', {
+        userId: user?.id,
+        skillId: skill.id,
+        error: error.message,
+      }, error);
+      flushLogs();
       alert('删除失败，请稍后重试');
       return;
     }
@@ -2094,6 +2217,12 @@ const Community = () => {
       }
     }
     alert('提示词模板已删除');
+    log.success('Community skill template delete succeeded', {
+      userId: user?.id,
+      skillId: skill.id,
+      title: skill.title,
+    });
+    flushLogs();
   };
 
   const handleToggleTemplateLike = async (template: Template, e: React.MouseEvent) => {
@@ -2502,26 +2631,64 @@ const Community = () => {
     try {
       await navigator.clipboard.writeText(skill.prompt_text);
       alert('提示词已复制');
+      log.success('Skill prompt copied', {
+        userId: user?.id,
+        skillId: skill.id,
+        title: skill.title,
+        contentLength: skill.prompt_text.length,
+      });
     } catch {
       alert('复制失败，请手动复制');
+      log.error('Skill prompt copy failed', {
+        userId: user?.id,
+        skillId: skill.id,
+        title: skill.title,
+      });
     }
+    flushLogs();
   };
 
   const handleImportSkillToPrompts = async (skill: Skill, e?: React.MouseEvent) => {
     e?.stopPropagation();
     const categoryLabel = skillCategories.find((c) => c.id === skill.category)?.label || '其他/自定义';
     const id = `community-skill-${skill.id}`;
-    const existing = prompts.find((p) => p.id === id);
+    const sourceSkillTemplateId = isDbSkillTemplate(skill) ? skill.id : null;
+    const normalizedTitle = (skill.title || '').trim().toLocaleLowerCase();
+    const existingBySource = sourceSkillTemplateId
+      ? prompts.find((p) => p.sourceSkillTemplateId === sourceSkillTemplateId)
+      : prompts.find((p) => p.id === id);
+    const existingByTitle = prompts.find((p) => (p.title || p.tags?.[0] || '').trim().toLocaleLowerCase() === normalizedTitle);
+    const existing = existingBySource || (!existingByTitle ? prompts.find((p) => p.id === id) : undefined);
     const payload = {
       id,
       title: skill.title || '',
       index: categoryLabel,
       tags: [],
       content: skill.prompt_text || '',
-      sourceSkillTemplateId: isDbSkillTemplate(skill) ? skill.id : null,
+      sourceSkillTemplateId,
     };
 
     try {
+      log.info('Skill import to prompts requested', {
+        userId: user?.id,
+        skillId: skill.id,
+        title: payload.title,
+        sourceSkillTemplateId,
+      });
+
+      if (existingByTitle && existingByTitle.id !== existing?.id) {
+        log.warn('Skill import duplicate title blocked', {
+          userId: user?.id,
+          skillId: skill.id,
+          title: payload.title,
+          existingPromptId: existingByTitle.id,
+          existingSourceSkillTemplateId: existingByTitle.sourceSkillTemplateId || null,
+        });
+        flushLogs();
+        alert('指令工坊已存在同名指令，请先改名后再导入');
+        return;
+      }
+
       if (user && !isGuestUser(user)) {
         if (existing) {
           if (existing.content !== payload.content || existing.index !== payload.index) {
@@ -2530,6 +2697,13 @@ const Community = () => {
           const saved = await updateUserPrompt(user.id, existing.id, payload);
           updatePrompt(existing.id, saved);
           alert('已更新到你的指令工坊');
+          log.success('Skill imported to prompts', {
+            userId: user.id,
+            skillId: skill.id,
+            promptId: saved.id,
+            mode: 'update',
+          });
+          flushLogs();
           return;
         }
         const saved = await createUserPrompt(user.id, {
@@ -2541,6 +2715,13 @@ const Community = () => {
         });
         addPrompt(saved);
         alert('已导入到你的指令工坊');
+        log.success('Skill imported to prompts', {
+          userId: user.id,
+          skillId: skill.id,
+          promptId: saved.id,
+          mode: 'create',
+        });
+        flushLogs();
         return;
       }
 
@@ -2550,10 +2731,24 @@ const Community = () => {
         }
         updatePrompt(id, payload);
         alert('已更新到你的指令工坊');
+        log.success('Skill imported to prompts', {
+          userId: user?.id,
+          skillId: skill.id,
+          promptId: id,
+          mode: 'guest-update',
+        });
+        flushLogs();
         return;
       }
       addPrompt(payload);
       alert('已导入到你的指令工坊');
+      log.success('Skill imported to prompts', {
+        userId: user?.id,
+        skillId: skill.id,
+        promptId: id,
+        mode: 'guest-create',
+      });
+      flushLogs();
     } catch (error) {
       log.error('Failed to import skill to prompts', { skillId: skill.id, userId: user?.id }, error);
       alert(error instanceof Error ? error.message : '导入失败，请稍后重试');

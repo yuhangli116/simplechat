@@ -141,9 +141,20 @@ const Prompts = () => {
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
       addToast('复制成功', 'success');
+      log.success('Prompt copied', {
+        userId: user?.id,
+        promptId: id,
+        contentLength: text.length,
+      });
     } else {
       addToast('复制失败，请手动复制', 'error');
+      log.error('Prompt copy failed', {
+        userId: user?.id,
+        promptId: id,
+        contentLength: text.length,
+      });
     }
+    flushLogs();
   };
 
   const handleOpenModal = (prompt?: Prompt) => {
@@ -168,6 +179,12 @@ const Prompts = () => {
   };
 
   const openPreview = (prompt: Prompt) => {
+    log.info('Prompt preview opened', {
+      userId: user?.id,
+      promptId: prompt.id,
+      title: getPromptTitle(prompt),
+    });
+    flushLogs();
     setPreviewPrompt(prompt);
   };
 
@@ -233,6 +250,24 @@ const Prompts = () => {
       return;
     }
 
+    const normalizedTitle = title.toLocaleLowerCase();
+    const duplicate = prompts.find((prompt) => {
+      if (editingPrompt && prompt.id === editingPrompt.id) return false;
+      return getPromptTitle(prompt).trim().toLocaleLowerCase() === normalizedTitle;
+    });
+
+    if (duplicate) {
+      log.warn('Prompt duplicate blocked', {
+        userId: user?.id,
+        title,
+        existingPromptId: duplicate.id,
+        editingPromptId: editingPrompt?.id || null,
+      });
+      flushLogs();
+      addToast('已存在同名指令，请修改标题后再保存', 'error');
+      return;
+    }
+
     const newPrompt: Prompt = {
       id: editingPrompt ? editingPrompt.id : Date.now().toString(),
       title,
@@ -243,15 +278,18 @@ const Prompts = () => {
     };
 
     setSavingPrompt(true);
+    let persistedPromptId = newPrompt.id;
     try {
       if (user && !isGuestUser(user)) {
         if (editingPrompt) {
           const saved = await updateUserPrompt(user.id, editingPrompt.id, newPrompt);
           updatePrompt(editingPrompt.id, saved);
+          persistedPromptId = saved.id;
           addToast('指令已保存', 'success');
         } else {
           const saved = await createUserPrompt(user.id, newPrompt);
           addPrompt(saved);
+          persistedPromptId = saved.id;
           addToast('指令已新增', 'success');
         }
       } else if (editingPrompt) {
@@ -262,7 +300,7 @@ const Prompts = () => {
         addToast('指令已新增到本地', 'success');
       }
       log.success('Prompt saved from Prompts page', {
-        promptId: newPrompt.id,
+        promptId: persistedPromptId,
         isGuest: isGuestUser(user),
         editing: Boolean(editingPrompt),
       });
@@ -285,6 +323,11 @@ const Prompts = () => {
     const promptToDelete = prompts.find((p) => p.id === confirmDeleteId);
     if (promptToDelete) {
       const trashTitle = (promptToDelete.title || '').trim() || promptToDelete.tags?.[0] || promptToDelete.index;
+      log.info('Prompt delete confirmed', {
+        userId: user?.id,
+        promptId: confirmDeleteId,
+        title: trashTitle,
+      });
       try {
         await addToTrash({
           originalId: confirmDeleteId,

@@ -17,8 +17,11 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { Database } from '@/types/supabase';
 import { useToastStore } from '@/store/useToastStore';
+import { createLogger, flushLogs } from '@/lib/logger';
 
 type UserWelfare = Database['public']['Tables']['user_welfare']['Row'];
+
+const log = createLogger('Welfare');
 
 const Welfare = () => {
   const { user, diamondBalance, fetchProfile, profile } = useAuthStore();
@@ -71,6 +74,7 @@ const Welfare = () => {
     }
     setLoading(true);
     try {
+      log.info('Welfare data load requested', { userId: user.id });
       const { data, error } = await supabase
         .from('user_welfare')
         .select('*')
@@ -79,10 +83,16 @@ const Welfare = () => {
 
       if (error && error.code !== 'PGRST116') {
         console.error('Error fetching welfare data:', error);
+        log.error('Welfare data load failed', { userId: user.id, error: error.message }, error);
       }
 
       if (data) {
         setWelfareData(data);
+        log.success('Welfare data loaded', {
+          userId: user.id,
+          hasData: true,
+          completedTaskCount: Array.isArray(data.completed_tasks) ? data.completed_tasks.length : 0,
+        });
       } else {
         const { data: newData, error: insertError } = await supabase
           .from('user_welfare')
@@ -92,10 +102,18 @@ const Welfare = () => {
 
         if (!insertError && newData) {
           setWelfareData(newData);
+          log.success('Welfare data loaded', {
+            userId: user.id,
+            hasData: false,
+            created: true,
+          });
+        } else if (insertError) {
+          log.error('Welfare data create failed', { userId: user.id, error: insertError.message }, insertError);
         }
       }
     } finally {
       setLoading(false);
+      flushLogs();
     }
   };
 
@@ -109,6 +127,11 @@ const Welfare = () => {
 
   const handleGuestTaskNavigate = (path: string) => {
     if (confirmLoginForGuest('完成任务需要登录后才能使用，是否前往登录？')) return;
+    log.info('Welfare task navigation clicked', {
+      userId: user?.id,
+      path,
+    });
+    flushLogs();
     navigate(path);
   };
 
@@ -118,6 +141,11 @@ const Welfare = () => {
     }
 
     try {
+      log.info('Welfare check-in requested', {
+        userId: user?.id,
+        today: todayStr,
+        balanceBefore: diamondBalance,
+      });
       const { data, error } = await supabase.rpc('claim_daily_checkin');
       if (error) throw error;
       if (!data?.success) throw new Error(data?.error || '签到失败');
@@ -125,9 +153,21 @@ const Welfare = () => {
       await fetchProfile();
       await fetchWelfareData();
       addToast('签到成功！获得 ' + Number(data.reward).toLocaleString() + ' 钻石', 'success');
+      log.success('Welfare check-in succeeded', {
+        userId: user?.id,
+        today: todayStr,
+        reward: Number(data.reward || 0),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : '签到失败，请重试';
+      log.error('Welfare check-in failed', {
+        userId: user?.id,
+        today: todayStr,
+        error: message,
+      }, error);
       addToast(message, 'error');
+    } finally {
+      flushLogs();
     }
   };
 
@@ -144,6 +184,11 @@ const Welfare = () => {
     setVideoCurrentTime(0);
     setVideoPlaying(false);
     setShowVideoModal(true);
+    log.info('Welfare video opened', {
+      userId: user?.id,
+      taskId: 'ad',
+    });
+    flushLogs();
   };
 
   const onVideoTimeUpdate = () => {
@@ -158,6 +203,14 @@ const Welfare = () => {
       }
       if (progress >= 0.8 && !videoWatched) {
         setVideoWatched(true);
+        log.success('Welfare video progress reached', {
+          userId: user?.id,
+          taskId: 'ad',
+          progress: Math.round(progress * 100),
+          currentTime: videoRef.current.currentTime,
+          duration: videoRef.current.duration,
+        });
+        flushLogs();
       }
     }
   };
@@ -179,6 +232,13 @@ const Welfare = () => {
     if (now - lastSeekToastAtRef.current > 1200) {
       lastSeekToastAtRef.current = now;
       addToast('为保证公平，激励视频不支持快进', 'info');
+      log.warn('Welfare video seek blocked', {
+        userId: user?.id,
+        taskId: 'ad',
+        targetTime,
+        maxWatchedTime: maxWatchedTimeRef.current,
+      });
+      flushLogs();
     }
   };
 
@@ -199,6 +259,12 @@ const Welfare = () => {
 
   const onVideoEnded = async () => {
     setShowVideoModal(false);
+    log.info('Welfare video reward claimed', {
+      userId: user?.id,
+      taskId: 'ad',
+      progress: Math.round(videoProgress * 100),
+    });
+    flushLogs();
     await claimTask('ad');
   };
 
@@ -208,6 +274,11 @@ const Welfare = () => {
     }
 
     try {
+      log.info('Welfare task claim requested', {
+        userId: user?.id,
+        taskId,
+        balanceBefore: diamondBalance,
+      });
       const { data, error } = await supabase.rpc('claim_welfare_task', { p_task_id: taskId });
       if (error) throw error;
       if (!data?.success) throw new Error(data?.error || '任务领取失败');
@@ -215,8 +286,20 @@ const Welfare = () => {
       await fetchProfile();
       await fetchWelfareData();
       addToast('任务完成！获得 ' + Number(data.reward).toLocaleString() + ' 钻石', 'success');
+      log.success('Welfare task claim succeeded', {
+        userId: user?.id,
+        taskId,
+        reward: Number(data.reward || 0),
+      });
     } catch (error) {
+      log.error('Welfare task claim failed', {
+        userId: user?.id,
+        taskId,
+        error: error instanceof Error ? error.message : String(error),
+      }, error);
       addToast('任务提交失败', 'error');
+    } finally {
+      flushLogs();
     }
   };
 
@@ -316,7 +399,11 @@ const Welfare = () => {
               </div>
             </div>
             <button
-              onClick={() => navigate('/membership')}
+              onClick={() => {
+                log.info('Welfare recharge navigation clicked', { userId: user?.id });
+                flushLogs();
+                navigate('/membership');
+              }}
               className="px-5 py-2.5 rounded-2xl bg-gray-900 dark:bg-purple-600 text-white text-sm font-semibold hover:bg-black dark:hover:bg-purple-500 transition-colors"
             >
               去充值
