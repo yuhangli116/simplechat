@@ -807,12 +807,11 @@ const runQueuedMindMapSave = async (key: string, params: SaveMindMapContentParam
 
     if (nextParams) {
       void runQueuedMindMapSave(key, nextParams, nextWaiters)
-      return
-    }
-
-    queue.inFlight = false
-    if (queue.pendingWaiters.length === 0) {
-      mindMapSaveQueues.delete(key)
+    } else {
+      queue.inFlight = false
+      if (queue.pendingWaiters.length === 0) {
+        mindMapSaveQueues.delete(key)
+      }
     }
   }
 }

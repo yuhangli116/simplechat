@@ -3,12 +3,24 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 import { generateTextServer, getRequestContext, parseRequestBody, sendJson, sendNdjson, streamGenerateTextServer, summarizeContextServer } from './server/aiProxy.js'
 import { createServerLogger, persistBatchLogs, initLogger } from './server/logger.js'
+import {
+  RequestGuardError,
+  applyAiRequestGuard,
+  applyLogRequestGuard,
+  sanitizeLogBatch,
+  sendGuardError,
+} from './server/security/requestGuards.js'
 
 const log = createServerLogger('ViteDev')
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   Object.assign(process.env, env)
+
+  const publicSupabaseEnv = {
+    'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(env.SUPABASE_URL || env.VITE_SUPABASE_URL || ''),
+    'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY || ''),
+  }
 
   Object.keys(env).forEach(key => {
     if (key.startsWith('VITE_')) {
@@ -21,11 +33,21 @@ export default defineConfig(({ mode }) => {
   initLogger()
 
   return {
+    define: publicSupabaseEnv,
     plugins: [
       react(),
       {
         name: 'local-ai-proxy',
         configureServer(server) {
+          server.middlewares.use('/api/health', (req, res) => {
+            if (req.method !== 'GET') {
+              sendJson(res, 405, { error: 'Method not allowed' })
+              return
+            }
+            log.info('Health check (dev)')
+            sendJson(res, 200, { ok: true, logDir: 'log' })
+          })
+
           // 日志接收端点
           server.middlewares.use('/api/log', (req, res) => {
             if (req.method !== 'POST') {
@@ -33,12 +55,18 @@ export default defineConfig(({ mode }) => {
               return
             }
             parseRequestBody(req).then((body) => {
-              const { logs } = body || {}
-              if (Array.isArray(logs) && logs.length > 0) {
+              const requestContext = getRequestContext(req)
+              applyLogRequestGuard({ body: body || {}, req, requestContext })
+              const logs = sanitizeLogBatch(body?.logs || [])
+              if (logs.length > 0) {
                 persistBatchLogs(logs)
               }
               sendJson(res, 200, { ok: true })
-            }).catch(() => {
+            }).catch((error) => {
+              if (error instanceof RequestGuardError) {
+                sendGuardError(res, error, sendJson)
+                return
+              }
               sendJson(res, 500, { error: 'Log persist failed' })
             })
           })
@@ -48,9 +76,17 @@ export default defineConfig(({ mode }) => {
               sendJson(res, 405, { error: 'Method not allowed' })
               return
             }
+            let releaseGuard = () => {}
             try {
               const body = await parseRequestBody(req)
               const requestContext = getRequestContext(req)
+              releaseGuard = applyAiRequestGuard({
+                endpoint: 'generate',
+                body,
+                requestContext,
+                req,
+                res,
+              })
               log.info('AI generate request (dev)', { model: body.model, ip: requestContext.ip })
               const result = await generateTextServer(body, requestContext)
               if (result.error) {
@@ -60,8 +96,14 @@ export default defineConfig(({ mode }) => {
               }
               sendJson(res, 200, result)
             } catch (error) {
+              if (error instanceof RequestGuardError) {
+                sendGuardError(res, error, sendJson)
+                return
+              }
               log.error('AI generate unhandled error (dev)', {}, error)
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI request failed' })
+            } finally {
+              releaseGuard()
             }
           })
           server.middlewares.use('/api/ai/generate-stream', async (req, res) => {
@@ -69,9 +111,17 @@ export default defineConfig(({ mode }) => {
               sendJson(res, 405, { error: 'Method not allowed' })
               return
             }
+            let releaseGuard = () => {}
             try {
               const body = await parseRequestBody(req)
               const requestContext = getRequestContext(req)
+              releaseGuard = applyAiRequestGuard({
+                endpoint: 'generateStream',
+                body,
+                requestContext,
+                req,
+                res,
+              })
               log.info('AI generate stream request (dev)', {
                 traceId: body.traceId,
                 model: body.model,
@@ -93,8 +143,14 @@ export default defineConfig(({ mode }) => {
                 await write({ type: 'done', ...result })
               })
             } catch (error) {
+              if (error instanceof RequestGuardError) {
+                sendGuardError(res, error, sendJson)
+                return
+              }
               log.error('AI generate stream unhandled error (dev)', {}, error)
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI request failed' })
+            } finally {
+              releaseGuard()
             }
           })
           server.middlewares.use('/api/ai/summarize', async (req, res) => {
@@ -102,9 +158,17 @@ export default defineConfig(({ mode }) => {
               sendJson(res, 405, { error: 'Method not allowed' })
               return
             }
+            let releaseGuard = () => {}
             try {
               const body = await parseRequestBody(req)
               const requestContext = getRequestContext(req)
+              releaseGuard = applyAiRequestGuard({
+                endpoint: 'summarize',
+                body,
+                requestContext,
+                req,
+                res,
+              })
               log.info('AI summarize request (dev)', {
                 traceId: body.traceId,
                 model: body.model,
@@ -129,8 +193,14 @@ export default defineConfig(({ mode }) => {
               }
               sendJson(res, 200, result)
             } catch (error) {
+              if (error instanceof RequestGuardError) {
+                sendGuardError(res, error, sendJson)
+                return
+              }
               log.error('AI summarize unhandled error (dev)', {}, error)
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI summarize failed' })
+            } finally {
+              releaseGuard()
             }
           })
         },

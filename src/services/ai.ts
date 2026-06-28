@@ -172,6 +172,15 @@ const parseNdjsonStream = async (
 const getFriendlyErrorMessage = (error: any, provider: string): string => {
   const msg = error?.message || '';
 
+  if (
+    msg.includes('请求过于频繁') ||
+    msg.includes('并发已达到上限') ||
+    msg.includes('输入过长') ||
+    msg.includes('日志上报')
+  ) {
+    return msg;
+  }
+
   if (msg.includes('模型定价配置不存在')) {
     return `计费配置缺失：${msg}。请确认已在当前 Supabase 项目执行模型定价迁移（model_pricing 表包含该 model_key 且 is_active=true）。`;
   }

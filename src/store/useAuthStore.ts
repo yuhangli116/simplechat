@@ -142,7 +142,9 @@ const clearGuestData = () => {
   try {
     sessionStorage.removeItem('guest-storage-key')
     clearGuestSession()
-  } catch {}
+  } catch (e) {
+    log.warn('Failed to clear guest sessionStorage', { error: e })
+  }
 
   log.info('Guest data cleared', { removedCount })
 }

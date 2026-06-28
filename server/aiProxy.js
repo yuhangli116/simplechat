@@ -1004,7 +1004,8 @@ const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, co
     const error = pricingResult.reason;
     let host = '';
     try {
-      host = SUPABASE_URL ? new URL(SUPABASE_URL).hostname : '';
+      const supabaseUrl = getEnvValue('SUPABASE_URL', 'VITE_SUPABASE_URL');
+      host = supabaseUrl ? new URL(supabaseUrl).hostname : '';
     } catch (_) {
       host = '';
     }

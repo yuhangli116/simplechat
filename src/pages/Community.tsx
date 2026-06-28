@@ -16,6 +16,8 @@ import { createUserPrompt, updateUserPrompt } from '@/lib/promptPersistence';
 type Template = Database['public']['Tables']['community_templates']['Row'];
 
 const log = createLogger('Community');
+const WORK_TEMPLATE_LIMIT = 5;
+const SKILL_TEMPLATE_LIMIT = 10;
 
 interface Skill {
   id: string;
@@ -1895,14 +1897,15 @@ const Community = () => {
       return;
     }
 
-    if (userWorkTemplateCount >= 10) {
+    if (userWorkTemplateCount >= WORK_TEMPLATE_LIMIT) {
       log.warn('Community work template create blocked by limit', {
         userId: user?.id,
         title,
         currentCount: userWorkTemplateCount,
+        limit: WORK_TEMPLATE_LIMIT,
       });
       flushLogs();
-      alert('你创建的作品模板已达到上限（10个），无法继续创建');
+      alert(`你创建的作品模板已达到上限（${WORK_TEMPLATE_LIMIT}个），无法继续创建`);
       return;
     }
 
@@ -1943,7 +1946,7 @@ const Community = () => {
       }, error);
       flushLogs();
       if ((error as any)?.message?.includes('template limit reached')) {
-        alert('你创建的作品模板已达到上限（10个），无法继续创建');
+        alert(`你创建的作品模板已达到上限（${WORK_TEMPLATE_LIMIT}个），无法继续创建`);
         return;
       }
       alert('创建失败，请稍后重试');
@@ -2054,14 +2057,15 @@ const Community = () => {
       return;
     }
 
-    if (userSkillTemplateCount >= 20) {
+    if (userSkillTemplateCount >= SKILL_TEMPLATE_LIMIT) {
       log.warn('Community skill template create blocked by limit', {
         userId: user?.id,
         title,
         currentCount: userSkillTemplateCount,
+        limit: SKILL_TEMPLATE_LIMIT,
       });
       flushLogs();
-      alert('你创建的提示词模板已达到上限（20个），无法继续创建');
+      alert(`你创建的提示词模板已达到上限（${SKILL_TEMPLATE_LIMIT}个），无法继续创建`);
       return;
     }
 
@@ -2100,7 +2104,7 @@ const Community = () => {
       }, error);
       flushLogs();
       if ((error as any)?.message?.includes('skill template limit reached')) {
-        alert('你创建的提示词模板已达到上限（20个），无法继续创建');
+        alert(`你创建的提示词模板已达到上限（${SKILL_TEMPLATE_LIMIT}个），无法继续创建`);
         return;
       }
       alert('创建失败，请稍后重试');
@@ -3056,7 +3060,9 @@ const Community = () => {
               创建模板
             </button>
             <div className="text-[11px] leading-4 text-gray-400 whitespace-nowrap">
-              {user?.id ? `作品模板 ${userWorkTemplateCount}/10 · 提示词 ${userSkillTemplateCount}/20` : '登录后可创建（作品10/提示词20上限）'}
+              {user?.id
+                ? `作品模板 ${userWorkTemplateCount}/${WORK_TEMPLATE_LIMIT} · 提示词 ${userSkillTemplateCount}/${SKILL_TEMPLATE_LIMIT}`
+                : `登录后可创建（作品${WORK_TEMPLATE_LIMIT}/提示词${SKILL_TEMPLATE_LIMIT}上限）`}
             </div>
           </div>
         </div>
@@ -3430,7 +3436,7 @@ const Community = () => {
               <div className="flex justify-end pt-2">
                 <button
                   onClick={handleCreateWorkTemplate}
-                  disabled={!editingTemplateId && userWorkTemplateCount >= 10}
+                  disabled={!editingTemplateId && userWorkTemplateCount >= WORK_TEMPLATE_LIMIT}
                   className="px-4 py-2 text-sm font-medium rounded-lg bg-purple-600 hover:bg-purple-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-purple-600"
                 >
                   {editingTemplateId ? '保存修改' : '创建作品模板'}
@@ -3501,7 +3507,7 @@ const Community = () => {
               <div className="flex justify-end pt-2">
                 <button
                   onClick={handleCreateSkillTemplate}
-                  disabled={!editingSkillId && userSkillTemplateCount >= 20}
+                  disabled={!editingSkillId && userSkillTemplateCount >= SKILL_TEMPLATE_LIMIT}
                   className="px-4 py-2 text-sm font-medium rounded-lg bg-purple-600 hover:bg-purple-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-purple-600"
                 >
                   {editingSkillId ? '保存修改' : '创建提示词模板'}
