@@ -34,6 +34,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     define: publicSupabaseEnv,
+    server: {
+      port: 3000,
+      strictPort: true,
+    },
     plugins: [
       react(),
       {

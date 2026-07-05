@@ -36,6 +36,9 @@ interface Skill {
   cover_color: string;
 }
 
+type TemplateReviewStatus = 'pending' | 'approved' | 'rejected' | 'hidden';
+type TemplateReviewState = Record<string, TemplateReviewStatus>;
+
 type OutlineTreeNode = {
   id: string;
   name: string;
@@ -83,6 +86,7 @@ const Community = () => {
   const [loading, setLoading] = useState(true);
   const [collectedSkills, setCollectedSkills] = useState<string[]>(() => readIdListFromStorage('collectedSkills'));
   const [userSkills, setUserSkills] = useState<Skill[]>([]);
+  const [templateReviewStatuses, setTemplateReviewStatuses] = useState<TemplateReviewState>({});
   const [likedTemplateIds, setLikedTemplateIds] = useState<string[]>(() => readIdListFromStorage('likedTemplates'));
   const [likedSkillIds, setLikedSkillIds] = useState<string[]>(() => readIdListFromStorage('likedSkillTemplates'));
   const [likedOfficialSkillIds, setLikedOfficialSkillIds] = useState<string[]>(() => readIdListFromStorage('likedOfficialSkills'));
@@ -143,6 +147,22 @@ const Community = () => {
   }, [userSkills, user?.id]);
 
   const subTabsRef = useRef<HTMLDivElement>(null);
+
+  const reviewKey = (targetType: 'template' | 'skill_template', id: string) => `${targetType}:${id}`;
+
+  const getTemplateVisibility = (
+    targetType: 'template' | 'skill_template',
+    item: { id: string; is_public?: boolean | null }
+  ) => {
+    const status = templateReviewStatuses[reviewKey(targetType, String(item.id))];
+    if (status === 'pending') {
+      return { label: '审核', className: 'bg-amber-100/90 text-amber-800 border border-amber-200' };
+    }
+    if (item.is_public !== false && status !== 'hidden' && status !== 'rejected') {
+      return { label: '公开', className: 'bg-emerald-100/90 text-emerald-800 border border-emerald-200' };
+    }
+    return { label: '私密', className: 'bg-slate-100/90 text-slate-700 border border-slate-200' };
+  };
 
   const resetCreateState = () => {
     setCreateTab('template');
@@ -396,6 +416,34 @@ const Community = () => {
     if (!subTabsRef.current) return;
     subTabsRef.current.scrollLeft = 0;
   }, [isCreating, mainTab]);
+
+  useEffect(() => {
+    if (!user?.id || isActiveGuest) {
+      setTemplateReviewStatuses({});
+      return;
+    }
+
+    const loadReviewStatuses = async () => {
+      const { data, error } = await supabase.rpc('get_my_template_review_statuses' as any);
+      if (error) {
+        log.warn('Failed to load my template review statuses', { userId: user.id, error: error.message });
+        flushLogs();
+        return;
+      }
+
+      const rows = Array.isArray(data) ? data : [];
+      const next: TemplateReviewState = {};
+      rows.forEach((row: any) => {
+        if (!row?.target_type || !row?.target_id || !row?.review_status) return;
+        next[reviewKey(row.target_type as 'template' | 'skill_template', String(row.target_id))] = row.review_status;
+      });
+      setTemplateReviewStatuses(next);
+      log.success('My template review statuses loaded', { userId: user.id, count: rows.length });
+      flushLogs();
+    };
+
+    loadReviewStatuses();
+  }, [user?.id, isActiveGuest]);
 
   useEffect(() => {
     const fetchUserSkills = async () => {
@@ -1477,13 +1525,20 @@ const Community = () => {
     return true;
   });
 
-  const publicTemplates = sortByOfficialAndLikes(filteredTemplates.filter((t) => t.is_official || t.is_public !== false));
+  const isApprovedForCommunity = (item: { is_official?: boolean | null; is_public?: boolean | null; review_status?: string | null }) => {
+    const isPublic = item.is_public !== false;
+    if (!isPublic) return false;
+    if (item.is_official) return true;
+    return (item.review_status || 'approved') === 'approved';
+  };
+
+  const publicTemplates = sortByOfficialAndLikes(filteredTemplates.filter((t) => isApprovedForCommunity(t as any)));
 
   const mineTemplates = user?.id
     ? sortByOfficialAndLikes(resources.filter((t) => !t.is_official && !String(t.id).startsWith('mock-') && t.creator_id === user.id))
     : [];
 
-  const publicSkills = sortByOfficialAndLikes(filteredSkills.filter((s) => s.is_official || s.is_public !== false));
+  const publicSkills = sortByOfficialAndLikes(filteredSkills.filter((s) => isApprovedForCommunity(s)));
 
   const mineSkills = user?.id ? sortByOfficialAndLikes(userSkills.filter((s) => !s.is_official && s.creator_id === user.id)) : [];
 
@@ -1881,13 +1936,17 @@ const Community = () => {
       }
 
       setResources((prev) => prev.map((t) => (t.id === (data as any).id ? (data as any) : t)));
+      setTemplateReviewStatuses((prev) => ({
+        ...prev,
+        [reviewKey('template', String((data as any).id))]: newTemplateIsPublic ? 'pending' : 'hidden',
+      }));
       if (previewTemplate?.id === (data as any).id) {
         closeTemplatePreview();
       }
       setMainTab('mine');
       setMineTab('templates');
       exitCreate();
-      alert('模板已更新');
+      alert(newTemplateIsPublic ? '模板已提交公开审核，管理员将在 7 天内审核，审核通过后会展示到公共社区' : '模板已更新，仅你自己可见');
       log.success('Community work template update succeeded', {
         userId: user?.id,
         templateId: (data as any).id,
@@ -1954,10 +2013,14 @@ const Community = () => {
     }
 
     setResources((prev) => [data as any, ...prev]);
+    setTemplateReviewStatuses((prev) => ({
+      ...prev,
+      [reviewKey('template', String((data as any).id))]: newTemplateIsPublic ? 'pending' : 'hidden',
+    }));
     setMainTab('mine');
     setMineTab('templates');
     exitCreate();
-    alert('模板已创建');
+    alert(newTemplateIsPublic ? '模板已创建，并已提交公开审核；管理员将在 7 天内审核，审核通过后会展示到公共社区' : '模板已创建，仅你自己可见');
     log.success('Community work template create succeeded', {
       userId: user?.id,
       templateId: (data as any).id,
@@ -2044,10 +2107,14 @@ const Community = () => {
       };
 
       setUserSkills((prev) => prev.map((s) => (s.id === skill.id ? skill : s)));
+      setTemplateReviewStatuses((prev) => ({
+        ...prev,
+        [reviewKey('skill_template', String(skill.id))]: newSkillIsPublic ? 'pending' : 'hidden',
+      }));
       setMainTab('mine');
       setMineTab('skills');
       exitCreate();
-      alert('提示词模板已更新');
+      alert(newSkillIsPublic ? '提示词模板已提交公开审核，管理员将在 7 天内审核，审核通过后会展示到公共社区' : '提示词模板已更新，仅你自己可见');
       log.success('Community skill template update succeeded', {
         userId: user?.id,
         skillId: skill.id,
@@ -2128,10 +2195,14 @@ const Community = () => {
     };
 
     setUserSkills((prev) => [skill, ...prev]);
+    setTemplateReviewStatuses((prev) => ({
+      ...prev,
+      [reviewKey('skill_template', String(skill.id))]: newSkillIsPublic ? 'pending' : 'hidden',
+    }));
     setMainTab('mine');
     setMineTab('skills');
     exitCreate();
-    alert('提示词已创建');
+    alert(newSkillIsPublic ? '提示词已创建，并已提交公开审核；管理员将在 7 天内审核，审核通过后会展示到公共社区' : '提示词已创建，仅你自己可见');
     log.success('Community skill template create succeeded', {
       userId: user?.id,
       skillId: skill.id,
@@ -3154,7 +3225,9 @@ const Community = () => {
               <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
                 <div>
                   <div className="text-xs font-medium text-gray-700">公开到社区</div>
-                  <div className="text-[11px] text-gray-500">关闭后仅你自己可见与可用</div>
+                  <div className="text-[11px] text-gray-500">
+                    开启后需管理员审核，7 天内审核通过后展示到公共社区；关闭后仅你自己可见与可用
+                  </div>
                 </div>
                 <input
                   type="checkbox"
@@ -3484,7 +3557,9 @@ const Community = () => {
               <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
                 <div>
                   <div className="text-xs font-medium text-gray-700">公开到社区</div>
-                  <div className="text-[11px] text-gray-500">关闭后仅你自己可见与可用</div>
+                  <div className="text-[11px] text-gray-500">
+                    开启后需管理员审核，7 天内审核通过后展示到公共社区；关闭后仅你自己可见与可用
+                  </div>
                 </div>
                 <input
                   type="checkbox"
@@ -3693,13 +3768,15 @@ const Community = () => {
                 const { items, totalPages, page } = getPaged(mineTemplates);
                 return (
                   <>
-                    {items.map((item) => (
-                      <div
-                        key={item.id}
-                        onClick={() => openTemplatePreview(item)}
-                        className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg transition-shadow group flex flex-col cursor-pointer"
-                      >
-                        <div className={`h-32 ${item.cover_color || 'bg-gray-300'} relative p-4 flex flex-col justify-between`}>
+                    {items.map((item) => {
+                      const visibility = getTemplateVisibility('template', { id: String(item.id), is_public: item.is_public });
+                      return (
+                        <div
+                          key={item.id}
+                          onClick={() => openTemplatePreview(item)}
+                          className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg transition-shadow group flex flex-col cursor-pointer"
+                        >
+                          <div className={`h-32 ${item.cover_color || 'bg-gray-300'} relative p-4 flex flex-col justify-between`}>
                           <div className="absolute top-3 right-3 flex items-center gap-2">
                             <button
                               onClick={(e) => startEditWorkTemplate(item, e)}
@@ -3720,8 +3797,8 @@ const Community = () => {
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
-                          <span className="absolute top-3 left-3 bg-black/25 backdrop-blur-sm text-white text-xs px-2.5 py-1 rounded-full">
-                            {item.is_public !== false ? '公开' : '私密'}
+                          <span className={`absolute top-3 left-3 backdrop-blur-sm text-xs px-2.5 py-1 rounded-full ${visibility.className}`}>
+                            {visibility.label}
                           </span>
                           <div className="text-white font-bold text-lg leading-tight drop-shadow-md line-clamp-2">{item.title}</div>
                           <div className="text-white/90 text-xs flex items-center">
@@ -3768,8 +3845,9 @@ const Community = () => {
                             使用模板
                           </button>
                         </div>
-                      </div>
-                    ))}
+                        </div>
+                      );
+                    })}
                     <div className="col-span-full pt-2">
                       <Pagination page={page} totalPages={totalPages} onChange={setCurrentPage} />
                     </div>
@@ -3787,6 +3865,7 @@ const Community = () => {
                   {items.map((skill) => {
                     const metrics = getSkillMetrics(skill);
                     const isLiked = isSkillLikedByMe(skill);
+                    const visibility = getTemplateVisibility('skill_template', { id: String(skill.id), is_public: skill.is_public });
                     return (
                       <div
                         key={skill.id}
@@ -3797,8 +3876,8 @@ const Community = () => {
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
                               <div className="text-sm font-semibold text-gray-900 truncate">{skill.title}</div>
-                              <span className="inline-flex items-center rounded-full bg-gray-50 text-gray-700 border border-gray-200 text-xs px-2.5 py-1">
-                                {skill.is_public !== false ? '公开' : '私密'}
+                              <span className={`inline-flex items-center rounded-full text-xs px-2.5 py-1 ${visibility.className}`}>
+                                {visibility.label}
                               </span>
                             </div>
                             <div className="text-[11px] text-gray-500 mt-1 truncate">By {skill.author_name}</div>
