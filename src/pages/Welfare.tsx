@@ -20,6 +20,25 @@ import { useToastStore } from '@/store/useToastStore';
 import { createLogger, flushLogs } from '@/lib/logger';
 
 type UserWelfare = Database['public']['Tables']['user_welfare']['Row'];
+type WelfareCampaign = {
+  id: string;
+  title: string;
+  description: string | null;
+  reward_diamonds: number;
+  task_type: string;
+  daily_limit: number | null;
+  is_active: boolean | null;
+};
+type WelfareTaskCard = {
+  id: string;
+  title: string;
+  reward: number;
+  icon: React.ReactNode;
+  type: string;
+  dailyLimit?: number;
+  desc: string;
+  handler: () => void | Promise<void>;
+};
 
 const log = createLogger('Welfare');
 
@@ -39,6 +58,7 @@ const Welfare = () => {
   const [videoDuration, setVideoDuration] = useState(0);
   const [videoCurrentTime, setVideoCurrentTime] = useState(0);
   const [videoPlaying, setVideoPlaying] = useState(false);
+  const [campaignTasks, setCampaignTasks] = useState<WelfareCampaign[]>([]);
 
   const completedTasks: string[] = Array.isArray(welfareData?.completed_tasks)
     ? (welfareData?.completed_tasks as string[])
@@ -75,15 +95,29 @@ const Welfare = () => {
     setLoading(true);
     try {
       log.info('Welfare data load requested', { userId: user.id });
-      const { data, error } = await supabase
+      const [{ data, error }, { data: tasksData, error: tasksError }] = await Promise.all([
+        supabase
         .from('user_welfare')
         .select('*')
         .eq('user_id', user!.id)
-        .single();
+        .single(),
+        supabase
+          .from('welfare_tasks' as any)
+          .select('id,title,description,reward_diamonds,task_type,daily_limit,is_active')
+          .eq('is_active', true)
+          .or(`starts_at.is.null,starts_at.lte.${new Date().toISOString()}`)
+          .or(`ends_at.is.null,ends_at.gt.${new Date().toISOString()}`)
+          .order('updated_at', { ascending: false }),
+      ]);
 
       if (error && error.code !== 'PGRST116') {
         console.error('Error fetching welfare data:', error);
         log.error('Welfare data load failed', { userId: user.id, error: error.message }, error);
+      }
+      if (tasksError) {
+        log.warn('Active welfare campaigns load failed', { userId: user.id, error: tasksError.message });
+      } else {
+        setCampaignTasks(((tasksData || []) as unknown as WelfareCampaign[]).filter((task) => task.is_active !== false));
       }
 
       if (data) {
@@ -313,7 +347,7 @@ const Welfare = () => {
     { day: 7, reward: 20000 },
   ];
 
-  const tasks = [
+  const builtInTasks: WelfareTaskCard[] = [
     {
       id: 'first_ai_call',
       title: '完成首次 AI 生成',
@@ -341,6 +375,35 @@ const Welfare = () => {
       desc: '观看80%即可领取',
       handler: handleVideoTask,
     },
+  ];
+  const builtInTaskIds = new Set(builtInTasks.map((task) => task.id));
+  const dynamicTasks: WelfareTaskCard[] = campaignTasks
+    .filter((task) => !builtInTaskIds.has(task.id))
+    .map((task) => ({
+      id: task.id,
+      title: task.title,
+      reward: Number(task.reward_diamonds || 0),
+      icon: <Gift className="w-5 h-5 text-rose-500" />,
+      type: task.task_type || 'once',
+      dailyLimit: Number(task.daily_limit || 1),
+      desc: task.description || '运营福利活动，点击即可领取奖励',
+      handler: () => claimTask(task.id),
+    }));
+  const campaignById = new Map(campaignTasks.map((task) => [task.id, task]));
+  const tasks = [
+    ...builtInTasks.map((task) => {
+      const campaign = campaignById.get(task.id);
+      if (!campaign) return task;
+      return {
+        ...task,
+        title: campaign.title || task.title,
+        reward: Number(campaign.reward_diamonds || task.reward),
+        type: campaign.task_type || task.type,
+        dailyLimit: Number(campaign.daily_limit || task.dailyLimit || 1),
+        desc: campaign.description || task.desc,
+      };
+    }),
+    ...dynamicTasks,
   ];
 
   const getCurrentStreak = () => {
@@ -513,7 +576,12 @@ const Welfare = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {tasks.map((task) => {
               const taskKey = task.type === 'daily' ? `${task.id}:${todayStr}` : task.id;
-              const isCompleted = completedTasks.includes(taskKey);
+              const dailyClaimCount = task.type === 'daily'
+                ? completedTasks.filter((key) => key === taskKey || key.startsWith(`${taskKey}:`)).length
+                : 0;
+              const isCompleted = task.type === 'daily'
+                ? dailyClaimCount >= (task.dailyLimit || 1)
+                : completedTasks.includes(taskKey);
               return (
                 <div
                   key={task.id}
