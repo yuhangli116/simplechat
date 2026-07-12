@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { createServerLogger } from './logger.js';
+import { checkSecurityControls } from './security/securityControls.js';
 
 const log = createServerLogger('AIProxy');
 
@@ -788,11 +789,40 @@ const normalizePricingRow = (row) => ({
   output_multiplier: Number(row.output_multiplier ?? 0),
   reasoning_multiplier: Number(row.reasoning_multiplier ?? 0),
   cache_multiplier: Number(row.cache_multiplier ?? 0),
+  max_output_tokens: row.max_output_tokens == null ? null : Number(row.max_output_tokens),
+  sort_order: row.sort_order == null ? 100 : Number(row.sort_order),
 });
 
 const getDefaultModelPricing = (modelKey) => {
   const pricing = DEFAULT_MODEL_PRICING[modelKey];
-  return pricing ? normalizePricingRow(pricing) : null;
+  if (!pricing) return null;
+  const registryConfig = getModelRegistry()[modelKey] || {};
+  return normalizePricingRow({
+    ...pricing,
+    api_type: pricing.api_type || registryConfig.type,
+    api_key_env_var:
+      pricing.api_key_env_var ||
+      (registryConfig.provider === 'deepseek'
+        ? 'DEEPSEEK_API_KEY'
+        : registryConfig.provider === 'anthropic'
+          ? 'ANTHROPIC_API_KEY'
+          : registryConfig.provider === 'openrouter'
+            ? 'OPENROUTER_API_KEY'
+            : registryConfig.provider === 'openai'
+              ? 'OPENAI_API_KEY'
+              : undefined),
+    base_url: pricing.base_url || registryConfig.baseURL,
+    base_url_env_var:
+      pricing.base_url_env_var ||
+      (registryConfig.provider === 'deepseek'
+        ? 'DEEPSEEK_BASE_URL'
+        : registryConfig.provider === 'openrouter'
+          ? 'OPENROUTER_BASE_URL'
+          : registryConfig.provider === 'openai'
+            ? 'OPENAI_BASE_URL'
+            : undefined),
+    max_output_tokens: pricing.max_output_tokens || registryConfig.maxOutputTokens,
+  });
 };
 
 const setModelPricingCache = (modelKey, pricing, source = 'db') => {
@@ -841,7 +871,7 @@ const fetchModelPricingFromDb = async (supabase, modelKey) => {
       supabase
         .from('model_pricing')
         .select(
-          'model_key, model_name, input_multiplier, output_multiplier, reasoning_multiplier, cache_multiplier, provider, model_api_name'
+          'model_key, model_name, input_multiplier, output_multiplier, reasoning_multiplier, cache_multiplier, provider, model_api_name, api_type, api_key_env_var, base_url, base_url_env_var, max_output_tokens, supports_stream'
         )
         .eq('model_key', modelKey)
         .eq('is_active', true)
@@ -858,6 +888,42 @@ const fetchModelPricingFromDb = async (supabase, modelKey) => {
 
   log.info('Model pricing fetched', { modelKey, inputMult: data.input_multiplier, outputMult: data.output_multiplier });
   return normalizePricingRow(data);
+};
+
+const getRuntimeConfigFromPricing = (pricing, overrides = {}) => {
+  if (!pricing) return overrides;
+  const provider = pricing.provider || 'unknown';
+  const apiType = pricing.api_type || (provider === 'anthropic' ? 'anthropic' : 'openai-compatible');
+  const apiKeyEnvVar = pricing.api_key_env_var || '';
+  const baseUrlEnvVar = pricing.base_url_env_var || '';
+  const baseURL =
+    getEnvValue(baseUrlEnvVar) ||
+    pricing.base_url ||
+    (provider === 'deepseek'
+      ? 'https://api.deepseek.com/v1'
+      : provider === 'openai'
+        ? 'https://api.openai.com/v1'
+        : provider === 'openrouter' || provider === 'google'
+          ? 'https://openrouter.ai/api/v1'
+          : undefined);
+  const extraHeaders =
+    provider === 'openrouter' || provider === 'google' || /openrouter/i.test(baseURL || '')
+      ? {
+          'HTTP-Referer': process.env.APP_URL || 'http://localhost:5173',
+          'X-Title': process.env.APP_NAME || 'simplechat',
+        }
+      : undefined;
+
+  return {
+    type: apiType,
+    provider,
+    modelName: pricing.model_api_name || pricing.model_key,
+    maxOutputTokens: pricing.max_output_tokens || MAX_OUTPUT_TOKENS,
+    baseURL,
+    apiKey: getEnvValue(apiKeyEnvVar),
+    extraHeaders,
+    ...overrides,
+  };
 };
 
 const getModelPricingFromDb = async (supabase, modelKey, options = {}) => {
@@ -989,7 +1055,7 @@ const createUserFacingError = (message, meta = {}) => {
 const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, context }) => {
   const startedAt = Date.now();
   const balancePromise = getEffectiveBalance(supabase, userId);
-  const pricingPromise = getModelPricingFromDb(supabase, model, { allowFallback: true });
+  const pricingPromise = getModelPricingFromDb(supabase, model, { allowFallback: false });
   const [balanceResult, pricingResult] = await Promise.allSettled([balancePromise, pricingPromise]);
 
   if (balanceResult.status === 'rejected') {
@@ -1507,12 +1573,12 @@ const requestModel = async ({ model, messages, temperature = 0.7, runtimeConfig,
   const modelRegistry = getModelRegistry();
   const config = modelRegistry[model];
 
-  if (!config) {
+  if (!config && !runtimeConfig) {
     log.error('Model not found in registry', { model });
     throw new Error(`Model ${model} not supported`);
   }
 
-  const finalConfig = runtimeConfig ? { ...config, ...runtimeConfig } : config;
+  const finalConfig = runtimeConfig ? { ...(config || {}), ...runtimeConfig } : config;
 
   if (finalConfig.type === 'anthropic') {
     return requestAnthropic({ config: finalConfig, messages, temperature, stream, onDelta, traceId });
@@ -1693,6 +1759,30 @@ const executeAiTask = async ({
     if (error?.message !== 'AUTH_RLS_VALIDATION_FAILED') throw error;
     return { content: '', error: '请先登录后再使用 AI 创作功能。' };
   }
+
+  const security = await checkSecurityControls({
+    supabase,
+    userId: user.id,
+    ip: requestContext?.ip,
+    traceId,
+    kind,
+  });
+  if (security.blocked) {
+    const reason = security.userStatus === 'blacklisted'
+      ? security.userReason || '账号已被后台风控封禁'
+      : security.ipReason || '当前网络已被后台风控封禁';
+    log.warn('AI task rejected by security controls', {
+      traceId,
+      kind,
+      userId: user.id,
+      ip: requestContext?.ip,
+      userStatus: security.userStatus,
+      ipStatus: security.ipStatus,
+      reason,
+    });
+    return { content: '', error: `安全风控已拦截本次请求：${reason}` };
+  }
+
   log.info('AI task phase completed', {
     traceId,
     phase: 'authenticating',
@@ -1740,13 +1830,15 @@ const executeAiTask = async ({
       model: finalModel,
       messages,
       temperature,
-      runtimeConfig:
+      runtimeConfig: getRuntimeConfigFromPricing(
+        preflight.pricing,
         kind === 'summarize'
           ? {
               retries: 1,
               timeoutMs: SUMMARIZE_FETCH_TIMEOUT_MS,
             }
-          : undefined,
+          : undefined
+      ),
       stream,
       onDelta,
       traceId,

@@ -2,7 +2,9 @@ import { create } from 'zustand'
 import { User, Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { getEffectiveProfileDiamonds } from '@/services/billing'
+import { checkCurrentUserSecurity } from '@/services/security'
 import { createLogger } from '@/lib/logger'
+import { useToastStore } from '@/store/useToastStore'
 
 const log = createLogger('Auth')
 
@@ -14,6 +16,7 @@ let inflightProfileUserId: string | null = null
 let inflightProfilePromise: Promise<void> | null = null
 const SLOW_AUTH_REQUEST_MS = 3000
 let pendingSignOutUser: User | null = null
+const SECURITY_BLOCK_MESSAGE = '当前账号已被系统安全策略封禁，如有疑问请联系管理员。'
 
 const getGuestBalance = (): number => {
   if (typeof window === 'undefined') return GUEST_DEFAULT_BALANCE
@@ -241,6 +244,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     inflightProfilePromise = (async () => {
       const profileFetchStartedAt = performance.now()
       log.info('Fetching profile', { userId: user.id })
+      const security = await checkCurrentUserSecurity(user.id)
+      if (security.userStatus === 'blacklisted' || security.blocked) {
+        log.warn('Blocked user session rejected during profile fetch', {
+          userId: user.id,
+          userStatus: security.userStatus,
+          reason: security.userReason,
+        })
+        useToastStore.getState().addToast(security.userReason || SECURITY_BLOCK_MESSAGE, 'error')
+        await get().signOut()
+        return
+      }
       const { data, error } = await supabase
         .from('profiles')
         .select('*')

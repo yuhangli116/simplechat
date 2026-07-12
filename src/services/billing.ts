@@ -20,17 +20,7 @@ export const PRICING_CONFIG = {
   },
 } as const;
 
-export type ModelKey =
-  | 'deepseek-v4-flash'
-  | 'deepseek-v4-pro'
-  | 'deepseek-v3'
-  | 'claude-haiku'
-  | 'claude-sonnet'
-  | 'claude-opus'
-  | 'gpt-4-turbo'
-  | 'gpt-4o'
-  | 'gemini-2.5-pro'
-  | 'gemini-3.1-pro';
+export type ModelKey = string;
 
 export interface ModelPricingConfig {
   name: string;
@@ -42,9 +32,11 @@ export interface ModelPricingConfig {
   modelApiName: string;
   tags: string[];
   description?: string;
+  apiType?: string;
+  sortOrder?: number;
 }
 
-export const MODEL_ORDER: ModelKey[] = [
+export let MODEL_ORDER: ModelKey[] = [
   'deepseek-v4-flash',
   'deepseek-v4-pro',
   'deepseek-v3',
@@ -170,6 +162,9 @@ const DEFAULT_MODEL_PRICING: Record<ModelKey, ModelPricingConfig> = {
   },
 };
 
+const DEFAULT_MODEL_ORDER = [...MODEL_ORDER];
+const DEFAULT_MODEL_PRICING_RECORD = DEFAULT_MODEL_PRICING as Record<string, ModelPricingConfig>;
+
 export const MODEL_PRICING: Record<ModelKey, ModelPricingConfig> = Object.fromEntries(
   MODEL_ORDER.map((key) => [key, { ...DEFAULT_MODEL_PRICING[key], tags: [...DEFAULT_MODEL_PRICING[key].tags] }])
 ) as Record<ModelKey, ModelPricingConfig>;
@@ -204,9 +199,17 @@ export const getEffectiveProfileDiamonds = (profile: {
   };
 };
 
-const applyRuntimePricing = (nextPricing: Partial<Record<ModelKey, ModelPricingConfig>>) => {
+const applyRuntimePricing = (nextPricing: Record<ModelKey, ModelPricingConfig>, nextOrder?: ModelKey[]) => {
+  Object.keys(MODEL_PRICING).forEach((key) => {
+    delete MODEL_PRICING[key];
+  });
+
+  const orderedKeys = nextOrder?.length ? nextOrder : DEFAULT_MODEL_ORDER;
+  MODEL_ORDER = [...orderedKeys];
+
   MODEL_ORDER.forEach((key) => {
-    const source = nextPricing[key] ?? DEFAULT_MODEL_PRICING[key];
+    const source = nextPricing[key] ?? DEFAULT_MODEL_PRICING_RECORD[key];
+    if (!source) return;
     MODEL_PRICING[key] = {
       ...source,
       tags: [...(source.tags ?? [])],
@@ -231,9 +234,12 @@ export const syncModelPricingFromDb = async (force = false): Promise<Record<Mode
           supabase
             .from('model_pricing')
             .select(
-              'model_key, model_name, input_multiplier, output_multiplier, reasoning_multiplier, cache_multiplier, provider, model_api_name, tags, description, is_active'
+              'model_key, model_name, input_multiplier, output_multiplier, reasoning_multiplier, cache_multiplier, provider, model_api_name, tags, description, is_active, api_type, sort_order'
             )
-            .eq('is_active', true),
+            .eq('is_active', true)
+            .order('sort_order', { ascending: true })
+            .order('provider', { ascending: true })
+            .order('model_key', { ascending: true }),
           supabase
             .from('system_config')
             .select('key, value')
@@ -248,11 +254,13 @@ export const syncModelPricingFromDb = async (force = false): Promise<Record<Mode
         log.warn('Pricing version mismatch', { dbVersion: pricingVersion, localVersion: PRICING_VERSION });
       }
 
-      const runtimePricing: Partial<Record<ModelKey, ModelPricingConfig>> = {};
+      const runtimePricing: Record<ModelKey, ModelPricingConfig> = {};
+      const runtimeOrder: ModelKey[] = [];
 
       for (const row of pricingRows ?? []) {
-        const key = row.model_key as ModelKey;
-        if (!(key in DEFAULT_MODEL_PRICING)) continue;
+        const key = String(row.model_key || '').trim();
+        if (!key) continue;
+        const defaults = DEFAULT_MODEL_PRICING_RECORD[key];
 
         runtimePricing[key] = {
           name: row.model_name,
@@ -260,21 +268,24 @@ export const syncModelPricingFromDb = async (force = false): Promise<Record<Mode
           outputMultiplier: Number(row.output_multiplier ?? 0),
           reasoningMultiplier: Number(row.reasoning_multiplier ?? 0),
           cacheMultiplier: Number(row.cache_multiplier ?? 0),
-          provider: row.provider,
-          modelApiName: row.model_api_name || DEFAULT_MODEL_PRICING[key].modelApiName,
-          tags: Array.isArray(row.tags) ? row.tags.filter(Boolean) : [...DEFAULT_MODEL_PRICING[key].tags],
-          description: row.description || DEFAULT_MODEL_PRICING[key].description,
+          provider: row.provider || defaults?.provider || 'unknown',
+          modelApiName: row.model_api_name || defaults?.modelApiName || key,
+          tags: Array.isArray(row.tags) ? row.tags.filter(Boolean) : [...(defaults?.tags ?? [])],
+          description: row.description || defaults?.description,
+          apiType: row.api_type || undefined,
+          sortOrder: Number(row.sort_order ?? 100),
         };
+        runtimeOrder.push(key);
       }
 
-      applyRuntimePricing(runtimePricing);
+      applyRuntimePricing(runtimePricing, runtimeOrder);
       lastPricingSyncAt = Date.now();
       log.success('Model pricing synced from DB', { modelCount: Object.keys(runtimePricing).length });
     } catch (error) {
       log.warn('Failed to sync pricing from database, using local defaults', {
         error: error instanceof Error ? error.message : String(error),
       });
-      applyRuntimePricing({});
+      applyRuntimePricing(DEFAULT_MODEL_PRICING_RECORD, DEFAULT_MODEL_ORDER);
       lastPricingSyncAt = Date.now();
     }
 
@@ -292,6 +303,7 @@ export function calculateDiamonds(
   cacheTokens: number = 0
 ): number {
   const pricing = MODEL_PRICING[modelKey];
+  if (!pricing) return 0;
   const safeInput = Math.max(0, Number(inputTokens ?? 0));
   const safeCacheHit = Math.max(0, Number(cacheTokens ?? 0));
   const cacheHit = Math.min(safeInput, safeCacheHit);

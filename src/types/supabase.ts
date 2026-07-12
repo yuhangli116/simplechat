@@ -514,6 +514,56 @@ export interface Database {
           updated_at?: string
         }
       }
+      welfare_tasks: {
+        Row: {
+          id: string
+          title: string
+          description: string | null
+          reward_diamonds: number
+          task_type: string
+          daily_limit: number | null
+          video_path: string | null
+          eligible_days: number | null
+          reward_schedule: Json | null
+          is_active: boolean | null
+          starts_at: string | null
+          ends_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id: string
+          title: string
+          description?: string | null
+          reward_diamonds: number
+          task_type: string
+          daily_limit?: number | null
+          video_path?: string | null
+          eligible_days?: number | null
+          reward_schedule?: Json | null
+          is_active?: boolean | null
+          starts_at?: string | null
+          ends_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          title?: string
+          description?: string | null
+          reward_diamonds?: number
+          task_type?: string
+          daily_limit?: number | null
+          video_path?: string | null
+          eligible_days?: number | null
+          reward_schedule?: Json | null
+          is_active?: boolean | null
+          starts_at?: string | null
+          ends_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+      }
       trash_items: {
         Row: {
           id: string

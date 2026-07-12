@@ -1,15 +1,18 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import { createClient } from '@supabase/supabase-js'
 import { generateTextServer, getRequestContext, parseRequestBody, sendJson, sendNdjson, streamGenerateTextServer, summarizeContextServer } from './server/aiProxy.js'
 import { createServerLogger, persistBatchLogs, initLogger } from './server/logger.js'
 import {
   RequestGuardError,
   applyAiRequestGuard,
   applyLogRequestGuard,
+  parseJwtSubject,
   sanitizeLogBatch,
   sendGuardError,
 } from './server/security/requestGuards.js'
+import { checkSecurityControls, sendSecurityBlocked } from './server/security/securityControls.js'
 
 const log = createServerLogger('ViteDev')
 
@@ -32,6 +35,16 @@ export default defineConfig(({ mode }) => {
   // 初始化日志系统（开发模式）
   initLogger()
 
+  const securitySupabase = env.SUPABASE_URL && env.SUPABASE_ANON_KEY
+    ? createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    })
+    : null
+
   return {
     define: publicSupabaseEnv,
     server: {
@@ -43,6 +56,41 @@ export default defineConfig(({ mode }) => {
       {
         name: 'local-ai-proxy',
         configureServer(server) {
+          server.middlewares.use('/api', async (req, res, next) => {
+            if (req.url?.startsWith('/health')) {
+              next()
+              return
+            }
+            if (!securitySupabase) {
+              next()
+              return
+            }
+
+            const requestContext = getRequestContext(req)
+            const userId = parseJwtSubject(requestContext.accessToken || '')
+            const security = await checkSecurityControls({
+              supabase: securitySupabase,
+              userId,
+              ip: requestContext.ip,
+              kind: 'vite_dev_middleware',
+            })
+
+            if (security.blocked) {
+              log.warn('Dev API request rejected by security middleware', {
+                url: req.url,
+                method: req.method,
+                userId,
+                ip: requestContext.ip,
+                userStatus: security.userStatus,
+                ipStatus: security.ipStatus,
+              })
+              sendSecurityBlocked(res, security)
+              return
+            }
+
+            next()
+          })
+
           server.middlewares.use('/api/health', (req, res) => {
             if (req.method !== 'GET') {
               sendJson(res, 405, { error: 'Method not allowed' })

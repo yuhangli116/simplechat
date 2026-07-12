@@ -502,7 +502,11 @@ const AIGenerationDialog: React.FC<AIGenerationDialogProps> = ({
     if (!isOpen) return;
     setPrompt('');
     syncModelPricingFromDb()
-      .then(() => setPricingRefreshTick((value) => value + 1))
+      .then(() => {
+        const availableModel = Object.keys(MODEL_PRICING)[0] as ModelKey | undefined;
+        setSelectedModel((current) => current in MODEL_PRICING ? current : (availableModel || current));
+        setPricingRefreshTick((value) => value + 1);
+      })
       .catch((error) => console.warn('[AIGenerationDialog] sync pricing failed', error));
   }, [isOpen, nodeId]);
 

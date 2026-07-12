@@ -7,6 +7,7 @@ import { guestDemoFileStructure, useFileStore } from '@/store/useFileStore';
 import { usePromptStore } from '@/store/usePromptStore';
 import { useTrashStore } from '@/store/useTrashStore';
 import { createLogger, flushLogs } from '@/lib/logger';
+import { checkCurrentUserSecurity } from '@/services/security';
 
 const log = createLogger('Login')
 
@@ -152,6 +153,18 @@ export default function Login() {
       if (error) throw error;
       
       const loggedInUser = data.user ?? data.session?.user ?? null;
+      if (loggedInUser) {
+        const security = await checkCurrentUserSecurity(loggedInUser.id);
+        if (security.userStatus === 'blacklisted' || security.blocked) {
+          log.warn('Password login rejected by security controls', {
+            userId: loggedInUser.id,
+            email: normalizedEmail,
+            userStatus: security.userStatus,
+          });
+          await supabase.auth.signOut();
+          throw new Error(security.userReason || '当前账号已被系统安全策略封禁，如有疑问请联系管理员。');
+        }
+      }
       log.success('Password login succeeded', {
         userId: loggedInUser?.id,
         email: normalizedEmail,

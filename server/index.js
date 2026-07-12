@@ -2,15 +2,18 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createClient } from '@supabase/supabase-js';
 import { generateTextServer, getRequestContext, sendJson, sendNdjson, streamGenerateTextServer, summarizeContextServer } from './aiProxy.js';
 import { createServerLogger, persistBatchLogs, initLogger, LOG_DIR } from './logger.js';
 import {
   RequestGuardError,
   applyAiRequestGuard,
   applyLogRequestGuard,
+  parseJwtSubject,
   sanitizeLogBatch,
   sendGuardError,
 } from './security/requestGuards.js';
+import { checkSecurityControls, sendSecurityBlocked } from './security/securityControls.js';
 
 const log = createServerLogger('Server');
 
@@ -20,11 +23,80 @@ initLogger();
 const app = express();
 app.disable('x-powered-by');
 
+const normalizeEnvValue = (value) => value?.trim().replace(/^['"`]|['"`]$/g, '');
+const getEnvValue = (...names) => {
+  for (const name of names) {
+    const direct = normalizeEnvValue(process.env[name]);
+    if (direct) return direct;
+    const vite = normalizeEnvValue(process.env[`VITE_${name}`]);
+    if (vite) return vite;
+  }
+  return '';
+};
+
+const createSecuritySupabase = () => {
+  const supabaseUrl = getEnvValue('SUPABASE_URL', 'VITE_SUPABASE_URL');
+  const supabaseAnonKey = getEnvValue('SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY');
+  if (!supabaseUrl || !supabaseAnonKey) {
+    log.warn('Security middleware disabled: missing Supabase URL or anon key');
+    return null;
+  }
+
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+};
+
+const securitySupabase = createSecuritySupabase();
+
 app.use(
   express.json({
     limit: process.env.JSON_BODY_LIMIT || '2mb',
   })
 );
+
+app.use('/api', async (req, res, next) => {
+  if (req.path === '/health') return next();
+  if (!securitySupabase) return next();
+
+  const requestContext = getRequestContext(req);
+  const userId = parseJwtSubject(requestContext.accessToken || '');
+
+  try {
+    const security = await checkSecurityControls({
+      supabase: securitySupabase,
+      userId,
+      ip: requestContext.ip,
+      kind: 'api_middleware',
+    });
+
+    if (security.blocked) {
+      log.warn('API request rejected by security middleware', {
+        path: req.path,
+        method: req.method,
+        userId,
+        ip: requestContext.ip,
+        userStatus: security.userStatus,
+        ipStatus: security.ipStatus,
+      });
+      return sendSecurityBlocked(res, security);
+    }
+  } catch (error) {
+    log.warn('Security middleware failed open', {
+      path: req.path,
+      method: req.method,
+      userId,
+      ip: requestContext.ip,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  return next();
+});
 
 // ─── 日志接收端点（前端批量日志持久化） ───
 

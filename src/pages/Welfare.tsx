@@ -3,7 +3,6 @@ import {
   Gift,
   Calendar,
   Rocket,
-  LayoutGrid,
   Video,
   CheckCircle,
   Coins,
@@ -27,6 +26,9 @@ type WelfareCampaign = {
   reward_diamonds: number;
   task_type: string;
   daily_limit: number | null;
+  video_path: string | null;
+  eligible_days: number | null;
+  reward_schedule: unknown;
   is_active: boolean | null;
 };
 type WelfareTaskCard = {
@@ -36,11 +38,28 @@ type WelfareTaskCard = {
   icon: React.ReactNode;
   type: string;
   dailyLimit?: number;
+  videoPath?: string | null;
   desc: string;
   handler: () => void | Promise<void>;
 };
 
 const log = createLogger('Welfare');
+
+const getTaskIcon = (taskType: string) => {
+  if (taskType === 'ad') return <Video className="w-5 h-5 text-purple-500" />;
+  if (taskType === 'daily') return <Calendar className="w-5 h-5 text-indigo-600" />;
+  if (taskType === 'once') return <Rocket className="w-5 h-5 text-emerald-600" />;
+  return <Gift className="w-5 h-5 text-rose-500" />;
+};
+
+const defaultCheckInRewards = [10000, 10000, 10000, 10000, 10000, 10000, 20000];
+
+const parseRewardSchedule = (value: unknown) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0);
+  }
+  return [];
+};
 
 const Welfare = () => {
   const { user, diamondBalance, fetchProfile, profile } = useAuthStore();
@@ -58,6 +77,7 @@ const Welfare = () => {
   const [videoDuration, setVideoDuration] = useState(0);
   const [videoCurrentTime, setVideoCurrentTime] = useState(0);
   const [videoPlaying, setVideoPlaying] = useState(false);
+  const [activeVideoTask, setActiveVideoTask] = useState<WelfareTaskCard | null>(null);
   const [campaignTasks, setCampaignTasks] = useState<WelfareCampaign[]>([]);
 
   const completedTasks: string[] = Array.isArray(welfareData?.completed_tasks)
@@ -68,7 +88,12 @@ const Welfare = () => {
   const isCheckedInToday = welfareData?.last_check_in_date === todayStr;
   const createdAt = user?.created_at ? new Date(user.created_at) : null;
   const signupDays = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 86400000) + 1 : null;
-  const isNewbieCheckinActive = user?.email === '1909232424@qq.com' ? true : (signupDays ? signupDays <= 7 : true);
+  const newbieCheckInTask = campaignTasks.find((task) => task.task_type === 'newbie_checkin' || task.id === 'newbie_checkin') || null;
+  const checkInRewards = parseRewardSchedule(newbieCheckInTask?.reward_schedule);
+  const checkInConfig = (checkInRewards.length > 0 ? checkInRewards : defaultCheckInRewards).map((reward, index) => ({ day: index + 1, reward }));
+  const newbieEligibleDays = Number(newbieCheckInTask?.eligible_days || checkInConfig.length || 7);
+  const isNewbieCheckinOnline = Boolean(newbieCheckInTask);
+  const isNewbieCheckinActive = isNewbieCheckinOnline && (user?.email === '1909232424@qq.com' ? true : (signupDays ? signupDays <= newbieEligibleDays : true));
 
   useEffect(() => {
     if (user) {
@@ -102,8 +127,8 @@ const Welfare = () => {
         .eq('user_id', user!.id)
         .single(),
         supabase
-          .from('welfare_tasks' as any)
-          .select('id,title,description,reward_diamonds,task_type,daily_limit,is_active')
+          .from('welfare_tasks')
+          .select('*')
           .eq('is_active', true)
           .or(`starts_at.is.null,starts_at.lte.${new Date().toISOString()}`)
           .or(`ends_at.is.null,ends_at.gt.${new Date().toISOString()}`)
@@ -117,7 +142,13 @@ const Welfare = () => {
       if (tasksError) {
         log.warn('Active welfare campaigns load failed', { userId: user.id, error: tasksError.message });
       } else {
-        setCampaignTasks(((tasksData || []) as unknown as WelfareCampaign[]).filter((task) => task.is_active !== false));
+        const activeCampaigns = ((tasksData || []) as unknown as WelfareCampaign[]).filter((task) => task.is_active !== false);
+        setCampaignTasks(activeCampaigns);
+        log.success('Active welfare campaigns loaded', {
+          userId: user.id,
+          campaignCount: activeCampaigns.length,
+          campaignIds: activeCampaigns.map((task) => task.id).slice(0, 20),
+        });
       }
 
       if (data) {
@@ -205,11 +236,16 @@ const Welfare = () => {
     }
   };
 
-  const handleVideoTask = async () => {
+  const handleVideoTask = async (task: WelfareTaskCard) => {
     if (confirmLoginForGuest('观看视频任务需要登录后才能使用，是否前往登录？')) {
       return;
     }
+    if (!task.videoPath) {
+      addToast('该视频活动暂未配置视频路径', 'error');
+      return;
+    }
 
+    setActiveVideoTask(task);
     setVideoProgress(0);
     setVideoWatched(false);
     maxWatchedTimeRef.current = 0;
@@ -220,7 +256,8 @@ const Welfare = () => {
     setShowVideoModal(true);
     log.info('Welfare video opened', {
       userId: user?.id,
-      taskId: 'ad',
+      taskId: task.id,
+      videoPath: task.videoPath,
     });
     flushLogs();
   };
@@ -239,7 +276,7 @@ const Welfare = () => {
         setVideoWatched(true);
         log.success('Welfare video progress reached', {
           userId: user?.id,
-          taskId: 'ad',
+          taskId: activeVideoTask?.id,
           progress: Math.round(progress * 100),
           currentTime: videoRef.current.currentTime,
           duration: videoRef.current.duration,
@@ -268,7 +305,7 @@ const Welfare = () => {
       addToast('为保证公平，激励视频不支持快进', 'info');
       log.warn('Welfare video seek blocked', {
         userId: user?.id,
-        taskId: 'ad',
+        taskId: activeVideoTask?.id,
         targetTime,
         maxWatchedTime: maxWatchedTimeRef.current,
       });
@@ -292,14 +329,16 @@ const Welfare = () => {
   };
 
   const onVideoEnded = async () => {
+    if (!activeVideoTask) return;
     setShowVideoModal(false);
     log.info('Welfare video reward claimed', {
       userId: user?.id,
-      taskId: 'ad',
+      taskId: activeVideoTask.id,
       progress: Math.round(videoProgress * 100),
     });
     flushLogs();
-    await claimTask('ad');
+    await claimTask(activeVideoTask.id);
+    setActiveVideoTask(null);
   };
 
   const claimTask = async (taskId: string) => {
@@ -337,74 +376,27 @@ const Welfare = () => {
     }
   };
 
-  const checkInConfig = [
-    { day: 1, reward: 10000 },
-    { day: 2, reward: 10000 },
-    { day: 3, reward: 10000 },
-    { day: 4, reward: 10000 },
-    { day: 5, reward: 10000 },
-    { day: 6, reward: 10000 },
-    { day: 7, reward: 20000 },
-  ];
-
-  const builtInTasks: WelfareTaskCard[] = [
-    {
-      id: 'first_ai_call',
-      title: '完成首次 AI 生成',
-      reward: 10000,
-      icon: <Rocket className="w-5 h-5 text-indigo-600" />,
-      type: 'once',
-      desc: '完成一次 AI 生成后即可领取',
-      handler: () => handleGuestTaskNavigate('/'),
-    },
-    {
-      id: 'first_template_create',
-      title: '完成首次创建模板',
-      reward: 5000,
-      icon: <LayoutGrid className="w-5 h-5 text-emerald-600" />,
-      type: 'once',
-      desc: '创建作品模板或提示词模板后即可领取',
-      handler: () => handleGuestTaskNavigate('/community'),
-    },
-    {
-      id: 'ad',
-      title: '观看激励视频',
-      reward: 50000,
-      icon: <Video className="w-5 h-5 text-purple-500" />,
-      type: 'daily',
-      desc: '观看80%即可领取',
-      handler: handleVideoTask,
-    },
-  ];
-  const builtInTaskIds = new Set(builtInTasks.map((task) => task.id));
-  const dynamicTasks: WelfareTaskCard[] = campaignTasks
-    .filter((task) => !builtInTaskIds.has(task.id))
-    .map((task) => ({
+  const tasks: WelfareTaskCard[] = campaignTasks.filter((task) => task.task_type !== 'newbie_checkin' && task.id !== 'newbie_checkin').map((task) => {
+    const taskCard: WelfareTaskCard = {
       id: task.id,
       title: task.title,
       reward: Number(task.reward_diamonds || 0),
-      icon: <Gift className="w-5 h-5 text-rose-500" />,
+      icon: getTaskIcon(task.task_type),
       type: task.task_type || 'once',
       dailyLimit: Number(task.daily_limit || 1),
+      videoPath: task.video_path || null,
       desc: task.description || '运营福利活动，点击即可领取奖励',
       handler: () => claimTask(task.id),
-    }));
-  const campaignById = new Map(campaignTasks.map((task) => [task.id, task]));
-  const tasks = [
-    ...builtInTasks.map((task) => {
-      const campaign = campaignById.get(task.id);
-      if (!campaign) return task;
-      return {
-        ...task,
-        title: campaign.title || task.title,
-        reward: Number(campaign.reward_diamonds || task.reward),
-        type: campaign.task_type || task.type,
-        dailyLimit: Number(campaign.daily_limit || task.dailyLimit || 1),
-        desc: campaign.description || task.desc,
-      };
-    }),
-    ...dynamicTasks,
-  ];
+    };
+    if (task.task_type === 'ad') {
+      taskCard.handler = () => handleVideoTask(taskCard);
+    } else if (task.id === 'first_ai_call') {
+      taskCard.handler = () => handleGuestTaskNavigate('/');
+    } else if (task.id === 'first_template_create') {
+      taskCard.handler = () => handleGuestTaskNavigate('/community');
+    }
+    return taskCard;
+  });
 
   const getCurrentStreak = () => {
     const streak = Number(welfareData?.check_in_streak ?? 0);
@@ -414,8 +406,8 @@ const Welfare = () => {
 
   const currentStreak = getCurrentStreak();
   const totalStreak = Number(welfareData?.check_in_streak ?? 0);
-  const completedCount = Math.min(totalStreak, 7);
-  const todayIndex = isCheckedInToday ? Math.max(1, completedCount) : Math.min(completedCount + 1, 7);
+  const completedCount = Math.min(totalStreak, checkInConfig.length);
+  const todayIndex = isCheckedInToday ? Math.max(1, completedCount) : Math.min(completedCount + 1, checkInConfig.length);
 
   const formatRewardShort = (value: number) => {
     if (value >= 10000) {
@@ -483,8 +475,8 @@ const Welfare = () => {
                 <Calendar className="w-6 h-6 text-indigo-600" />
               </div>
               <div className="flex flex-col">
-                <div className="text-2xl font-bold text-gray-900">新手签到</div>
-                <div className="text-sm text-gray-500 mt-1">注册 7 天内，每日签到可领取丰厚钻石奖励</div>
+                <div className="text-2xl font-bold text-gray-900">{newbieCheckInTask?.title || '新手签到'}</div>
+                <div className="text-sm text-gray-500 mt-1">{newbieCheckInTask?.description || `注册 ${newbieEligibleDays} 天内，每日签到可领取丰厚钻石奖励`}</div>
               </div>
             </div>
 
@@ -498,7 +490,7 @@ const Welfare = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-7 gap-3 mb-8">
+          <div className="grid gap-3 mb-8" style={{ gridTemplateColumns: `repeat(${Math.min(checkInConfig.length, 7)}, minmax(0, 1fr))` }}>
             {checkInConfig.map((item, index) => {
               const dayNumber = index + 1;
               const isDone = dayNumber <= completedCount;
@@ -546,7 +538,7 @@ const Welfare = () => {
                 : 'bg-gray-900 dark:bg-purple-600 hover:bg-black dark:hover:bg-purple-500 text-white shadow-sm'
             }`}
           >
-            {!isNewbieCheckinActive ? '新手签到已结束' : isCheckedInToday ? '今日已签到' : '立即签到'}
+            {!isNewbieCheckinOnline ? '新手签到未上线' : !isNewbieCheckinActive ? '新手签到已结束' : isCheckedInToday ? '今日已签到' : '立即签到'}
           </button>
 
           {import.meta.env.DEV && user?.email === '1909232424@qq.com' ? (
@@ -575,11 +567,12 @@ const Welfare = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {tasks.map((task) => {
-              const taskKey = task.type === 'daily' ? `${task.id}:${todayStr}` : task.id;
-              const dailyClaimCount = task.type === 'daily'
+              const isDailyLikeTask = task.type === 'daily' || task.type === 'ad';
+              const taskKey = isDailyLikeTask ? `${task.id}:${todayStr}` : task.id;
+              const dailyClaimCount = isDailyLikeTask
                 ? completedTasks.filter((key) => key === taskKey || key.startsWith(`${taskKey}:`)).length
                 : 0;
-              const isCompleted = task.type === 'daily'
+              const isCompleted = isDailyLikeTask
                 ? dailyClaimCount >= (task.dailyLimit || 1)
                 : completedTasks.includes(taskKey);
               return (
@@ -624,9 +617,12 @@ const Welfare = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl overflow-hidden animate-in fade-in zoom-in-95 duration-300">
             <div className="flex items-center justify-between px-8 py-6 border-b border-gray-100">
-              <h2 className="text-2xl font-bold text-gray-900">观看激励视频</h2>
+              <h2 className="text-2xl font-bold text-gray-900">{activeVideoTask?.title || '观看激励视频'}</h2>
               <button
-                onClick={() => setShowVideoModal(false)}
+                onClick={() => {
+                  setShowVideoModal(false);
+                  setActiveVideoTask(null);
+                }}
                 className="p-2 hover:bg-gray-100 rounded-full"
               >
                 <X className="w-6 h-6 text-gray-500" />
@@ -635,7 +631,7 @@ const Welfare = () => {
             <div className="p-4">
               <video
                 ref={videoRef}
-                src="/video/guanggao.MP4"
+                src={activeVideoTask?.videoPath || ''}
                 playsInline
                 autoPlay
                 controlsList="nodownload noplaybackrate noremoteplayback"

@@ -482,9 +482,16 @@ const StoryEditor = () => {
   }>>>(new Map());
 
   useEffect(() => {
-    syncModelPricingFromDb().catch((error) => {
-      console.warn('[StoryEditor] sync pricing failed', error);
-    });
+    syncModelPricingFromDb()
+      .then(() => {
+        setSelectedModel((current) => {
+          if (current && current in MODEL_PRICING) return current;
+          return (Object.keys(MODEL_PRICING)[0] || '') as LocalModelKey | '';
+        });
+      })
+      .catch((error) => {
+        console.warn('[StoryEditor] sync pricing failed', error);
+      });
   }, []);
 
   useEffect(() => {
@@ -503,7 +510,7 @@ const StoryEditor = () => {
     if (stored && stored in MODEL_PRICING) {
       setSelectedModel(stored as LocalModelKey);
     } else {
-      setSelectedModel('deepseek-v4-flash' as LocalModelKey);
+      setSelectedModel((Object.keys(MODEL_PRICING)[0] || 'deepseek-v4-flash') as LocalModelKey);
     }
   }, [workId, chapterId, modelMemoryScope]);
 

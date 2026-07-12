@@ -42,7 +42,7 @@ const WorkspaceLayout = () => {
   const [isFocusMode, setIsFocusMode] = React.useState(false);
   const focusRestoreRef = React.useRef<{ sidebar: boolean; fileTree: boolean }>({ sidebar: false, fileTree: false });
   const [rewardPayload, setRewardPayload] = React.useState<{
-    taskId: 'first_ai_call' | 'first_template_create';
+    taskId: string;
     title: string;
     description: string;
     rewardDiamonds: number;
@@ -66,22 +66,36 @@ const WorkspaceLayout = () => {
   };
 
   const maybeOpenRewardDialog = React.useCallback(
-    async (payload: {
-      taskId: 'first_ai_call' | 'first_template_create';
-      title: string;
-      description: string;
-      rewardDiamonds: number;
-    }) => {
+    async (taskId: 'first_ai_call' | 'first_template_create') => {
       if (!user) return;
       if (rewardDialogOpen) return;
 
-      const { data, error } = await supabase
-        .from('user_welfare')
-        .select('completed_tasks')
-        .eq('user_id', user.id)
-        .maybeSingle();
+      const now = new Date().toISOString();
+      const [{ data, error }, { data: taskConfig, error: taskError }] = await Promise.all([
+        supabase
+          .from('user_welfare')
+          .select('completed_tasks')
+          .eq('user_id', user.id)
+          .maybeSingle(),
+        supabase
+          .from('welfare_tasks')
+          .select('id,title,description,reward_diamonds')
+          .eq('id', taskId)
+          .eq('is_active', true)
+          .or(`starts_at.is.null,starts_at.lte.${now}`)
+          .or(`ends_at.is.null,ends_at.gt.${now}`)
+          .maybeSingle(),
+      ]);
 
       if (error && error.code !== 'PGRST116') return;
+      if (taskError || !taskConfig) return;
+
+      const payload = {
+        taskId,
+        title: String((taskConfig as any).title || ''),
+        description: String((taskConfig as any).description || ''),
+        rewardDiamonds: Number((taskConfig as any).reward_diamonds || 0),
+      };
 
       if (!data) {
         await supabase.from('user_welfare').insert({ user_id: user.id, completed_tasks: [] });
@@ -91,8 +105,7 @@ const WorkspaceLayout = () => {
       }
 
       const tasks = Array.isArray((data as any).completed_tasks) ? ((data as any).completed_tasks as string[]) : [];
-      const key = payload.taskId;
-      if (tasks.includes(key)) return;
+      if (tasks.includes(taskId)) return;
 
       setRewardPayload(payload);
       setRewardDialogOpen(true);
@@ -104,21 +117,11 @@ const WorkspaceLayout = () => {
     if (!user) return;
 
     const onAiUsed = () => {
-      maybeOpenRewardDialog({
-        taskId: 'first_ai_call',
-        title: '完成首次 AI 调用',
-        description: '检测到你已完成首次 AI 生成，确认后可领取奖励。',
-        rewardDiamonds: 10000,
-      });
+      maybeOpenRewardDialog('first_ai_call');
     };
 
     const onTemplateCreated = () => {
-      maybeOpenRewardDialog({
-        taskId: 'first_template_create',
-        title: '完成首次创建模板',
-        description: '检测到你已创建作品模板或提示词模板，确认后可领取奖励。',
-        rewardDiamonds: 5000,
-      });
+      maybeOpenRewardDialog('first_template_create');
     };
 
     window.addEventListener('welfare:ai_used', onAiUsed);
