@@ -8,6 +8,7 @@ import { usePromptStore } from '@/store/usePromptStore';
 import { useTrashStore } from '@/store/useTrashStore';
 import { createLogger, flushLogs } from '@/lib/logger';
 import { checkCurrentUserSecurity } from '@/services/security';
+import { useMaintenance } from '@/contexts/useMaintenance';
 
 const log = createLogger('Login')
 
@@ -92,6 +93,7 @@ export default function Login() {
   const navigate = useNavigate();
   const { user, session, signingOut, setUser, setSession, setProfile, setDiamondBalance, fetchProfile } = useAuthStore();
   const { setFiles } = useFileStore();
+  const maintenance = useMaintenance();
   const canSubmit = email.trim().length > 0 && password.trim().length > 0;
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const defaultWorkspacePath = '/workspace';
@@ -103,7 +105,13 @@ export default function Login() {
     }
   }, [defaultWorkspacePath, navigate, session, user, signingOut]);
 
-  const handleGuestLogin = () => {
+  const handleGuestLogin = async () => {
+    const latestMaintenance = await maintenance.refresh();
+    if (latestMaintenance.phase === 'locked') {
+      alert(latestMaintenance.notice_text || '系统正在维护升级，当前暂不对外开放，请稍后再试。');
+      return;
+    }
+
     // 先清理之前的游客数据，确保新的游客会话是干净的！
     clearAllGuestData()
     
@@ -138,6 +146,13 @@ export default function Login() {
       alert('请输入有效的邮箱地址');
       return;
     }
+
+    const latestMaintenance = await maintenance.refresh();
+    if (latestMaintenance.phase === 'locked') {
+      alert(latestMaintenance.notice_text || '系统正在维护升级，当前暂不对外开放，请稍后再试。');
+      return;
+    }
+
     setLoading(true);
     
     try {
@@ -210,7 +225,7 @@ export default function Login() {
       if (error.message === 'Email not confirmed') {
         alert(msg);
       } else if (confirm(`${msg}\n\n是否使用“访客体验模式”直接进入？`)) {
-          handleGuestLogin();
+          void handleGuestLogin();
       }
     } finally {
       log.info('Password login flow finished', {

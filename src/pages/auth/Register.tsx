@@ -4,6 +4,7 @@ import { Mail, Lock, ArrowRight, PenTool, Eye, EyeOff, CheckCircle, XCircle } fr
 import { supabase } from '@/lib/supabase';
 import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { getRandomName, getRandomAvatar } from '@/utils/randomProfile';
+import { useMaintenance } from '@/contexts/useMaintenance';
 
 export default function Register() {
   const { user, session } = useAuthStore();
@@ -15,6 +16,7 @@ export default function Register() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const navigate = useNavigate();
+  const maintenance = useMaintenance();
   const typeMatches = [
     /[a-z]/.test(password),
     /[A-Z]/.test(password),
@@ -53,6 +55,12 @@ export default function Register() {
     }
     if (password !== confirmPassword) {
       alert('两次输入的密码不一致');
+      return;
+    }
+
+    const latestMaintenance = await maintenance.refresh();
+    if (latestMaintenance.phase === 'locked') {
+      alert(latestMaintenance.notice_text || '系统正在维护升级，当前暂不对外开放，请稍后再试。');
       return;
     }
 

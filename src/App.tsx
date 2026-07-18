@@ -24,8 +24,13 @@ import Welfare from '@/pages/Welfare';
 import Guide from '@/pages/Guide';
 import Download from '@/pages/Download';
 import { ToastContainer } from '@/components/ToastContainer';
+import { MaintenanceBanner } from '@/components/MaintenanceBanner';
+import { MaintenanceGate } from '@/components/MaintenanceGate';
 import Records from '@/pages/Records';
 import { Validate } from '@/pages/placeholders';
+import MaintenancePage from '@/pages/MaintenancePage';
+import { MaintenanceProvider } from '@/contexts/MaintenanceContext';
+import { useMaintenance } from '@/contexts/useMaintenance';
 import { loadWorkspaceTree } from '@/lib/workspacePersistence';
 import { createLogger } from '@/lib/logger';
 
@@ -321,6 +326,67 @@ const WorkAccessGuard = () => {
   return <Outlet />;
 };
 
+const AppShell = () => {
+  const { bannerVisible } = useMaintenance();
+
+  return (
+    <div className="min-h-screen" style={{ paddingTop: bannerVisible ? 40 : 0 }}>
+      <MaintenanceBanner />
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <Routes>
+          <Route path="/maintenance" element={<MaintenancePage />} />
+          <Route element={<MaintenanceGate />}>
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
+
+            {/* Redirect root to login for unauthenticated users */}
+            <Route path="/" element={<Navigate to="/login" replace />} />
+
+            {/* Main Layout Routes - accessible to both guests and logged-in users */}
+            <Route element={<WorkspaceLayout />}>
+              {/* Workspace (with FileTree) */}
+              <Route path="/workspace">
+                <Route index element={<WorkspaceIndexRoute />} />
+
+                {/* Legacy Route Support */}
+                <Route path="story/:chapterId" element={<LegacyStoryRedirect />} />
+                <Route path="outline" element={<Navigate to="/workspace" replace />} />
+                <Route path="world" element={<Navigate to="/workspace" replace />} />
+                <Route path="characters" element={<Navigate to="/workspace" replace />} />
+
+                {/* Project Routes */}
+                <Route path="p/:workId" element={<WorkAccessGuard />}>
+                  <Route path="story/:chapterId" element={<StoryEditor />} />
+                  <Route path="outline" element={<Outline />} />
+                  <Route path="world" element={<World />} />
+                  <Route path="characters" element={<Characters />} />
+                  <Route path="events" element={<Events />} />
+                  <Route path="mindmap/:mindMapId" element={<CustomMindMap />} />
+                </Route>
+              </Route>
+
+              {/* Other Sections - accessible to guests (data saved locally only) */}
+              <Route path="/community" element={<Community />} />
+              <Route path="/welfare" element={<Welfare />} />
+              <Route path="/guide" element={<Guide />} />
+              <Route path="/prompts" element={<Prompts />} />
+              <Route path="/membership" element={<Membership />} />
+              <Route path="/records" element={<Records />} />
+              <Route path="/download" element={<Download />} />
+              <Route path="/trash" element={<Trash />} />
+              <Route path="/validate" element={<Validate />} />
+            </Route>
+
+            <Route path="*" element={<div>404 Not Found</div>} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </div>
+  );
+};
+
 // Placeholder Pages
 function App() {
   const { setUser, setSession, setProfile, setLoading, setDiamondBalance, fetchProfile } = useAuthStore();
@@ -401,54 +467,9 @@ function App() {
   return (
     <>
       <ToastContainer />
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/reset-password" element={<ResetPassword />} />
-        
-        {/* Redirect root to login for unauthenticated users */}
-        <Route path="/" element={<Navigate to="/login" replace />} />
-        
-        {/* Main Layout Routes - accessible to both guests and logged-in users */}
-        <Route element={<WorkspaceLayout />}>
-          {/* Workspace (with FileTree) */}
-          <Route path="/workspace">
-            <Route index element={<WorkspaceIndexRoute />} />
-            
-            {/* Legacy Route Support */}
-            <Route path="story/:chapterId" element={<LegacyStoryRedirect />} />
-            <Route path="outline" element={<Navigate to="/workspace" replace />} />
-            <Route path="world" element={<Navigate to="/workspace" replace />} />
-            <Route path="characters" element={<Navigate to="/workspace" replace />} />
-
-            {/* Project Routes */}
-            <Route path="p/:workId" element={<WorkAccessGuard />}>
-              <Route path="story/:chapterId" element={<StoryEditor />} />
-              <Route path="outline" element={<Outline />} />
-              <Route path="world" element={<World />} />
-              <Route path="characters" element={<Characters />} />
-              <Route path="events" element={<Events />} />
-              <Route path="mindmap/:mindMapId" element={<CustomMindMap />} />
-            </Route>
-          </Route>
-
-          {/* Other Sections - accessible to guests (data saved locally only) */}
-          <Route path="/community" element={<Community />} />
-          <Route path="/welfare" element={<Welfare />} />
-          <Route path="/guide" element={<Guide />} />
-          <Route path="/prompts" element={<Prompts />} />
-          <Route path="/membership" element={<Membership />} />
-          <Route path="/records" element={<Records />} />
-          <Route path="/download" element={<Download />} />
-          <Route path="/trash" element={<Trash />} />
-          <Route path="/validate" element={<Validate />} />
-        </Route>
-
-        <Route path="*" element={<div>404 Not Found</div>} />
-      </Routes>
-    </BrowserRouter>
+      <MaintenanceProvider>
+        <AppShell />
+      </MaintenanceProvider>
     </>
   );
 }

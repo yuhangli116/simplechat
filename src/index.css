@@ -74,6 +74,35 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  .maintenance-marquee-track {
+    display: flex;
+    width: max-content;
+    min-width: 100%;
+    gap: 2rem;
+    white-space: nowrap;
+    animation: maintenance-marquee 18s linear infinite;
+  }
+
+  .maintenance-marquee-item {
+    flex-shrink: 0;
+  }
+
+  @keyframes maintenance-marquee {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .maintenance-marquee-track {
+      animation: none;
+      transform: none;
+    }
+  }
 }
 
 @layer base {

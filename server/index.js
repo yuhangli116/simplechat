@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
 import { generateTextServer, getRequestContext, sendJson, sendNdjson, streamGenerateTextServer, summarizeContextServer } from './aiProxy.js';
 import { createServerLogger, persistBatchLogs, initLogger, LOG_DIR } from './logger.js';
+import { checkSiteMaintenance, sendMaintenanceLocked } from './maintenance.js';
 import {
   RequestGuardError,
   applyAiRequestGuard,
@@ -67,6 +68,23 @@ app.use('/api', async (req, res, next) => {
   const userId = parseJwtSubject(requestContext.accessToken || '');
 
   try {
+    const maintenance = await checkSiteMaintenance({
+      supabase: securitySupabase,
+      kind: 'api_middleware',
+      path: req.path,
+    });
+
+    if (maintenance.locked) {
+      log.warn('API request rejected by maintenance lock', {
+        path: req.path,
+        method: req.method,
+        userId,
+        ip: requestContext.ip,
+        phase: maintenance.state.phase,
+      });
+      return sendMaintenanceLocked(res, maintenance.state);
+    }
+
     const security = await checkSecurityControls({
       supabase: securitySupabase,
       userId,
@@ -86,7 +104,7 @@ app.use('/api', async (req, res, next) => {
       return sendSecurityBlocked(res, security);
     }
   } catch (error) {
-    log.warn('Security middleware failed open', {
+    log.warn('API access middleware failed open', {
       path: req.path,
       method: req.method,
       userId,

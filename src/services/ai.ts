@@ -172,6 +172,10 @@ const parseNdjsonStream = async (
 const getFriendlyErrorMessage = (error: any, provider: string): string => {
   const msg = error?.message || '';
 
+  if (msg.includes('MAINTENANCE_LOCKED') || msg.includes('维护升级') || msg.includes('系统维护')) {
+    return '系统正在维护升级，当前暂不支持 AI 创作请求，请稍后再试。';
+  }
+
   if (
     msg.includes('请求过于频繁') ||
     msg.includes('并发已达到上限') ||
