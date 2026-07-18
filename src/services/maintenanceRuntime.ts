@@ -14,7 +14,7 @@ export function isMaintenanceRuntimeLocked() {
 }
 
 export function getMaintenanceRuntimeBlockedMessage() {
-  return '系统正在维护升级中，为避免数据丢失，登录、注册、查询、保存、新增、修改、删除、AI 创作等远程功能暂时不可用。您仍可停留在当前页面查看已加载内容，请稍后再试。'
+  return '系统正在维护升级中，为避免数据丢失，登录、注册、AI创作等功能暂不可用，当前仅支持浏览，请稍后再试。'
 }
 
 function getRequestMethod(input: RequestInfo | URL, init?: RequestInit) {
