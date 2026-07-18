@@ -6,14 +6,13 @@ import {
   isMaintenanceBannerVisible,
   type SiteMaintenanceState,
 } from '@/services/maintenance'
-import { useAuthStore } from '@/store/useAuthStore'
 import { MaintenanceContext } from '@/contexts/maintenanceContextCore'
+import { setMaintenanceRuntimeState } from '@/services/maintenanceRuntime'
 
 export function MaintenanceProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SiteMaintenanceState>(DEFAULT_MAINTENANCE_STATE)
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(true)
-  const forcedSignOutRef = useRef(false)
   const timerRef = useRef<number | null>(null)
 
   const refresh = useCallback(async () => {
@@ -21,6 +20,7 @@ export function MaintenanceProvider({ children }: { children: ReactNode }) {
     try {
       const nextState = await fetchMaintenanceState()
       setState(nextState)
+      setMaintenanceRuntimeState(nextState)
       return nextState
     } finally {
       setReady(true)
@@ -50,21 +50,6 @@ export function MaintenanceProvider({ children }: { children: ReactNode }) {
       }
     }
   }, [ready, refresh, state])
-
-  useEffect(() => {
-    if (!ready) return
-    if (state.phase !== 'locked') {
-      forcedSignOutRef.current = false
-      return
-    }
-    if (forcedSignOutRef.current) return
-
-    const currentUser = useAuthStore.getState().user
-    if (!currentUser) return
-
-    forcedSignOutRef.current = true
-    void useAuthStore.getState().signOut()
-  }, [ready, state.phase])
 
   const value = useMemo(() => ({
     state,

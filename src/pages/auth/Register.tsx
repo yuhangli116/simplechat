@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore, isGuestUser } from '@/store/useAuthStore';
 import { getRandomName, getRandomAvatar } from '@/utils/randomProfile';
 import { useMaintenance } from '@/contexts/useMaintenance';
+import { getMaintenanceBannerMessage } from '@/services/maintenance';
 
 export default function Register() {
   const { user, session } = useAuthStore();
@@ -60,7 +61,7 @@ export default function Register() {
 
     const latestMaintenance = await maintenance.refresh();
     if (latestMaintenance.phase === 'locked') {
-      alert(latestMaintenance.notice_text || '系统正在维护升级，当前暂不对外开放，请稍后再试。');
+      alert(getMaintenanceBannerMessage(latestMaintenance));
       return;
     }
 

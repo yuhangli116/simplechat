@@ -28,7 +28,7 @@ export const DEFAULT_MAINTENANCE_STATE: SiteMaintenanceState = {
   lock_at: null,
   notice_title: '系统维护升级通知',
   notice_text: '本系统预计将在稍后开始进行系统维护升级，届时网站暂时不对外开放，请各位用户谅解。',
-  lock_lead_minutes: 30,
+  lock_lead_minutes: 60,
   announce_lead_minutes: 2880,
   server_now: new Date().toISOString(),
 }
@@ -312,4 +312,15 @@ export function formatMaintenanceDate(value?: string | null) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(date)
+}
+
+export function getMaintenanceBannerMessage(state: SiteMaintenanceState) {
+  const startAt = formatMaintenanceDate(state.planned_start_at)
+  const lockAt = formatMaintenanceDate(state.lock_at)
+
+  if (state.phase === 'locked') {
+    return `封禁保护期：系统正在升级维护中，为避免数据丢失，登录、注册、保存、新增、修改、删除、AI 创作等功能暂时不可用。您仍可浏览页面，预计 ${formatMaintenanceDate(state.planned_end_at)} 恢复，请各位用户谅解。`
+  }
+
+  return `升级预告：系统预计将在 ${startAt} 开始进行维护升级，${lockAt} 起进入封禁保护期。当前功能仍可正常使用，请提前做好安排。`
 }

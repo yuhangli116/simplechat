@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { Database } from '@/types/supabase'
 import { createLogger } from '@/lib/logger'
+import { createMaintenanceBlockedResponse, shouldBlockMaintenanceRequest } from '@/services/maintenanceRuntime'
 
 const log = createLogger('Supabase')
 
@@ -78,7 +79,23 @@ if (!supabaseUrl || !supabaseAnonKey) {
   }
 } else {
   log.info('Supabase client initialized', { url: supabaseUrl?.slice(0, 30) })
-  supabaseInstance = createClient<Database>(supabaseUrl, supabaseAnonKey)
+  const guardedFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (shouldBlockMaintenanceRequest(input, init)) {
+      log.warn('Blocked Supabase request during maintenance lock', {
+        url: typeof input === 'string' ? input : input instanceof URL ? input.toString() : input instanceof Request ? input.url : String(input),
+        method: init?.method || (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET'),
+      })
+      return createMaintenanceBlockedResponse()
+    }
+
+    return fetch(input, init)
+  }
+
+  supabaseInstance = createClient<Database>(supabaseUrl, supabaseAnonKey, {
+    global: {
+      fetch: guardedFetch as typeof fetch,
+    },
+  })
 }
 
 export const supabase = supabaseInstance;

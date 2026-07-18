@@ -9,6 +9,7 @@ import { useTrashStore } from '@/store/useTrashStore';
 import { createLogger, flushLogs } from '@/lib/logger';
 import { checkCurrentUserSecurity } from '@/services/security';
 import { useMaintenance } from '@/contexts/useMaintenance';
+import { getMaintenanceBannerMessage } from '@/services/maintenance';
 
 const log = createLogger('Login')
 
@@ -108,7 +109,7 @@ export default function Login() {
   const handleGuestLogin = async () => {
     const latestMaintenance = await maintenance.refresh();
     if (latestMaintenance.phase === 'locked') {
-      alert(latestMaintenance.notice_text || '系统正在维护升级，当前暂不对外开放，请稍后再试。');
+      alert(getMaintenanceBannerMessage(latestMaintenance));
       return;
     }
 
@@ -149,7 +150,7 @@ export default function Login() {
 
     const latestMaintenance = await maintenance.refresh();
     if (latestMaintenance.phase === 'locked') {
-      alert(latestMaintenance.notice_text || '系统正在维护升级，当前暂不对外开放，请稍后再试。');
+      alert(getMaintenanceBannerMessage(latestMaintenance));
       return;
     }
 

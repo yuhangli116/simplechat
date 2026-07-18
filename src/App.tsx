@@ -26,9 +26,9 @@ import Download from '@/pages/Download';
 import { ToastContainer } from '@/components/ToastContainer';
 import { MaintenanceBanner } from '@/components/MaintenanceBanner';
 import { MaintenanceGate } from '@/components/MaintenanceGate';
+import { MaintenanceInteractionBlocker } from '@/components/MaintenanceInteractionBlocker';
 import Records from '@/pages/Records';
 import { Validate } from '@/pages/placeholders';
-import MaintenancePage from '@/pages/MaintenancePage';
 import { MaintenanceProvider } from '@/contexts/MaintenanceContext';
 import { useMaintenance } from '@/contexts/useMaintenance';
 import { loadWorkspaceTree } from '@/lib/workspacePersistence';
@@ -332,9 +332,9 @@ const AppShell = () => {
   return (
     <div className="min-h-screen" style={{ paddingTop: bannerVisible ? 40 : 0 }}>
       <MaintenanceBanner />
+      <MaintenanceInteractionBlocker />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
-          <Route path="/maintenance" element={<MaintenancePage />} />
           <Route element={<MaintenanceGate />}>
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />

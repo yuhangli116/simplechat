@@ -8,7 +8,7 @@ create table if not exists public.site_maintenance_windows (
   planned_end_at timestamptz,
   notice_title text not null default '系统维护升级通知',
   notice_text text not null default '本系统预计将在稍后开始进行系统维护升级，届时网站暂时不对外开放，请各位用户谅解。',
-  lock_lead_minutes integer not null default 30 check (lock_lead_minutes >= 0),
+  lock_lead_minutes integer not null default 60 check (lock_lead_minutes >= 0),
   announce_lead_minutes integer not null default 2880 check (announce_lead_minutes >= 0),
   created_by uuid references auth.users(id) on delete set null,
   updated_by uuid references auth.users(id) on delete set null,
@@ -58,7 +58,7 @@ begin
 
   if found and coalesce(v_window.enabled, false) and v_window.planned_start_at is not null and v_window.planned_end_at is not null then
     v_announce_at := v_window.planned_start_at - make_interval(mins => coalesce(v_window.announce_lead_minutes, 2880));
-    v_lock_at := v_window.planned_start_at - make_interval(mins => coalesce(v_window.lock_lead_minutes, 30));
+    v_lock_at := v_window.planned_start_at - make_interval(mins => coalesce(v_window.lock_lead_minutes, 60));
 
     if v_now >= v_window.planned_end_at then
       v_phase := 'normal';
@@ -85,7 +85,7 @@ begin
       'lock_at', v_lock_at,
       'notice_title', coalesce(v_window.notice_title, '系统维护升级通知'),
       'notice_text', coalesce(v_window.notice_text, '本系统预计将在稍后开始进行系统维护升级，届时网站暂时不对外开放，请各位用户谅解。'),
-      'lock_lead_minutes', coalesce(v_window.lock_lead_minutes, 30),
+      'lock_lead_minutes', coalesce(v_window.lock_lead_minutes, 60),
       'announce_lead_minutes', coalesce(v_window.announce_lead_minutes, 2880),
       'server_now', v_now
     )
