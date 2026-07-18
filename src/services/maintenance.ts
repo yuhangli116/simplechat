@@ -319,7 +319,7 @@ export function getMaintenanceBannerMessage(state: SiteMaintenanceState) {
   const lockAt = formatMaintenanceDate(state.lock_at)
 
   if (state.phase === 'locked') {
-    return `封禁保护期：系统正在升级维护中，为避免数据丢失，登录、注册、保存、新增、修改、删除、AI 创作等功能暂时不可用。您仍可浏览页面，预计 ${formatMaintenanceDate(state.planned_end_at)} 恢复，请各位用户谅解。`
+    return `封禁保护期：系统正在升级维护中，为避免数据丢失，登录、注册、查询、保存、新增、修改、删除、AI 创作等远程功能暂时不可用。您仍可停留在当前页面查看已加载内容，刷新或切换页面会回到登录页，预计 ${formatMaintenanceDate(state.planned_end_at)} 恢复，请各位用户谅解。`
   }
 
   return `升级预告：系统预计将在 ${startAt} 开始进行维护升级，${lockAt} 起进入封禁保护期。当前功能仍可正常使用，请提前做好安排。`

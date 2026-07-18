@@ -17,6 +17,7 @@ const INTERACTIVE_SELECTOR = [
 
 const shouldBlockTarget = (target: EventTarget | null) => {
   if (!(target instanceof Element)) return false
+  if (['/login', '/register', '/forgot-password', '/reset-password'].includes(window.location.pathname)) return false
   if (target.closest('a[href]')) return false
   if (target.closest('[data-maintenance-allow="true"]')) return false
   return Boolean(target.closest(INTERACTIVE_SELECTOR))

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Outlet, useParams, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useParams, useLocation, useNavigate } from 'react-router-dom';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { clearGuestSession, createGuestProfile, createGuestUser, isGuestUser, loadGuestSession, useAuthStore } from '@/store/useAuthStore';
@@ -326,6 +326,52 @@ const WorkAccessGuard = () => {
   return <Outlet />;
 };
 
+const AUTH_ROUTE_PATHS = new Set(['/login', '/register', '/forgot-password', '/reset-password']);
+
+const MaintenanceRouteGuard = () => {
+  const { ready, locked } = useMaintenance();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const sawReadyRef = React.useRef(false);
+  const previousLockedRef = React.useRef(false);
+  const allowedLockedPathRef = React.useRef<string | null>(null);
+  const currentPath = `${location.pathname}${location.search}${location.hash}`;
+
+  useEffect(() => {
+    if (!ready) return;
+
+    const isAuthRoute = AUTH_ROUTE_PATHS.has(location.pathname);
+    if (!locked) {
+      sawReadyRef.current = true;
+      previousLockedRef.current = false;
+      allowedLockedPathRef.current = null;
+      return;
+    }
+
+    const firstReady = !sawReadyRef.current;
+    const justEnteredLocked = !firstReady && !previousLockedRef.current;
+    sawReadyRef.current = true;
+    previousLockedRef.current = true;
+
+    if (isAuthRoute) return;
+
+    if (justEnteredLocked) {
+      allowedLockedPathRef.current = currentPath;
+      log.info('Maintenance lock entered; preserving current loaded page', { path: currentPath });
+      return;
+    }
+
+    if (allowedLockedPathRef.current === currentPath) return;
+
+    log.warn('Maintenance lock redirected navigation to login', { from: currentPath });
+    void useAuthStore.getState().signOut().finally(() => {
+      navigate('/login', { replace: true, state: { maintenanceLocked: true } });
+    });
+  }, [currentPath, location.pathname, locked, navigate, ready]);
+
+  return null;
+};
+
 const AppShell = () => {
   const { bannerVisible } = useMaintenance();
 
@@ -334,6 +380,7 @@ const AppShell = () => {
       <MaintenanceBanner />
       <MaintenanceInteractionBlocker />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <MaintenanceRouteGuard />
         <Routes>
           <Route element={<MaintenanceGate />}>
             <Route path="/login" element={<Login />} />

@@ -5,13 +5,6 @@ type RuntimeMaintenanceState = {
 
 let currentState: RuntimeMaintenanceState = { phase: 'normal' }
 
-const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
-const READ_ONLY_RPC_PREFIXES = ['get_', 'list_', 'search_', 'is_']
-const READ_ONLY_RPC_NAMES = new Set([
-  'admin_security_check',
-  'billing_idempotency_ready',
-])
-
 export function setMaintenanceRuntimeState(state: RuntimeMaintenanceState) {
   currentState = state
 }
@@ -21,7 +14,7 @@ export function isMaintenanceRuntimeLocked() {
 }
 
 export function getMaintenanceRuntimeBlockedMessage() {
-  return '系统正在维护升级中，为避免数据丢失，登录、注册、AI 创作、保存、新增、修改、删除等功能暂时不可用。您仍可浏览页面，请稍后再试。'
+  return '系统正在维护升级中，为避免数据丢失，登录、注册、查询、保存、新增、修改、删除、AI 创作等远程功能暂时不可用。您仍可停留在当前页面查看已加载内容，请稍后再试。'
 }
 
 function getRequestMethod(input: RequestInfo | URL, init?: RequestInit) {
@@ -37,20 +30,6 @@ function getRequestUrl(input: RequestInfo | URL) {
   return String(input)
 }
 
-function isReadOnlyRpc(url: string, method: string) {
-  if (method !== 'POST') return false
-
-  try {
-    const pathname = new URL(url, window.location.origin).pathname
-    const rpcMatch = pathname.match(/\/rpc\/([^/?#]+)/)
-    const rpcName = rpcMatch?.[1]
-    if (!rpcName) return false
-    return READ_ONLY_RPC_NAMES.has(rpcName) || READ_ONLY_RPC_PREFIXES.some((prefix) => rpcName.startsWith(prefix))
-  } catch {
-    return false
-  }
-}
-
 function isSafeAuthRequest(url: string, method: string) {
   try {
     const pathname = new URL(url, window.location.origin).pathname
@@ -64,10 +43,7 @@ export function shouldBlockMaintenanceRequest(input: RequestInfo | URL, init?: R
   if (!isMaintenanceRuntimeLocked()) return false
 
   const method = getRequestMethod(input, init)
-  if (READ_METHODS.has(method)) return false
-
   const url = getRequestUrl(input)
-  if (isReadOnlyRpc(url, method)) return false
   if (isSafeAuthRequest(url, method)) return false
 
   return true
