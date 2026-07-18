@@ -1,5 +1,6 @@
 type RuntimeMaintenanceState = {
   phase?: 'normal' | 'announced' | 'locked'
+  lock_at?: string | null
   planned_end_at?: string | null
 }
 
@@ -14,7 +15,22 @@ export function isMaintenanceRuntimeLocked() {
 }
 
 export function getMaintenanceRuntimeBlockedMessage() {
-  return '系统正在维护升级中，为避免数据丢失，登录、注册、AI创作等功能暂不可用，当前仅支持浏览，请稍后再试。'
+  const lockAt = formatRuntimeDate(currentState.lock_at)
+  const endAt = formatRuntimeDate(currentState.planned_end_at)
+  if (lockAt !== '-' || endAt !== '-') {
+    return `系统正在维护升级中，部分功能暂不可用，当前仅支持浏览。系统自 ${lockAt} 开始升级，预计 ${endAt} 恢复，请稍后再试。`
+  }
+  return '系统正在维护升级中，部分功能暂不可用，当前仅支持浏览，请稍后再试。'
+}
+
+function formatRuntimeDate(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
 }
 
 function getRequestMethod(input: RequestInfo | URL, init?: RequestInit) {

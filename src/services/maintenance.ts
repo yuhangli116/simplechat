@@ -317,9 +317,10 @@ export function formatMaintenanceDate(value?: string | null) {
 export function getMaintenanceBannerMessage(state: SiteMaintenanceState) {
   const startAt = formatMaintenanceDate(state.planned_start_at)
   const lockAt = formatMaintenanceDate(state.lock_at)
+  const endAt = formatMaintenanceDate(state.planned_end_at)
 
   if (state.phase === 'locked') {
-    return `封禁保护期：系统正在升级维护中，为避免数据丢失，登录、注册、AI创作等功能暂不可用，当前仅支持浏览，刷新或切换页面会回到登录页，预计 ${formatMaintenanceDate(state.planned_end_at)} 恢复，请各位用户谅解。`
+    return `封禁保护期：系统正在升级维护中，部分功能暂不可用，当前仅支持浏览，刷新或切换页面会回到登录页。系统自 ${lockAt} 开始升级，预计 ${endAt} 恢复，请各位用户谅解。`
   }
 
   return `升级预告：系统预计将在 ${startAt} 开始进行维护升级，${lockAt} 起进入封禁保护期。当前功能仍可正常使用，请提前做好安排。`
