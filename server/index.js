@@ -60,8 +60,48 @@ app.use(
   })
 );
 
+app.get('/api/site-maintenance-state', async (_req, res) => {
+  try {
+    const maintenance = await checkSiteMaintenance({
+      supabase: securitySupabase,
+      kind: 'public_state',
+      path: '/site-maintenance-state',
+    });
+    return sendJson(res, 200, {
+      enabled: maintenance.state.enabled,
+      phase: maintenance.state.phase,
+      planned_start_at: maintenance.state.plannedStartAt,
+      planned_end_at: maintenance.state.plannedEndAt,
+      announce_at: maintenance.state.announceAt,
+      lock_at: maintenance.state.lockAt,
+      notice_title: maintenance.state.noticeTitle,
+      notice_text: maintenance.state.noticeText,
+      lock_lead_minutes: 30,
+      announce_lead_minutes: 2880,
+      server_now: maintenance.state.serverNow,
+    });
+  } catch (error) {
+    log.warn('Failed to load public maintenance state', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return sendJson(res, 200, {
+      enabled: false,
+      phase: 'normal',
+      planned_start_at: null,
+      planned_end_at: null,
+      announce_at: null,
+      lock_at: null,
+      notice_title: '系统维护升级通知',
+      notice_text: '本系统预计将在稍后开始进行系统维护升级，届时网站暂时不对外开放，请各位用户谅解。',
+      lock_lead_minutes: 30,
+      announce_lead_minutes: 2880,
+      server_now: new Date().toISOString(),
+    });
+  }
+});
+
 app.use('/api', async (req, res, next) => {
-  if (req.path === '/health') return next();
+  if (req.path === '/health' || req.path === '/site-maintenance-state') return next();
   if (!securitySupabase) return next();
 
   const requestContext = getRequestContext(req);

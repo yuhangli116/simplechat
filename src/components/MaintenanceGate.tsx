@@ -6,7 +6,7 @@ export function MaintenanceGate() {
   const location = useLocation()
 
   if (!maintenance.ready) {
-    return <div className="p-6 text-sm text-muted-foreground">正在检查系统维护状态...</div>
+    return null
   }
 
   if (maintenance.locked && location.pathname !== '/maintenance') {

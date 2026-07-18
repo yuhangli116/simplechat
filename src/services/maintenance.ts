@@ -35,6 +35,170 @@ export const DEFAULT_MAINTENANCE_STATE: SiteMaintenanceState = {
 
 let cachedMaintenanceState = DEFAULT_MAINTENANCE_STATE
 
+const MAINTENANCE_CONFIG_KEYS = [
+  'site_maintenance_enabled',
+  'site_maintenance_planned_start_at',
+  'site_maintenance_planned_end_at',
+  'site_maintenance_notice_title',
+  'site_maintenance_notice_text',
+  'site_maintenance_lock_lead_minutes',
+  'site_maintenance_announce_lead_minutes',
+]
+
+type SystemConfigRow = {
+  key: string
+  value: string
+}
+
+type MaintenanceWindowRow = {
+  enabled: boolean
+  planned_start_at: string | null
+  planned_end_at: string | null
+  notice_title: string | null
+  notice_text: string | null
+  lock_lead_minutes: number | null
+  announce_lead_minutes: number | null
+  updated_at: string | null
+}
+
+const getConfigValue = (rows: SystemConfigRow[], key: string) =>
+  rows.find((row) => row.key === key)?.value
+
+const isRpcMissingError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error || '')
+  return message.includes('Could not find the function') || message.includes('schema cache')
+}
+
+const derivePhase = (state: SiteMaintenanceState): MaintenancePhase => {
+  if (!state.enabled || !state.planned_start_at || !state.planned_end_at) return 'normal'
+
+  const now = Date.parse(state.server_now)
+  const plannedEnd = Date.parse(state.planned_end_at)
+  const lockAt = Date.parse(state.lock_at || '')
+  const announceAt = Date.parse(state.announce_at || '')
+
+  if (!Number.isFinite(now) || !Number.isFinite(plannedEnd) || !Number.isFinite(lockAt) || !Number.isFinite(announceAt)) {
+    return 'normal'
+  }
+  if (now >= plannedEnd) return 'normal'
+  if (now >= lockAt) return 'locked'
+  if (now >= announceAt) return 'announced'
+  return 'normal'
+}
+
+const stateFromSystemConfig = (rows: SystemConfigRow[]): SiteMaintenanceState => {
+  const plannedStartAt = getConfigValue(rows, 'site_maintenance_planned_start_at') || null
+  const plannedEndAt = getConfigValue(rows, 'site_maintenance_planned_end_at') || null
+  const lockLeadMinutes = Number(getConfigValue(rows, 'site_maintenance_lock_lead_minutes') || DEFAULT_MAINTENANCE_STATE.lock_lead_minutes)
+  const announceLeadMinutes = Number(getConfigValue(rows, 'site_maintenance_announce_lead_minutes') || DEFAULT_MAINTENANCE_STATE.announce_lead_minutes)
+  const plannedStartMs = plannedStartAt ? Date.parse(plannedStartAt) : NaN
+  const announceAt = Number.isFinite(plannedStartMs) ? new Date(plannedStartMs - announceLeadMinutes * 60_000).toISOString() : null
+  const lockAt = Number.isFinite(plannedStartMs) ? new Date(plannedStartMs - lockLeadMinutes * 60_000).toISOString() : null
+
+  const state: SiteMaintenanceState = {
+    enabled: getConfigValue(rows, 'site_maintenance_enabled') === 'true',
+    phase: 'normal',
+    planned_start_at: plannedStartAt,
+    planned_end_at: plannedEndAt,
+    announce_at: announceAt,
+    lock_at: lockAt,
+    notice_title: getConfigValue(rows, 'site_maintenance_notice_title') || DEFAULT_MAINTENANCE_STATE.notice_title,
+    notice_text: getConfigValue(rows, 'site_maintenance_notice_text') || DEFAULT_MAINTENANCE_STATE.notice_text,
+    lock_lead_minutes: Number.isFinite(lockLeadMinutes) ? lockLeadMinutes : DEFAULT_MAINTENANCE_STATE.lock_lead_minutes,
+    announce_lead_minutes: Number.isFinite(announceLeadMinutes) ? announceLeadMinutes : DEFAULT_MAINTENANCE_STATE.announce_lead_minutes,
+    server_now: new Date().toISOString(),
+  }
+
+  state.phase = derivePhase(state)
+  cachedMaintenanceState = state
+  return state
+}
+
+const stateFromMaintenanceWindow = (row: MaintenanceWindowRow | null): SiteMaintenanceState => {
+  if (!row) {
+    return {
+      ...DEFAULT_MAINTENANCE_STATE,
+      server_now: new Date().toISOString(),
+    }
+  }
+
+  const plannedStartAt = row.planned_start_at
+  const plannedEndAt = row.planned_end_at
+  const lockLeadMinutes = Number(row.lock_lead_minutes ?? DEFAULT_MAINTENANCE_STATE.lock_lead_minutes)
+  const announceLeadMinutes = Number(row.announce_lead_minutes ?? DEFAULT_MAINTENANCE_STATE.announce_lead_minutes)
+  const plannedStartMs = plannedStartAt ? Date.parse(plannedStartAt) : NaN
+  const announceAt = Number.isFinite(plannedStartMs) ? new Date(plannedStartMs - announceLeadMinutes * 60_000).toISOString() : null
+  const lockAt = Number.isFinite(plannedStartMs) ? new Date(plannedStartMs - lockLeadMinutes * 60_000).toISOString() : null
+
+  const state: SiteMaintenanceState = {
+    enabled: Boolean(row.enabled),
+    phase: 'normal',
+    planned_start_at: plannedStartAt,
+    planned_end_at: plannedEndAt,
+    announce_at: announceAt,
+    lock_at: lockAt,
+    notice_title: row.notice_title || DEFAULT_MAINTENANCE_STATE.notice_title,
+    notice_text: row.notice_text || DEFAULT_MAINTENANCE_STATE.notice_text,
+    lock_lead_minutes: Number.isFinite(lockLeadMinutes) ? lockLeadMinutes : DEFAULT_MAINTENANCE_STATE.lock_lead_minutes,
+    announce_lead_minutes: Number.isFinite(announceLeadMinutes) ? announceLeadMinutes : DEFAULT_MAINTENANCE_STATE.announce_lead_minutes,
+    server_now: new Date().toISOString(),
+  }
+
+  state.phase = derivePhase(state)
+  cachedMaintenanceState = state
+  return state
+}
+
+async function fetchMaintenanceStateFromWindowTable() {
+  const queryClient = supabase as typeof supabase & {
+    from?: (table: string) => {
+      select: (columns: string) => {
+        order: (column: string, options: { ascending: boolean }) => {
+          limit: (count: number) => Promise<{ data: MaintenanceWindowRow[] | null; error: { message: string } | null }>
+        }
+      }
+    }
+  }
+
+  if (typeof queryClient.from !== 'function') return cachedMaintenanceState
+
+  const { data, error } = await queryClient
+    .from('site_maintenance_windows')
+    .select('enabled,planned_start_at,planned_end_at,notice_title,notice_text,lock_lead_minutes,announce_lead_minutes,updated_at')
+    .order('updated_at', { ascending: false })
+    .limit(1)
+
+  if (error) {
+    throw new Error(error.message)
+  }
+
+  const row = data?.[0] || null
+  return row ? stateFromMaintenanceWindow(row) : null
+}
+
+async function fetchMaintenanceStateFromSystemConfig() {
+  const queryClient = supabase as typeof supabase & {
+    from?: (table: string) => {
+      select: (columns: string) => {
+        in: (column: string, values: string[]) => Promise<{ data: SystemConfigRow[] | null; error: { message: string } | null }>
+      }
+    }
+  }
+
+  if (typeof queryClient.from !== 'function') return cachedMaintenanceState
+
+  const { data, error } = await queryClient
+    .from('system_config')
+    .select('key,value')
+    .in('key', MAINTENANCE_CONFIG_KEYS)
+
+  if (error) {
+    throw new Error(error.message)
+  }
+
+  return stateFromSystemConfig(data || [])
+}
+
 const normalizeState = (raw: unknown): SiteMaintenanceState => {
   const next = (raw && typeof raw === 'object' && 'data' in raw
     ? (raw as { data?: unknown }).data
@@ -67,6 +231,29 @@ export async function fetchMaintenanceState(): Promise<SiteMaintenanceState> {
     rpc?: (name: string, params?: Record<string, unknown>) => Promise<{ data: unknown; error: { message: string } | null }>
   }
 
+  try {
+    const response = await fetch('/api/site-maintenance-state', { credentials: 'same-origin' })
+    if (response.ok) {
+      const localState = normalizeState(await response.json())
+      if (localState) {
+        return localState
+      }
+    }
+  } catch (error) {
+    log.warn('Failed to load site maintenance state from local server bridge', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  try {
+    const windowState = await fetchMaintenanceStateFromWindowTable()
+    if (windowState) return windowState
+  } catch (tableError) {
+    log.warn('Failed to load site maintenance state from window table', {
+      error: tableError instanceof Error ? tableError.message : String(tableError),
+    })
+  }
+
   if (typeof rpcClient.rpc !== 'function') {
     return cachedMaintenanceState
   }
@@ -78,6 +265,15 @@ export async function fetchMaintenanceState(): Promise<SiteMaintenanceState> {
     }
     return normalizeState(data)
   } catch (error) {
+    if (isRpcMissingError(error)) {
+      try {
+        return await fetchMaintenanceStateFromSystemConfig()
+      } catch (fallbackError) {
+        log.warn('Failed to load site maintenance state from system_config fallback', {
+          error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        })
+      }
+    }
     log.warn('Failed to load site maintenance state', {
       error: error instanceof Error ? error.message : String(error),
     })
@@ -117,4 +313,3 @@ export function formatMaintenanceDate(value?: string | null) {
     timeStyle: 'short',
   }).format(date)
 }
-

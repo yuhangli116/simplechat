@@ -1,3 +1,4 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
@@ -15,6 +16,22 @@ import {
 import { checkSecurityControls, sendSecurityBlocked } from './server/security/securityControls.js'
 
 const log = createServerLogger('ViteDev')
+const sharedMaintenanceStatePath = path.resolve(process.cwd(), '..', '.codex', 'site-maintenance-state.json')
+
+const readSharedMaintenanceState = () => {
+  try {
+    if (!existsSync(sharedMaintenanceStatePath)) return null
+    return JSON.parse(readFileSync(sharedMaintenanceStatePath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+const writeSharedMaintenanceState = (state: unknown) => {
+  const dir = path.dirname(sharedMaintenanceStatePath)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  writeFileSync(sharedMaintenanceStatePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -50,6 +67,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3000,
       strictPort: true,
+      host: '127.0.0.1',
     },
     plugins: [
       react(),
@@ -57,10 +75,29 @@ export default defineConfig(({ mode }) => {
         name: 'local-ai-proxy',
         configureServer(server) {
           server.middlewares.use('/api', async (req, res, next) => {
-            if (req.url?.startsWith('/health')) {
+            if (req.url?.startsWith('/health') || req.url?.startsWith('/site-maintenance-state')) {
               next()
               return
             }
+
+            const maintenanceState = readSharedMaintenanceState()
+            if (maintenanceState?.phase === 'locked' && !req.url?.startsWith('/log')) {
+              log.warn('Dev API request rejected by maintenance lock', {
+                url: req.url,
+                method: req.method,
+                phase: maintenanceState.phase,
+              })
+              sendJson(res, 503, {
+                error: maintenanceState.notice_text || '系统正在维护升级，当前暂不对外开放，请稍后再试。',
+                code: 'MAINTENANCE_LOCKED',
+                phase: 'locked',
+                planned_start_at: maintenanceState.planned_start_at,
+                planned_end_at: maintenanceState.planned_end_at,
+                server_now: new Date().toISOString(),
+              })
+              return
+            }
+
             if (!securitySupabase) {
               next()
               return
@@ -89,6 +126,33 @@ export default defineConfig(({ mode }) => {
             }
 
             next()
+          })
+
+          server.middlewares.use('/api/site-maintenance-state', (req, res) => {
+            if (req.method !== 'GET') {
+              sendJson(res, 405, { error: 'Method not allowed' })
+              return
+            }
+
+            const state = readSharedMaintenanceState()
+            if (!state) {
+              sendJson(res, 200, {
+                enabled: false,
+                phase: 'normal',
+                planned_start_at: null,
+                planned_end_at: null,
+                announce_at: null,
+                lock_at: null,
+                notice_title: '系统维护升级通知',
+                notice_text: '本系统预计将在稍后开始进行系统维护升级，届时网站暂时不对外开放，请各位用户谅解。',
+                lock_lead_minutes: 30,
+                announce_lead_minutes: 2880,
+                server_now: new Date().toISOString(),
+              })
+              return
+            }
+
+            sendJson(res, 200, state)
           })
 
           server.middlewares.use('/api/health', (req, res) => {
@@ -254,6 +318,20 @@ export default defineConfig(({ mode }) => {
             } finally {
               releaseGuard()
             }
+          })
+
+          server.middlewares.use('/__maintenance-sync', (req, res) => {
+            if (req.method !== 'POST') {
+              sendJson(res, 405, { error: 'Method not allowed' })
+              return
+            }
+
+            parseRequestBody(req).then((body) => {
+              writeSharedMaintenanceState(body || {})
+              sendJson(res, 200, { ok: true })
+            }).catch((error) => {
+              sendJson(res, 500, { error: error instanceof Error ? error.message : 'Failed to sync maintenance state' })
+            })
           })
         },
       },

@@ -7,7 +7,7 @@ export default function MaintenancePage() {
   const { state, ready, locked } = useMaintenance()
 
   if (!ready) {
-    return <div className="flex min-h-[calc(100vh-2.5rem)] items-center justify-center text-sm text-muted-foreground">正在检查系统维护状态...</div>
+    return null
   }
 
   if (ready && !locked) {

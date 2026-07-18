@@ -1,9 +1,12 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { createServerLogger } from './logger.js';
 
 const log = createServerLogger('Maintenance');
 
 const NORMAL_CACHE_TTL_MS = Number(process.env.MAINTENANCE_STATE_CACHE_TTL_MS || 5 * 1000);
 const LOCKED_CACHE_TTL_MS = Number(process.env.MAINTENANCE_LOCKED_CACHE_TTL_MS || 2 * 1000);
+const SHARED_MAINTENANCE_STATE_PATH = path.resolve(process.cwd(), '..', '.codex', 'site-maintenance-state.json');
 
 let cachedState = null;
 let cachedUntil = 0;
@@ -23,7 +26,40 @@ const normalizeMaintenanceState = (data) => {
   };
 };
 
+const readSharedMaintenanceState = () => {
+  try {
+    if (!existsSync(SHARED_MAINTENANCE_STATE_PATH)) return null;
+    const raw = readFileSync(SHARED_MAINTENANCE_STATE_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    return normalizeMaintenanceState(parsed);
+  } catch (error) {
+    log.warn('Failed to read shared maintenance state', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+};
+
+export const writeSharedMaintenanceState = (state) => {
+  try {
+    const dir = path.dirname(SHARED_MAINTENANCE_STATE_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(SHARED_MAINTENANCE_STATE_PATH, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  } catch (error) {
+    log.warn('Failed to write shared maintenance state', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
 export const checkSiteMaintenance = async ({ supabase, kind, path }) => {
+  const sharedState = readSharedMaintenanceState();
+  if (sharedState) {
+    cachedState = sharedState;
+    cachedUntil = Date.now() + (sharedState.phase === 'locked' ? LOCKED_CACHE_TTL_MS : NORMAL_CACHE_TTL_MS);
+    return { locked: sharedState.phase === 'locked', state: sharedState };
+  }
+
   if (!supabase) {
     return { locked: false, state: normalizeMaintenanceState(null), unavailable: true };
   }
