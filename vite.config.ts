@@ -18,10 +18,42 @@ import { checkSecurityControls, sendSecurityBlocked } from './server/security/se
 const log = createServerLogger('ViteDev')
 const sharedMaintenanceStatePath = path.resolve(process.cwd(), '..', '.codex', 'site-maintenance-state.json')
 
-const readSharedMaintenanceState = () => {
+const readSharedMaintenanceState = (): any => {
   try {
     if (!existsSync(sharedMaintenanceStatePath)) return null
-    return JSON.parse(readFileSync(sharedMaintenanceStatePath, 'utf8'))
+    const raw = JSON.parse(readFileSync(sharedMaintenanceStatePath, 'utf8')) as Record<string, any>
+    if (!raw || typeof raw !== 'object') return null
+    const next = raw
+    const plannedStartAt = typeof next.planned_start_at === 'string' ? next.planned_start_at : null
+    const plannedEndAt = typeof next.planned_end_at === 'string' ? next.planned_end_at : null
+    const announceAt = typeof next.announce_at === 'string' ? next.announce_at : null
+    const lockAt = typeof next.lock_at === 'string' ? next.lock_at : null
+    const noticeText = typeof next.notice_text === 'string' ? next.notice_text : undefined
+    const plannedStartMs = plannedStartAt ? Date.parse(plannedStartAt) : NaN
+    const announceLeadMinutes = Number(next.announce_lead_minutes ?? 2880) || 2880
+    const lockLeadMinutes = Number(next.lock_lead_minutes ?? 30) || 30
+    const serverNow = new Date().toISOString()
+    const nowMs = Date.parse(serverNow)
+    const plannedEndMs = plannedEndAt ? Date.parse(plannedEndAt) : NaN
+    const announceMs = announceAt ? Date.parse(announceAt) : NaN
+    const lockMs = lockAt ? Date.parse(lockAt) : NaN
+
+    let phase = next.phase === 'announced' || next.phase === 'locked' ? next.phase : 'normal'
+    if (plannedStartAt && plannedEndAt && Number.isFinite(nowMs) && Number.isFinite(plannedEndMs)) {
+      if (nowMs >= plannedEndMs) phase = 'normal'
+      else if (Number.isFinite(lockMs) && nowMs >= lockMs) phase = 'locked'
+      else if (Number.isFinite(announceMs) && nowMs >= announceMs) phase = 'announced'
+      else phase = 'normal'
+    }
+
+    return {
+      ...next,
+      phase,
+      announce_at: announceAt || (Number.isFinite(plannedStartMs) ? new Date(plannedStartMs - announceLeadMinutes * 60_000).toISOString() : null),
+      lock_at: lockAt || (Number.isFinite(plannedStartMs) ? new Date(plannedStartMs - lockLeadMinutes * 60_000).toISOString() : null),
+      notice_text: noticeText ?? next.notice_text,
+      server_now: serverNow,
+    }
   } catch {
     return null
   }

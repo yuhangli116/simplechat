@@ -55,10 +55,10 @@ export function MaintenanceInteractionBlocker() {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target
       const isEditable = target instanceof Element && Boolean(target.closest('input,textarea,select,[contenteditable="true"]'))
-      if (!isEditable) return
+      if (isEditable) return
 
       const shortcut = event.metaKey || event.ctrlKey || event.altKey
-      const blockedKey = event.key === 'Enter' || event.key === 'Escape' || event.key === 'Backspace' || event.key === 'Delete' || shortcut
+      const blockedKey = event.key === 'Enter' || event.key === 'Escape' || shortcut
       if (!blockedKey) return
       event.preventDefault()
       event.stopPropagation()

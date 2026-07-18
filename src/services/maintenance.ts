@@ -208,18 +208,36 @@ const normalizeState = (raw: unknown): SiteMaintenanceState => {
     return cachedMaintenanceState
   }
 
+  const plannedStartAt = typeof next.planned_start_at === 'string' ? next.planned_start_at : null
+  const plannedEndAt = typeof next.planned_end_at === 'string' ? next.planned_end_at : null
+  const announceAt = typeof next.announce_at === 'string' ? next.announce_at : null
+  const lockAt = typeof next.lock_at === 'string' ? next.lock_at : null
+  const serverNow = typeof next.server_now === 'string' ? next.server_now : new Date().toISOString()
+  const nowMs = Date.parse(serverNow)
+  const plannedEndMs = plannedEndAt ? Date.parse(plannedEndAt) : NaN
+  const announceMs = announceAt ? Date.parse(announceAt) : NaN
+  const lockMs = lockAt ? Date.parse(lockAt) : NaN
+
+  let phase: MaintenancePhase = next.phase === 'announced' || next.phase === 'locked' ? next.phase : 'normal'
+  if (plannedStartAt && plannedEndAt && Number.isFinite(nowMs) && Number.isFinite(plannedEndMs)) {
+    if (nowMs >= plannedEndMs) phase = 'normal'
+    else if (Number.isFinite(lockMs) && nowMs >= lockMs) phase = 'locked'
+    else if (Number.isFinite(announceMs) && nowMs >= announceMs) phase = 'announced'
+    else phase = 'normal'
+  }
+
   const state: SiteMaintenanceState = {
     enabled: Boolean(next.enabled),
-    phase: next.phase === 'announced' || next.phase === 'locked' ? next.phase : 'normal',
-    planned_start_at: typeof next.planned_start_at === 'string' ? next.planned_start_at : null,
-    planned_end_at: typeof next.planned_end_at === 'string' ? next.planned_end_at : null,
-    announce_at: typeof next.announce_at === 'string' ? next.announce_at : null,
-    lock_at: typeof next.lock_at === 'string' ? next.lock_at : null,
+    phase,
+    planned_start_at: plannedStartAt,
+    planned_end_at: plannedEndAt,
+    announce_at: announceAt,
+    lock_at: lockAt,
     notice_title: typeof next.notice_title === 'string' && next.notice_title.trim() ? next.notice_title : DEFAULT_MAINTENANCE_STATE.notice_title,
     notice_text: typeof next.notice_text === 'string' && next.notice_text.trim() ? next.notice_text : DEFAULT_MAINTENANCE_STATE.notice_text,
     lock_lead_minutes: Number(next.lock_lead_minutes ?? DEFAULT_MAINTENANCE_STATE.lock_lead_minutes) || DEFAULT_MAINTENANCE_STATE.lock_lead_minutes,
     announce_lead_minutes: Number(next.announce_lead_minutes ?? DEFAULT_MAINTENANCE_STATE.announce_lead_minutes) || DEFAULT_MAINTENANCE_STATE.announce_lead_minutes,
-    server_now: typeof next.server_now === 'string' ? next.server_now : new Date().toISOString(),
+    server_now: serverNow,
   }
 
   cachedMaintenanceState = state

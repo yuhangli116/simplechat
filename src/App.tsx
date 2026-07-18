@@ -27,6 +27,7 @@ import { ToastContainer } from '@/components/ToastContainer';
 import { MaintenanceBanner } from '@/components/MaintenanceBanner';
 import { MaintenanceGate } from '@/components/MaintenanceGate';
 import { MaintenanceInteractionBlocker } from '@/components/MaintenanceInteractionBlocker';
+import { SiteFooter } from '@/components/SiteFooter';
 import Records from '@/pages/Records';
 import { Validate } from '@/pages/placeholders';
 import { MaintenanceProvider } from '@/contexts/MaintenanceContext';
@@ -376,60 +377,63 @@ const AppShell = () => {
   const { bannerVisible } = useMaintenance();
 
   return (
-    <div className="min-h-screen" style={{ paddingTop: bannerVisible ? 40 : 0 }}>
+    <div className="flex min-h-screen flex-col bg-background text-foreground" style={{ paddingTop: bannerVisible ? 40 : 0 }}>
       <MaintenanceBanner />
       <MaintenanceInteractionBlocker />
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <MaintenanceRouteGuard />
-        <Routes>
-          <Route element={<MaintenanceGate />}>
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/forgot-password" element={<ForgotPassword />} />
-            <Route path="/reset-password" element={<ResetPassword />} />
+      <div className="min-h-0 flex-1">
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <MaintenanceRouteGuard />
+          <Routes>
+            <Route element={<MaintenanceGate />}>
+              <Route path="/login" element={<Login />} />
+              <Route path="/register" element={<Register />} />
+              <Route path="/forgot-password" element={<ForgotPassword />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
 
-            {/* Redirect root to login for unauthenticated users */}
-            <Route path="/" element={<Navigate to="/login" replace />} />
+              {/* Redirect root to login for unauthenticated users */}
+              <Route path="/" element={<Navigate to="/login" replace />} />
 
-            {/* Main Layout Routes - accessible to both guests and logged-in users */}
-            <Route element={<WorkspaceLayout />}>
-              {/* Workspace (with FileTree) */}
-              <Route path="/workspace">
-                <Route index element={<WorkspaceIndexRoute />} />
+              {/* Main Layout Routes - accessible to both guests and logged-in users */}
+              <Route element={<WorkspaceLayout />}>
+                {/* Workspace (with FileTree) */}
+                <Route path="/workspace">
+                  <Route index element={<WorkspaceIndexRoute />} />
 
-                {/* Legacy Route Support */}
-                <Route path="story/:chapterId" element={<LegacyStoryRedirect />} />
-                <Route path="outline" element={<Navigate to="/workspace" replace />} />
-                <Route path="world" element={<Navigate to="/workspace" replace />} />
-                <Route path="characters" element={<Navigate to="/workspace" replace />} />
+                  {/* Legacy Route Support */}
+                  <Route path="story/:chapterId" element={<LegacyStoryRedirect />} />
+                  <Route path="outline" element={<Navigate to="/workspace" replace />} />
+                  <Route path="world" element={<Navigate to="/workspace" replace />} />
+                  <Route path="characters" element={<Navigate to="/workspace" replace />} />
 
-                {/* Project Routes */}
-                <Route path="p/:workId" element={<WorkAccessGuard />}>
-                  <Route path="story/:chapterId" element={<StoryEditor />} />
-                  <Route path="outline" element={<Outline />} />
-                  <Route path="world" element={<World />} />
-                  <Route path="characters" element={<Characters />} />
-                  <Route path="events" element={<Events />} />
-                  <Route path="mindmap/:mindMapId" element={<CustomMindMap />} />
+                  {/* Project Routes */}
+                  <Route path="p/:workId" element={<WorkAccessGuard />}>
+                    <Route path="story/:chapterId" element={<StoryEditor />} />
+                    <Route path="outline" element={<Outline />} />
+                    <Route path="world" element={<World />} />
+                    <Route path="characters" element={<Characters />} />
+                    <Route path="events" element={<Events />} />
+                    <Route path="mindmap/:mindMapId" element={<CustomMindMap />} />
+                  </Route>
                 </Route>
+
+                {/* Other Sections - accessible to guests (data saved locally only) */}
+                <Route path="/community" element={<Community />} />
+                <Route path="/welfare" element={<Welfare />} />
+                <Route path="/guide" element={<Guide />} />
+                <Route path="/prompts" element={<Prompts />} />
+                <Route path="/membership" element={<Membership />} />
+                <Route path="/records" element={<Records />} />
+                <Route path="/download" element={<Download />} />
+                <Route path="/trash" element={<Trash />} />
+                <Route path="/validate" element={<Validate />} />
               </Route>
 
-              {/* Other Sections - accessible to guests (data saved locally only) */}
-              <Route path="/community" element={<Community />} />
-              <Route path="/welfare" element={<Welfare />} />
-              <Route path="/guide" element={<Guide />} />
-              <Route path="/prompts" element={<Prompts />} />
-              <Route path="/membership" element={<Membership />} />
-              <Route path="/records" element={<Records />} />
-              <Route path="/download" element={<Download />} />
-              <Route path="/trash" element={<Trash />} />
-              <Route path="/validate" element={<Validate />} />
+              <Route path="*" element={<div>404 Not Found</div>} />
             </Route>
-
-            <Route path="*" element={<div>404 Not Found</div>} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+          </Routes>
+        </BrowserRouter>
+      </div>
+      <SiteFooter />
     </div>
   );
 };

@@ -77,7 +77,18 @@ let persistListenersAttached = false
 let pendingFlush: { batch: LogEntry[]; useBeacon: boolean } | null = null
 
 function formatTimestamp(date: Date = new Date()): string {
-  return date.toISOString().replace('T', ' ').replace('Z', '')
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value])) as Record<string, string>
+  return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}.${String(date.getMilliseconds()).padStart(3, '0')}`
 }
 
 function sendLogs(batch: LogEntry[], useBeacon = false): Promise<void> | void {
