@@ -211,8 +211,15 @@ app.all('/api/ai/generate', async (req, res) => {
   const model = req.body?.model || 'unknown';
   const userId = requestContext.accessToken ? 'authenticated' : 'anonymous';
   let releaseGuard = () => {};
+  req.once('aborted', () => {
+    log.warn('AI generate client connection aborted; server task may still settle provider usage', {
+      traceId: req.body?.traceId,
+      model,
+      ip: requestContext.ip,
+    });
+  });
 
-  log.info('AI generate request received', { model, userId, ip: requestContext.ip });
+    log.info('AI generate request received', { traceId: req.body?.traceId, model, userId, ip: requestContext.ip });
 
   try {
     releaseGuard = applyAiRequestGuard({
@@ -225,9 +232,15 @@ app.all('/api/ai/generate', async (req, res) => {
     const result = await generateTextServer(req.body || {}, requestContext);
 
     if (result.error) {
-      log.warn('AI generate returned error', { model, error: result.error?.slice(0, 200) });
+      log.warn('AI generate returned error', {
+        traceId: req.body?.traceId,
+        model,
+        error: result.error?.slice(0, 200),
+        billing: result.billing || null,
+      });
     } else {
       log.info('AI generate success', {
+        traceId: req.body?.traceId,
         model,
         inputTokens: result.usage?.input_tokens,
         outputTokens: result.usage?.output_tokens,
@@ -248,7 +261,7 @@ app.all('/api/ai/generate', async (req, res) => {
       });
       return sendGuardError(res, error, sendJson);
     }
-    log.error('AI generate unhandled error', { model }, error);
+    log.error('AI generate unhandled error', { traceId: req.body?.traceId, model }, error);
     return sendJson(res, 500, {
       error: error instanceof Error ? error.message : 'AI request failed',
     });

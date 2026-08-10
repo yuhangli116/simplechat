@@ -10,7 +10,7 @@ const log = createLogger('Trash');
 export interface TrashItem {
   id: string; // Unique ID for the trash item
   originalId: string; // Original ID of the item (e.g., node.id or prompt.id)
-  type: 'work' | 'chapter' | 'mindmap' | 'prompt' | 'file' | 'folder'; // Type of item
+  type: 'work' | 'chapter' | 'mindmap' | 'prompt' | 'file' | 'folder' | 'template'; // Type of item
   title: string; // Display name
   content: any; // The full data of the item (for restoration)
   deletedAt: number; // Timestamp
@@ -53,7 +53,7 @@ const handleTrashSyncError = (error: any, action: string) => {
 interface TrashState {
   items: TrashItem[];
   addExistingItem: (item: TrashItem) => void;
-  addToTrash: (item: Omit<TrashItem, 'id' | 'deletedAt' | 'expiresAt'>) => Promise<void>;
+  addToTrash: (item: Omit<TrashItem, 'id' | 'deletedAt' | 'expiresAt'>) => Promise<TrashItem>;
   getTrashItem: (id: string) => Promise<TrashItem | null>;
   permanentlyDelete: (id: string) => Promise<void>;
   clearTrash: () => Promise<void>;
@@ -173,6 +173,7 @@ export const useTrashStore = create<TrashState>()(
           }
         }
         flushLogs();
+        return newItem;
       },
 
       getTrashItem: async (id: string) => {

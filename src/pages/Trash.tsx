@@ -10,6 +10,7 @@ import {
   Map,
   GitBranch,
   MessageSquare
+  ,BookOpen
 } from 'lucide-react';
 import { useTrashStore, TrashItem } from '@/store/useTrashStore';
 import { useFileStore, FileNode } from '@/store/useFileStore';
@@ -20,6 +21,8 @@ import { findWorkNodeForTarget, loadWorkspaceTree, persistWorkTree, restoreWorkF
 import Pagination from '@/components/Pagination';
 import { createUserPrompt } from '@/lib/promptPersistence';
 import { createLogger, flushLogs } from '@/lib/logger';
+import { Database } from '@/types/supabase';
+import { supabase } from '@/lib/supabase';
 
 const log = createLogger('TrashPage');
 
@@ -155,6 +158,18 @@ const Trash = () => {
     }
   };
 
+  const restoreTemplate = async (item: TrashItem) => {
+    if (!user || isGuestUser(user)) return;
+    const template = item.content as Database['public']['Tables']['community_templates']['Insert'];
+    const { error } = await supabase.from('community_templates').insert({
+      ...template,
+      id: undefined,
+      creator_id: user.id,
+      is_official: false,
+    } as any);
+    if (error) throw error;
+  };
+
   // Actions
   const handleRestore = async (id: string) => {
     const item = items.find((entry) => entry.id === id);
@@ -171,6 +186,9 @@ const Trash = () => {
           addPrompt(prompt);
           log.success('Prompt restored from trash locally', { trashId: id, promptId: prompt.id });
         }
+      } else if (item.type === 'template') {
+        await restoreTemplate(item);
+        log.success('Community template restored from trash', { trashId: id, userId: user?.id });
       } else {
         await restoreWorkspaceItem(item);
       }
@@ -223,6 +241,8 @@ const Trash = () => {
             } else {
               addPrompt(prompt);
             }
+          } else if (item.type === 'template') {
+            await restoreTemplate(item);
           } else {
             await restoreWorkspaceItem(item);
           }
@@ -272,6 +292,7 @@ const Trash = () => {
       case 'file': return <FileText className="w-5 h-5 text-gray-500" />;
       case 'mindmap': return <GitBranch className="w-5 h-5 text-purple-500" />;
       case 'prompt': return <MessageSquare className="w-5 h-5 text-green-500" />;
+      case 'template': return <BookOpen className="w-5 h-5 text-blue-500" />;
       default: return <FileText className="w-5 h-5 text-gray-400" />;
     }
   };
@@ -285,6 +306,7 @@ const Trash = () => {
       case 'file': return '文件';
       case 'mindmap': return '思维导图';
       case 'prompt': return '提示词';
+      case 'template': return '作品模板';
       default: return '未知';
     }
   };

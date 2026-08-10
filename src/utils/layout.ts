@@ -1,6 +1,6 @@
 import { Node, Edge, Position } from 'reactflow';
 
-const CONTENT_WRAP_CHARS = 18;
+const CONTENT_WRAP_CHARS = 24;
 
 const countWrappedLines = (text: string, charsPerLine: number) => {
   if (!text) return 0;
@@ -12,22 +12,23 @@ const countWrappedLines = (text: string, charsPerLine: number) => {
 const getNodeSize = (node: Node) => {
   const renderedWidth = (node as Node & { width?: number }).width;
   const renderedHeight = (node as Node & { height?: number }).height;
-
-  if (typeof renderedWidth === 'number' && renderedWidth > 0 && typeof renderedHeight === 'number' && renderedHeight > 0) {
-    return { width: renderedWidth, height: renderedHeight };
-  }
-
   const label = typeof node.data?.label === 'string' ? node.data.label : '';
   const content = typeof node.data?.content === 'string' ? node.data.content : '';
 
   const widthChars = Math.max(label.length, Math.min(content.length, CONTENT_WRAP_CHARS * 2));
-  const estimatedWidth = Math.min(240, Math.max(78, widthChars * 8 + 22));
+  const estimatedWidth = Math.min(320, Math.max(78, widthChars * 6.2 + 22));
 
   const labelLines = Math.max(1, countWrappedLines(label, 12));
   const contentLines = content ? countWrappedLines(content, CONTENT_WRAP_CHARS) : 0;
   const estimatedHeight = 22 + labelLines * 14 + contentLines * 13;
 
-  return { width: estimatedWidth, height: estimatedHeight };
+  // ReactFlow can report the dimensions from the previous render while a node's
+  // label/content is being edited. Keep the estimate as a lower bound so a new
+  // child is never laid out underneath a node that has just grown.
+  return {
+    width: Math.max(estimatedWidth, renderedWidth || 0),
+    height: Math.max(estimatedHeight, renderedHeight || 0),
+  };
 };
 
 export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'LR'): { nodes: Node[], edges: Edge[] } => {

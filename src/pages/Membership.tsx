@@ -162,11 +162,19 @@ const Membership = () => {
             purchasingKey={purchasingKey}
           />
         )}
-        {activeTab === 'fuel' && <FuelPacks packs={products?.fuelPacks || []} loading={productsLoading} onPurchase={handlePurchase} />}
+        {activeTab === 'fuel' && (
+          <FuelPacks
+            packs={products?.fuelPacks || []}
+            loading={productsLoading}
+            onPurchase={handlePurchase}
+            paymentEnabled={Boolean(paymentConfig?.enabled)}
+            purchasingKey={purchasingKey}
+          />
+        )}
       </div>
       
       <div className="mt-8 text-right text-xs text-pink-500">
-        * 若订单出现问题，你可联系管理员 (QQ: 1572007316)
+        * 若订单出现问题，请联系官方QQ群聊（QQ群号待补充）
       </div>
       <AlipayCheckoutDialog checkout={checkout} onClose={handleCheckoutClose} onSuccess={handlePaymentSuccess} />
     </div>
@@ -220,10 +228,12 @@ const MemberPlans = ({ plans: products, loading, onPurchase, paymentEnabled, pur
   );
 };
 
-const FuelPacks = ({ packs: products, loading, onPurchase }: {
+const FuelPacks = ({ packs: products, loading, onPurchase, paymentEnabled, purchasingKey }: {
   packs: PricingProduct[];
   loading: boolean;
   onPurchase: (params: { orderType: 'membership' | 'fuel_pack'; productKey: string }) => void;
+  paymentEnabled: boolean;
+  purchasingKey: string | null;
 }) => {
   if (loading) {
     return <ProductsLoadingState />;
@@ -255,8 +265,8 @@ const FuelPacks = ({ packs: products, loading, onPurchase }: {
           key={index}
           {...pack}
           activeTab="fuel"
-          disabled
-          buttonText="暂未开放"
+          disabled={!paymentEnabled || Boolean(purchasingKey)}
+          buttonText={purchasingKey === pack.productKey ? '创建订单中' : '支付宝购买'}
           onPurchase={() => onPurchase({ orderType: pack.orderType, productKey: pack.productKey })}
         />
       ))}

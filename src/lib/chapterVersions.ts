@@ -23,6 +23,7 @@ export const createChapterVersion = async (params: {
   title: string;
   content: string;
   source: ChapterVersionSource;
+  operationKey?: string | null;
   prompt?: string | null;
   model?: string | null;
 }): Promise<ChapterVersion | null> => {
@@ -34,6 +35,35 @@ export const createChapterVersion = async (params: {
       source: params.source,
     });
     return null;
+  }
+
+  // A double click, retry, or two UI events can reach this helper within the
+  // same save window. Reuse an identical recent snapshot instead of creating
+  // several history rows for one visible operation.
+  const recentCutoff = new Date(Date.now() - 5000).toISOString();
+  let recentQuery = supabase
+    .from('chapter_versions')
+    .select('*')
+    .eq('user_id', params.userId)
+    .eq('work_id', params.workId)
+    .eq('chapter_id', params.chapterId)
+    .eq('source', params.source)
+    .eq('content', content)
+    .gte('created_at', recentCutoff)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (params.operationKey) {
+    recentQuery = recentQuery.eq('operation_key', params.operationKey);
+  }
+  const { data: recentVersions, error: recentLookupError } = await recentQuery;
+
+  if (!recentLookupError && recentVersions?.[0]) {
+    log.info('Reusing recent identical chapter version snapshot', {
+      versionId: recentVersions[0].id,
+      chapterId: params.chapterId,
+      source: params.source,
+    });
+    return recentVersions[0];
   }
 
   log.info('Creating chapter version snapshot', {
@@ -54,6 +84,7 @@ export const createChapterVersion = async (params: {
       content,
       word_count: getChapterWordCount(content),
       source: params.source,
+      operation_key: params.operationKey || null,
       prompt: params.prompt || null,
       model: params.model || null,
     })
@@ -64,6 +95,24 @@ export const createChapterVersion = async (params: {
     if (isMissingChapterVersionsTable(error)) {
       log.warn('chapter_versions table missing, version snapshot skipped');
       return null;
+    }
+    if (params.operationKey && error.code === '23505') {
+      const { data: existingVersion } = await supabase
+        .from('chapter_versions')
+        .select('*')
+        .eq('chapter_id', params.chapterId)
+        .eq('source', params.source)
+        .eq('operation_key', params.operationKey)
+        .maybeSingle();
+      if (existingVersion) {
+        log.info('Reused chapter version after idempotency conflict', {
+          versionId: existingVersion.id,
+          chapterId: params.chapterId,
+          source: params.source,
+          operationKey: params.operationKey,
+        });
+        return existingVersion;
+      }
     }
     log.error('Failed to create chapter version snapshot', {
       userId: params.userId,
@@ -78,6 +127,7 @@ export const createChapterVersion = async (params: {
     versionId: data.id,
     chapterId: params.chapterId,
     source: params.source,
+    operationKey: params.operationKey || null,
   });
   return data;
 };

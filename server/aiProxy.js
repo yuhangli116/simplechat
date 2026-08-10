@@ -29,6 +29,7 @@ const PRECHECK_REASONING_TOKENS = Number(process.env.AI_PRECHECK_REASONING_TOKEN
 const ANOMALY_HOURLY_DIAMONDS = Number(process.env.AI_ANOMALY_HOURLY_DIAMONDS || 800000);
 const ANOMALY_LOOKBACK_DAYS = Number(process.env.AI_ANOMALY_LOOKBACK_DAYS || 7);
 const SUMMARIZE_FETCH_TIMEOUT_MS = Number(process.env.AI_SUMMARIZE_FETCH_TIMEOUT_MS || 60000);
+const GENERATE_FETCH_TIMEOUT_MS = Number(process.env.AI_GENERATE_FETCH_TIMEOUT_MS || 180000);
 const SUPABASE_QUERY_RETRY_DELAYS = [0, 600, 1200];
 const AUTH_RLS_VALIDATION_TIMEOUT_MS = Number(process.env.AI_AUTH_RLS_VALIDATION_TIMEOUT_MS || 2500);
 const MODEL_PRICING_CACHE_TTL_MS = Number(process.env.AI_MODEL_PRICING_CACHE_TTL_MS || 10 * 60 * 1000);
@@ -1713,6 +1714,13 @@ const saveGeneratedChapterContent = async ({
   return { savedToChapter: true, savedChapterContent: finalContent, generatedHtml, previewChapterContent: finalContent };
 };
 
+const getGenerateSystemPrompt = (isChapterContinuation) => {
+  const base = '你是一个专业的小说续写助手。请严格参考背景设定与前文剧情，保持人物性格、因果关系和语言风格一致。若任务要求生成思维导图子节点，必须只返回合法 JSON，不要附加 Markdown 或解释。单次输出控制在 5000 字以内。';
+  if (!isChapterContinuation) return base;
+  return `${base}
+当任务要求续写正文章节时，只输出可以直接放入正文编辑器的小说正文：不要复述或输出用户提示词，不要输出“当然可以”“以下是”“分析”“说明”“问题清单”、免责声明、总结、创作过程、标题或任何元话术；不要用 Markdown 代码块包裹正文。`;
+};
+
 const executeAiTask = async ({
   kind,
   prompt = '',
@@ -1733,6 +1741,7 @@ const executeAiTask = async ({
   const effectiveBillingStep = billingStep || kind;
   const taskStartedAt = Date.now();
   let phaseStartedAt = taskStartedAt;
+  let currentPhase = 'authenticating';
 
   log.info('Executing AI task', {
     kind,
@@ -1816,6 +1825,7 @@ const executeAiTask = async ({
   finalModel = finalModel.trim();
 
   try {
+    currentPhase = 'preflight';
     phaseStartedAt = Date.now();
     await onPhase?.({ phase: 'preflight', label: '正在校验额度' });
     log.info('AI task phase started', { traceId, phase: 'preflight', userId: user.id, model: finalModel });
@@ -1837,6 +1847,7 @@ const executeAiTask = async ({
       available: preflight.balance.totalRemaining,
     });
 
+    currentPhase = 'requesting_model';
     phaseStartedAt = Date.now();
     await onPhase?.({ phase: 'requesting_model', label: '正在请求模型' });
     log.info('AI task phase started', { traceId, phase: 'requesting_model', userId: user.id, model: finalModel });
@@ -1846,12 +1857,14 @@ const executeAiTask = async ({
       temperature,
       runtimeConfig: getRuntimeConfigFromPricing(
         preflight.pricing,
-        kind === 'summarize'
+          kind === 'summarize'
           ? {
               retries: 1,
               timeoutMs: SUMMARIZE_FETCH_TIMEOUT_MS,
             }
-          : undefined
+          : {
+              timeoutMs: GENERATE_FETCH_TIMEOUT_MS,
+            }
       ),
       stream,
       onDelta,
@@ -1871,6 +1884,7 @@ const executeAiTask = async ({
       generatedChars: result.content?.length || 0,
     });
 
+    currentPhase = 'billing';
     phaseStartedAt = Date.now();
     await onPhase?.({ phase: 'billing', label: '正在结算扣费' });
     log.info('AI task model result received', {
@@ -1957,6 +1971,7 @@ const executeAiTask = async ({
 
     let afterSuccessPayload = {};
     if (typeof afterSuccess === 'function') {
+      currentPhase = 'saving';
       phaseStartedAt = Date.now();
       await onPhase?.({ phase: 'saving', label: '正在保存' });
       log.info('AI task afterSuccess started', { traceId, userId: user.id, model: finalModel });
@@ -2028,6 +2043,19 @@ const executeAiTask = async ({
       };
     }
     log.error('AI task unhandled error', { kind, model: finalModel, userId: user.id }, error);
+    log.error('AI task failure diagnostic', {
+      traceId,
+      kind,
+      phase: currentPhase,
+      provider: DEFAULT_MODEL_PRICING[finalModel]?.provider || 'unknown',
+      model: finalModel,
+      userId: user.id,
+      billingGroupId: effectiveBillingGroupId,
+      billingStep: effectiveBillingStep,
+      elapsedMs: Date.now() - taskStartedAt,
+      phaseElapsedMs: Date.now() - phaseStartedAt,
+      isAbort: error?.name === 'AbortError',
+    }, error);
     throw error;
   }
 };
@@ -2044,11 +2072,11 @@ export const generateTextServer = async ({
   baseContentHtml,
   deferChapterSave,
 }, requestContext = {}) => {
+  const isChapterContinuation = isUuid(workId) && isUuid(chapterId);
   const messages = [
     {
       role: 'system',
-      content:
-        '你是一个专业的小说续写助手。请严格参考以下背景设定与前文剧情（Context），确保新生成的情节或节点符合既有的人物性格与剧情发展逻辑，同时满足用户的具体要求（Task）。如果要求生成思维导图子节点，请返回 JSON。注意：单次输出请控制在 5000 字以内。如果内容较长，请在合适的段落处自然收尾并提示用户可继续生成。',
+      content: getGenerateSystemPrompt(isChapterContinuation),
     },
     {
       role: 'user',
@@ -2094,6 +2122,7 @@ export const streamGenerateTextServer = async ({
   baseContentHtml,
   deferChapterSave,
 }, requestContext = {}, stream = {}) => {
+  const isChapterContinuation = isUuid(workId) && isUuid(chapterId);
   const emit = typeof stream.emit === 'function' ? stream.emit : async () => {};
   let generatedChars = 0;
   log.info('AI generate stream server started', {
@@ -2108,8 +2137,7 @@ export const streamGenerateTextServer = async ({
   const messages = [
     {
       role: 'system',
-      content:
-        '你是一个专业的小说续写助手。请严格参考以下背景设定与前文剧情（Context），确保新生成的情节或节点符合既有的人物性格与剧情发展逻辑，同时满足用户的具体要求（Task）。如果要求生成思维导图子节点，请返回 JSON。注意：单次输出请控制在 5000 字以内。如果内容较长，请在合适的段落处自然收尾并提示用户可继续生成。',
+      content: getGenerateSystemPrompt(isChapterContinuation),
     },
     {
       role: 'user',

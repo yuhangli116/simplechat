@@ -14,9 +14,9 @@ export const PRICING_CONFIG = {
     yearly: { key: 'yearly', name: '年卡', price: 0.01, diamonds: 150000000, days: 365 },
   },
   FUEL_PACKS: {
-    starter: { key: 'starter', name: '体验包', price: 9.9, diamonds: 2500000 },
-    standard: { key: 'standard', name: '标准包', price: 29.9, diamonds: 8000000 },
-    value: { key: 'value', name: '超值包', price: 99.9, diamonds: 30000000 },
+    starter: { key: 'starter', name: '体验包', price: 0.01, diamonds: 2500000 },
+    standard: { key: 'standard', name: '标准包', price: 0.01, diamonds: 8000000 },
+    value: { key: 'value', name: '超值包', price: 0.01, diamonds: 30000000 },
   },
 } as const;
 

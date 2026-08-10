@@ -12,12 +12,14 @@ import Pagination from '@/components/Pagination';
 import { useToastStore } from '@/store/useToastStore';
 import { createLogger, flushLogs } from '@/lib/logger';
 import { createUserPrompt, updateUserPrompt } from '@/lib/promptPersistence';
+import { useTrashStore } from '@/store/useTrashStore';
 
 type Template = Database['public']['Tables']['community_templates']['Row'];
 
 const log = createLogger('Community');
 const WORK_TEMPLATE_LIMIT = 5;
 const SKILL_TEMPLATE_LIMIT = 10;
+const IMPORTED_SKILL_LIMIT = 100;
 
 interface Skill {
   id: string;
@@ -79,6 +81,7 @@ const Community = () => {
   const { addNode, setFiles, files } = useFileStore();
   const { prompts, addPrompt, updatePrompt } = usePromptStore();
   const addToast = useToastStore((state) => state.addToast);
+  const { addToTrash } = useTrashStore();
   const { user, profile } = useAuthStore();
   const isActiveGuest = Boolean(user?.id && isGuestUser(user));
   const navigate = useNavigate();
@@ -113,8 +116,8 @@ const Community = () => {
   const [newTemplateTitle, setNewTemplateTitle] = useState('');
   const [newTemplateDescription, setNewTemplateDescription] = useState('');
   const [newTemplateCategory, setNewTemplateCategory] = useState('网文小说');
-  const [newTemplateMindMapCount, setNewTemplateMindMapCount] = useState(1);
-  const [newTemplateChapterCount, setNewTemplateChapterCount] = useState(10);
+  const [newTemplateMindMapCount, setNewTemplateMindMapCount] = useState('1');
+  const [newTemplateChapterCount, setNewTemplateChapterCount] = useState('10');
   const [newTemplateMindMaps, setNewTemplateMindMaps] = useState<
     Array<{ name: string; outlineText: string; outlineMode: 'visual' | 'text'; outlineTree: OutlineTreeNode[] }>
   >([{ name: '思维导图1', outlineText: '', outlineMode: 'visual', outlineTree: [] }]);
@@ -173,8 +176,8 @@ const Community = () => {
     setNewTemplateTitle('');
     setNewTemplateDescription('');
     setNewTemplateCategory('网文小说');
-    setNewTemplateMindMapCount(1);
-    setNewTemplateChapterCount(10);
+    setNewTemplateMindMapCount('1');
+    setNewTemplateChapterCount('10');
     setNewTemplateMindMaps([{ name: '思维导图1', outlineText: '', outlineMode: 'visual', outlineTree: [] }]);
     setNewSkillTitle('');
     setNewSkillDescription('');
@@ -484,11 +487,10 @@ const Community = () => {
   }, [user?.id]);
 
   useEffect(() => {
-    const target = Math.max(1, Math.min(20, Math.floor(Number(newTemplateMindMapCount) || 1)));
-    if (target !== newTemplateMindMapCount) {
-      setNewTemplateMindMapCount(target);
-      return;
-    }
+    if (newTemplateMindMapCount === '') return;
+    const parsed = Number(newTemplateMindMapCount);
+    if (!Number.isInteger(parsed)) return;
+    const target = Math.max(1, Math.min(20, parsed));
 
     setNewTemplateMindMaps((prev) => {
       const next = [...prev];
@@ -650,13 +652,13 @@ const Community = () => {
       userId: user?.id,
     });
 
-    if (isGuestUser(user)) {
+    if (isGuestUser(user) || skillId.startsWith('skill-')) {
       const newCollected = isCollected
         ? collectedSkills.filter(id => id !== skillId)
         : [...collectedSkills, skillId];
       setCollectedSkills(newCollected);
       localStorage.setItem('collectedSkills', JSON.stringify(newCollected));
-      log.success('Guest collected skill template persisted locally', { skillId, nextCollected: !isCollected });
+      log.success('Local skill template collection persisted', { skillId, nextCollected: !isCollected });
       flushLogs();
       return;
     }
@@ -1824,8 +1826,8 @@ const Community = () => {
     setNewTemplateDescription(template.description || '');
     setNewTemplateCategory((template.category || '网文小说') as any);
     setNewTemplateIsPublic(template.is_public !== false);
-    setNewTemplateMindMapCount(Math.max(1, nextMindMaps.length || 1));
-    setNewTemplateChapterCount(chapters.length);
+    setNewTemplateMindMapCount(String(Math.max(1, nextMindMaps.length || 1)));
+    setNewTemplateChapterCount(String(chapters.length));
     setNewTemplateMindMaps(nextMindMaps.length ? nextMindMaps : [{ name: '思维导图1', outlineText: '', outlineMode: 'visual', outlineTree: [] }]);
     setCollapsedOutlineNodeIds({});
   };
@@ -1869,7 +1871,7 @@ const Community = () => {
         {
           name: '正文情节',
           type: 'folder',
-          children: Array.from({ length: Math.max(0, Math.floor(Number(newTemplateChapterCount) || 0)) }, (_, i) => ({
+        children: Array.from({ length: Math.max(0, Math.floor(Number(newTemplateChapterCount) || 0)) }, (_, i) => ({
             name: `第${i + 1}章`,
             type: 'file',
           })),
@@ -2222,13 +2224,30 @@ const Community = () => {
       alert('只能删除你自己创建的模板');
       return;
     }
-    if (!confirm(`确定要删除模板 "${template.title}" 吗？\n删除后不可恢复。`)) return;
+    if (!confirm(`确定要删除模板 "${template.title}" 吗？\n删除后可在废稿箱中恢复。`)) return;
 
     log.info('Community work template delete requested', {
       userId: user?.id,
       templateId: template.id,
       title: template.title,
     });
+    let trashItemId: string | null = null;
+    try {
+      const trashItem = await addToTrash({
+        originalId: String(template.id),
+        type: 'template',
+        title: template.title,
+        content: template,
+        originalPath: `/community/template/${template.id}`,
+        extra: { source: 'community-template', creatorId: user!.id },
+      });
+      trashItemId = trashItem.id;
+    } catch (error) {
+      log.error('Community work template trash write failed', { userId: user!.id, templateId: template.id }, error);
+      alert('删除失败，模板未发生变化，请稍后重试');
+      flushLogs();
+      return;
+    }
     const { error } = await supabase.from('community_templates').delete().eq('id', template.id).eq('creator_id', user!.id);
     if (error) {
       log.error('Community work template delete failed', {
@@ -2236,6 +2255,7 @@ const Community = () => {
         templateId: template.id,
         error: error.message,
       }, error);
+      if (trashItemId) await useTrashStore.getState().permanentlyDelete(trashItemId);
       flushLogs();
       alert('删除失败，请稍后重试');
       return;
@@ -2781,6 +2801,17 @@ const Community = () => {
           flushLogs();
           return;
         }
+        if (prompts.length >= IMPORTED_SKILL_LIMIT) {
+          log.warn('Skill import blocked by personal prompt limit', {
+            userId: user.id,
+            skillId: skill.id,
+            currentCount: prompts.length,
+            limit: IMPORTED_SKILL_LIMIT,
+          });
+          alert(`你的指令工坊最多保存 ${IMPORTED_SKILL_LIMIT} 个指令，请先删除不用的指令后再导入`);
+          flushLogs();
+          return;
+        }
         const saved = await createUserPrompt(user.id, {
           title: payload.title,
           index: payload.index,
@@ -2868,6 +2899,7 @@ const Community = () => {
         const workId = uuidv4();
         
         // Deep copy the structure and assign new IDs and paths
+        const usedDefaultMindMapTypes = new Set<string>();
         const copyStructure = (node: any, currentWorkId: string | null = null): FileNode => {
             const newId = uuidv4();
             // If we are at the very top level and it's a folder, this is the root of the new work
@@ -2885,8 +2917,15 @@ const Community = () => {
                         'character': 'characters',
                         'event': 'events'
                     };
-                    const routeName = routeMap[node.mindMapType] || `mindmap/${newId}`;
+                    const canUseDefaultRoute = Boolean(routeMap[node.mindMapType]) && !usedDefaultMindMapTypes.has(node.mindMapType);
+                    if (canUseDefaultRoute) usedDefaultMindMapTypes.add(node.mindMapType);
+                    const routeName = canUseDefaultRoute ? routeMap[node.mindMapType] : `mindmap/${newId}`;
                     path = `/workspace/p/${assignedWorkId}/${routeName}`;
+                } else if (node.type === 'mindmap') {
+                    // Custom template maps must use their own route. Without
+                    // this path, persistence treats every map as the default
+                    // outline and reload keeps only one of them.
+                    path = `/workspace/p/${assignedWorkId}/mindmap/${newId}`;
                 } else if (node.type === 'file') {
                     path = `/workspace/p/${assignedWorkId}/story/${newId}`;
                 }
@@ -2901,7 +2940,11 @@ const Community = () => {
             } else if (node.name === '正文情节' && assignedWorkId) {
                 finalId = `chapters-${assignedWorkId}`;
             } else if (node.type === 'mindmap' && node.mindMapType && assignedWorkId) {
-                finalId = `mm-${node.mindMapType}-${assignedWorkId}`;
+                const defaultRoutes = new Set(['outline', 'world', 'characters', 'events']);
+                const isDefaultMindMapPath = defaultRoutes.has(path?.split('/').pop() || '');
+                finalId = isDefaultMindMapPath
+                  ? `mm-${node.mindMapType}-${assignedWorkId}`
+                  : `mm-custom-${newId}`;
             }
 
             return {
@@ -2936,6 +2979,24 @@ const Community = () => {
               templateId: template.id,
               newWorkId: workId,
               isGuest: isGuestUser(user),
+              mindMapCount: (() => {
+                let count = 0;
+                const walk = (entry: any) => {
+                  if (entry?.type === 'mindmap') count += 1;
+                  (entry?.children || []).forEach(walk);
+                };
+                walk(newNode);
+                return count;
+              })(),
+              chapterCount: (() => {
+                let count = 0;
+                const walk = (entry: any) => {
+                  if (entry?.type === 'file') count += 1;
+                  (entry?.children || []).forEach(walk);
+                };
+                walk(newNode);
+                return count;
+              })(),
             });
 
             const persistMindMapSeedsToLocal = (node: any) => {
@@ -3255,7 +3316,10 @@ const Community = () => {
                     min={1}
                     max={20}
                     value={newTemplateMindMapCount}
-                    onChange={(e) => setNewTemplateMindMapCount(Number(e.target.value))}
+                    onChange={(e) => setNewTemplateMindMapCount(e.target.value.replace(/[^0-9]/g, ''))}
+                    onBlur={() => {
+                      if (newTemplateMindMapCount === '') setNewTemplateMindMapCount('1');
+                    }}
                     className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 outline-none"
                   />
                 </div>
@@ -3266,7 +3330,7 @@ const Community = () => {
                     min={0}
                     max={200}
                     value={newTemplateChapterCount}
-                    onChange={(e) => setNewTemplateChapterCount(Number(e.target.value))}
+                    onChange={(e) => setNewTemplateChapterCount(e.target.value.replace(/[^0-9]/g, ''))}
                     className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 outline-none"
                   />
                 </div>
@@ -3681,21 +3745,17 @@ const Community = () => {
                       onClick={() => openSkillPreview(skill)}
                       className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg transition-shadow flex flex-col cursor-pointer"
                     >
-                      <div className="p-4 border-b border-gray-100 flex items-start justify-between gap-4">
+                      <div className="p-4 border-b border-gray-100 flex flex-col gap-2">
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <div className="text-sm font-semibold text-gray-900 truncate flex-1 min-w-0" title={skill.title}>
-                              {skill.title}
-                            </div>
-                            {skill.is_official && (
-                              <span className="inline-flex items-center rounded-full bg-purple-50 text-purple-700 border border-purple-200 text-xs px-2.5 py-1 whitespace-nowrap shrink-0">
-                                <CheckCircle className="w-3.5 h-3.5 mr-1" /> 官方
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-gray-500 mt-1 truncate">By {skill.author_name}</div>
+                          <div className="text-sm font-semibold text-gray-900 truncate" title={skill.title}>{skill.title}</div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                          <div className="text-[11px] text-gray-500 truncate flex-1 min-w-0" title={skill.author_name}>By {skill.author_name}</div>
+                          {skill.is_official && (
+                            <span className="inline-flex items-center rounded-full bg-purple-50 text-purple-700 border border-purple-200 text-xs px-2 py-1 whitespace-nowrap shrink-0">
+                              <CheckCircle className="w-3.5 h-3.5 mr-1" /> 官方
+                            </span>
+                          )}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -3777,30 +3837,10 @@ const Community = () => {
                           className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg transition-shadow group flex flex-col cursor-pointer"
                         >
                           <div className={`h-32 ${item.cover_color || 'bg-gray-300'} relative p-4 flex flex-col justify-between`}>
-                          <div className="absolute top-3 right-3 flex items-center gap-2">
-                            <button
-                              onClick={(e) => startEditWorkTemplate(item, e)}
-                              className="bg-black/20 backdrop-blur-sm text-white p-2 rounded-lg hover:bg-black/30 transition-colors"
-                              type="button"
-                              aria-label="编辑模板"
-                              title="编辑模板"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={(e) => handleDeleteTemplate(item, e)}
-                              className="bg-black/20 backdrop-blur-sm text-white p-2 rounded-lg hover:bg-black/30 transition-colors"
-                              type="button"
-                              aria-label="删除模板"
-                              title="删除模板"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                          <span className={`absolute top-3 left-3 backdrop-blur-sm text-xs px-2.5 py-1 rounded-full ${visibility.className}`}>
+                          <span className={`absolute top-3 right-3 backdrop-blur-sm text-xs px-2.5 py-1 rounded-full ${visibility.className}`}>
                             {visibility.label}
                           </span>
-                          <div className="text-white font-bold text-lg leading-tight drop-shadow-md line-clamp-2">{item.title}</div>
+                          <div className="pr-20 text-white font-bold text-lg leading-tight drop-shadow-md line-clamp-2">{item.title}</div>
                           <div className="text-white/90 text-xs flex items-center">
                             <span className="opacity-75">By {item.author_name}</span>
                           </div>
@@ -3835,15 +3875,38 @@ const Community = () => {
 
                           <p className="text-xs text-gray-500 line-clamp-2 mb-4 flex-1">{item.description || '暂无描述'}</p>
 
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleUseTemplate(item);
-                            }}
-                            className="w-full py-2 bg-gray-50 hover:bg-gray-100 text-gray-900 text-sm font-medium rounded-lg transition-colors border border-gray-200 flex items-center justify-center group-hover:bg-purple-50 group-hover:text-purple-600 group-hover:border-purple-100"
-                          >
-                            使用模板
-                          </button>
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleUseTemplate(item);
+                              }}
+                              className="px-3 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs font-medium text-gray-700 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-200 transition-colors"
+                              type="button"
+                              aria-label="使用模板"
+                              title="使用模板"
+                            >
+                              使用
+                            </button>
+                            <button
+                              onClick={(e) => startEditWorkTemplate(item, e)}
+                              className="px-3 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs font-medium text-gray-700 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-200 transition-colors"
+                              type="button"
+                              aria-label="编辑模板"
+                              title="编辑模板"
+                            >
+                              编辑
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteTemplate(item, e)}
+                              className="px-3 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs font-medium text-gray-700 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors"
+                              type="button"
+                              aria-label="删除模板"
+                              title="删除模板"
+                            >
+                              删除
+                            </button>
+                          </div>
                         </div>
                         </div>
                       );
@@ -3872,17 +3935,14 @@ const Community = () => {
                         onClick={() => openSkillPreview(skill)}
                         className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg transition-shadow flex flex-col cursor-pointer"
                       >
-                        <div className="p-4 border-b border-gray-100 flex items-start justify-between gap-4">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <div className="text-sm font-semibold text-gray-900 truncate">{skill.title}</div>
-                              <span className={`inline-flex items-center rounded-full text-xs px-2.5 py-1 ${visibility.className}`}>
-                                {visibility.label}
-                              </span>
-                            </div>
-                            <div className="text-[11px] text-gray-500 mt-1 truncate">By {skill.author_name}</div>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
+                        <div className="p-4 border-b border-gray-100 flex flex-col gap-2">
+                          <div className="text-sm font-semibold text-gray-900 truncate" title={skill.title}>{skill.title}</div>
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            <div className="text-[11px] text-gray-500 truncate flex-1 min-w-0" title={skill.author_name}>By {skill.author_name}</div>
+                            <span className={`inline-flex items-center rounded-full text-xs px-2.5 py-1 ${visibility.className}`}>
+                              {visibility.label}
+                            </span>
+                            <div className="flex items-center gap-2 shrink-0">
                             <button
                               onClick={(e) => startEditSkillTemplate(skill, e)}
                               className="p-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors"
@@ -3901,6 +3961,7 @@ const Community = () => {
                             >
                               <Trash2 className="w-4 h-4 text-red-600" />
                             </button>
+                            </div>
                           </div>
                         </div>
 
@@ -4053,21 +4114,18 @@ const Community = () => {
                       onClick={() => openSkillPreview(skill)}
                       className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg transition-shadow flex flex-col cursor-pointer"
                     >
-                      <div className="p-4 border-b border-gray-100 flex items-start justify-between gap-4">
+                      <div className="p-4 border-b border-gray-100 flex flex-col gap-2">
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <div className="text-sm font-semibold text-gray-900 truncate flex-1 min-w-0" title={skill.title}>
-                              {skill.title}
-                            </div>
-                            {skill.is_official && (
-                              <span className="inline-flex items-center rounded-full bg-purple-50 text-purple-700 border border-purple-200 text-xs px-2.5 py-1 whitespace-nowrap shrink-0">
-                                <CheckCircle className="w-3.5 h-3.5 mr-1" /> 官方
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-gray-500 mt-1 truncate">By {skill.author_name}</div>
+                          <div className="text-sm font-semibold text-gray-900 truncate" title={skill.title}>{skill.title}</div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                          <div className="text-[11px] text-gray-500 truncate flex-1 min-w-0" title={skill.author_name}>By {skill.author_name}</div>
+                          {skill.is_official && (
+                            <span className="inline-flex items-center rounded-full bg-purple-50 text-purple-700 border border-purple-200 text-xs px-2 py-1 whitespace-nowrap shrink-0">
+                              <CheckCircle className="w-3.5 h-3.5 mr-1" /> 官方
+                            </span>
+                          )}
+                          <div className="flex items-center gap-2 shrink-0">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -4093,6 +4151,7 @@ const Community = () => {
                             取消收藏
                           </button>
                         </div>
+                      </div>
                       </div>
 
                       <div className="p-4 flex-1 flex flex-col gap-3">

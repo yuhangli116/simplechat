@@ -321,6 +321,7 @@ export const aiService = {
         context: request.context,
         userId: resolvedUserId,
         billingGroupId: request.billingGroupId,
+        traceId: request.traceId,
         workId: request.workId,
         chapterId: request.chapterId,
         chapterTitle: request.chapterTitle,

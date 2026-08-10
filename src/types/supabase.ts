@@ -122,6 +122,7 @@ export interface Database {
           content: string
           word_count: number
           source: string
+          operation_key: string | null
           prompt: string | null
           model: string | null
           created_at: string
@@ -136,6 +137,7 @@ export interface Database {
           content: string
           word_count?: number
           source?: string
+          operation_key?: string | null
           prompt?: string | null
           model?: string | null
           created_at?: string
@@ -150,6 +152,7 @@ export interface Database {
           content?: string
           word_count?: number
           source?: string
+          operation_key?: string | null
           prompt?: string | null
           model?: string | null
           created_at?: string

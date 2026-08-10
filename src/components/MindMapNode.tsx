@@ -249,6 +249,7 @@ const MindMapNodeInner = React.memo(({
   const previewLines = wrappedPreview ? wrappedPreview.split('\n').length : 0;
   const shouldExpandWidth = wrappedPreview.length > CONTENT_WRAP_CHARS;
   const shouldExpandHeight = previewLines >= 3;
+  const isMultilineContent = previewLines > 1;
   const shapeClass = isRoot || !shouldExpandHeight
     ? 'rounded-2xl'
     : 'rounded-xl';
@@ -306,7 +307,7 @@ const MindMapNodeInner = React.memo(({
                   }
                 }, 0);
               }}
-              className={`w-full bg-transparent outline-none text-center resize-none overflow-hidden break-words p-0 m-0 border-none ${textColor} ${
+              className={`w-full bg-transparent outline-none resize-none overflow-hidden break-words p-0 m-0 border-none ${isMultilineContent ? 'text-left' : 'text-center'} ${textColor} ${
                 content.length > 30 ? 'text-[8.5px] leading-[11px]' : 'text-[9px] leading-[12px]'
               } ${
                 !content 
@@ -324,7 +325,7 @@ const MindMapNodeInner = React.memo(({
               {data.label}
             </div>
             {wrappedPreview && (
-              <div className={`opacity-75 whitespace-pre-wrap break-words text-center mt-0.5 ${textColor} ${
+              <div className={`opacity-75 whitespace-pre-wrap break-words ${isMultilineContent ? 'text-left self-stretch' : 'text-center'} mt-0.5 ${textColor} ${
                 contentPreview.length > 30 ? 'text-[8.5px] leading-[11px]' : 'text-[9px] leading-[12px]'
               }`}>
                 {wrappedPreview}

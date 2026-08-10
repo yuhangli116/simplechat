@@ -372,7 +372,7 @@ const Prompts = () => {
         <div className="flex items-center justify-between">
           <div className="flex-1 bg-green-50 border border-green-100 rounded-lg p-3 flex items-center text-sm text-green-700 mr-4">
             <Info className="w-4 h-4 mr-2 text-green-600" />
-            你可以在模版广场一键导入喜欢的指令到这里；AI 创作时也可以直接从“指令工坊”选择。
+            你可以在模版广场一键导入喜欢的指令到这里；AI 创作时也可以直接从“指令工坊”选择提示词；每位用户最多保存 100 条指令。
           </div>
           <button 
             onClick={() => handleOpenModal()}

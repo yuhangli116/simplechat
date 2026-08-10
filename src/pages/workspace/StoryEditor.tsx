@@ -54,6 +54,7 @@ type PendingAiVersion = {
   generatedHtml: string;
   prompt: string;
   model: string;
+  operationKey: string;
   usage: { input_tokens: number; output_tokens: number; total_cost: number } | null;
   status?: 'streaming' | 'output_ready' | 'ready' | 'error';
   phaseLabel?: string;
@@ -65,6 +66,7 @@ type AiApplyOptions = {
   snapshotNextAs?: Parameters<typeof createChapterVersion>[0]['source'];
   prompt?: string | null;
   model?: string | null;
+  operationKey?: string | null;
 };
 
 type ReferenceSummaryNotice = {
@@ -416,13 +418,6 @@ const isMeaningfulHtml = (content: string | null | undefined) => {
   return plain.length > 0;
 };
 
-const appendHtml = (baseContentHtml = '', generatedHtml = '') => {
-  const base = String(baseContentHtml || '').trim();
-  const generated = String(generatedHtml || '').trim();
-  if (!base || base === '<p></p>') return generated;
-  return `${base}${generated}`;
-};
-
 const formatVersionDate = (value: string) =>
   new Date(value).toLocaleString('zh-CN', {
     month: '2-digit',
@@ -715,7 +710,7 @@ const StoryEditor = () => {
   const snapshotChapterVersion = useCallback(async (
     content: string,
     source: Parameters<typeof createChapterVersion>[0]['source'],
-    meta: { prompt?: string | null; model?: string | null } = {}
+    meta: { prompt?: string | null; model?: string | null; operationKey?: string | null } = {}
   ) => {
     if (!user || isGuestUser(user) || !workId || !chapterId || !isMeaningfulHtml(content)) {
       return null;
@@ -729,6 +724,7 @@ const StoryEditor = () => {
         title: currentChapterName,
         content,
         source,
+        operationKey: meta.operationKey || null,
         prompt: meta.prompt || null,
         model: meta.model || null,
       });
@@ -750,6 +746,7 @@ const StoryEditor = () => {
       await snapshotChapterVersion(currentContent, options.snapshotCurrentAs, {
         prompt: options.prompt,
         model: options.model,
+        operationKey: options.operationKey,
       });
     }
 
@@ -1344,9 +1341,9 @@ const StoryEditor = () => {
       });
       await applyChapterContent(version.nextContent, 'ai-version-apply', {
         snapshotCurrentAs: 'ai-current-before-replace',
-        snapshotNextAs: 'ai-applied',
         prompt: version.prompt,
         model: version.model,
+        operationKey: version.operationKey,
       });
       setLastUsageTemporarily(version.usage);
       setPendingAiVersion(null);
@@ -1431,6 +1428,7 @@ const StoryEditor = () => {
     setAiPhase('正在准备上下文');
     aiVisibleCompletionRef.current = false;
     const traceId = uuidv4();
+    const aiApplyOperationKey = uuidv4();
     
     try {
       const modelKey = selectedModel as LocalModelKey;
@@ -1635,6 +1633,7 @@ const StoryEditor = () => {
           generatedHtml: '',
           prompt: userPrompt,
           model: modelKey,
+          operationKey: aiApplyOperationKey,
           usage: null,
           status: 'streaming',
           phaseLabel: '正在请求模型',
@@ -1667,10 +1666,9 @@ const StoryEditor = () => {
             if (event.phase === 'output_ready') {
               aiVisibleCompletionRef.current = true;
               if (hasExistingContent && latestPreviewHtml) {
-                const appendedContent = appendHtml(currentContentBeforeAi, latestPreviewHtml);
                 setPendingAiVersion((prev) => prev ? {
                   ...prev,
-                  nextContent: appendedContent,
+                  nextContent: latestPreviewHtml,
                   generatedHtml: latestPreviewHtml,
                   status: 'output_ready',
                   phaseLabel: 'AI 输出完成',
@@ -1777,9 +1775,9 @@ const StoryEditor = () => {
           contentLength: response.content.length,
         });
         const cleaned = sanitizeAiContinuationOutput(userPrompt, response.content);
-        const generatedHtml = response.generatedHtml || latestPreviewHtml || textToParagraphHtml(cleaned);
-        // 版本比较右侧只预览本次 AI 新增内容；点击继续应用时再追加到当前正文，避免覆盖用户原文。
-        // 服务端 previewChapterContent 仅保留给其他预览场景，正文落库以客户端确认后的内容为准。
+        // Always use the sanitized model text on the client. The server's
+        // preview payload may contain a combined chapter for legacy callers.
+        const generatedHtml = latestPreviewHtml || textToParagraphHtml(cleaned);
         const nextContent = generatedHtml || '';
         const combinedUsage = response.usage
           ? {
@@ -1795,13 +1793,13 @@ const StoryEditor = () => {
         }
 
         if (hasExistingContent) {
-          const appendedContent = appendHtml(currentContentBeforeAi, generatedHtml);
           const readyVersion: PendingAiVersion = {
             currentContent: currentContentBeforeAi,
-            nextContent: appendedContent,
+            nextContent: generatedHtml,
             generatedHtml,
             prompt: userPrompt,
             model: modelKey,
+            operationKey: aiApplyOperationKey,
             usage: combinedUsage,
             status: 'ready',
             phaseLabel: 'AI 输出完成',
@@ -1813,8 +1811,8 @@ const StoryEditor = () => {
             chapterId,
             currentLength: currentContentBeforeAi.length,
             generatedLength: generatedHtml.length,
-            nextLength: appendedContent.length,
-            applyMode: 'append-generated',
+            nextLength: generatedHtml.length,
+            applyMode: 'replace-current',
             applyRequested: pendingAiApplyRequestedRef.current,
           });
           if (pendingAiApplyRequestedRef.current) {

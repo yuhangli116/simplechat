@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { 
   ChevronRight, 
   ChevronDown, 
@@ -21,7 +21,9 @@ import {
   Box,
   Circle,
   Hexagon,
-  Package
+  Package,
+  ListChecks,
+  X
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
@@ -195,6 +197,12 @@ const FileTreeNode = ({
   dragOver,
   setDragOver,
   onDragEnd
+  ,selectionMode
+  ,selectedNodeIds
+  ,bulkParentId
+  ,onToggleSelection
+  ,onStartBulkDelete
+  ,onConfirmBulkDelete
 }: { 
   node: FileNode, 
   level: number, 
@@ -214,6 +222,12 @@ const FileTreeNode = ({
   dragOver: { targetId: string; position: 'before' | 'after' | 'append' } | null,
   setDragOver: (value: { targetId: string; position: 'before' | 'after' | 'append' } | null) => void,
   onDragEnd: () => void
+  selectionMode: boolean
+  selectedNodeIds: Set<string>
+  bulkParentId: string | null
+  onToggleSelection: (node: FileNode) => void
+  onStartBulkDelete: (parentId: string) => void
+  onConfirmBulkDelete: (parentId: string) => void
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [editName, setEditName] = useState(node.name);
@@ -228,6 +242,8 @@ const FileTreeNode = ({
     e.stopPropagation();
     if (node.type === 'folder') {
       setIsOpen(!isOpen);
+    } else if (selectionMode && parentId === bulkParentId) {
+      onToggleSelection(node);
     } else {
       onSelect(node);
     }
@@ -408,6 +424,16 @@ const FileTreeNode = ({
         )}
 
         <div className="flex items-center overflow-hidden flex-1">
+          {selectionMode && node.type !== 'folder' && parentId === bulkParentId && (
+            <input
+              type="checkbox"
+              checked={selectedNodeIds.has(node.id)}
+              onChange={() => onToggleSelection(node)}
+              onClick={(e) => e.stopPropagation()}
+              className="mr-1 h-3.5 w-3.5 accent-purple-600"
+              aria-label={`选择${node.name}`}
+            />
+          )}
           <span className="mr-1 text-gray-400 flex-shrink-0">
             {node.type === 'folder' && (
               isOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />
@@ -460,6 +486,29 @@ const FileTreeNode = ({
               </button>
               <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1 px-2 py-0.5 text-[10px] font-medium text-white bg-gray-800 rounded shadow-sm whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
                 新建大纲
+              </span>
+            </div>
+          )}
+
+          {(isChaptersFolder || isMetaFolder) && (
+            <div className="relative group/btn">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (selectionMode && bulkParentId === node.id) {
+                    onConfirmBulkDelete(node.id);
+                  } else {
+                    onStartBulkDelete(node.id);
+                  }
+                }}
+                className="p-1 rounded hover:bg-red-100 text-gray-500 hover:text-red-600"
+                aria-label="批量删除"
+                title="批量删除"
+              >
+                <ListChecks className="w-3.5 h-3.5" />
+              </button>
+              <span className="absolute top-full right-0 mt-1 px-2 py-0.5 text-[10px] font-medium text-white bg-gray-800 rounded shadow-sm whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+                批量删除
               </span>
             </div>
           )}
@@ -535,6 +584,12 @@ const FileTreeNode = ({
               dragOver={dragOver}
               setDragOver={setDragOver}
               onDragEnd={onDragEnd}
+              selectionMode={selectionMode}
+              selectedNodeIds={selectedNodeIds}
+              bulkParentId={bulkParentId}
+              onToggleSelection={onToggleSelection}
+              onStartBulkDelete={onStartBulkDelete}
+              onConfirmBulkDelete={onConfirmBulkDelete}
             />
           ))}
         </div>
@@ -552,6 +607,11 @@ const FileTree = () => {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [dragging, setDragging] = useState<DragPayload | null>(null);
   const [dragOver, setDragOver] = useState<{ targetId: string; position: 'before' | 'after' | 'append' } | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
+  const [bulkParentId, setBulkParentId] = useState<string | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const workspaceMutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   
   const { files, setFiles, setCreateWorkInProgress } = useFileStore();
   const { addToTrash, addExistingItem } = useTrashStore();
@@ -666,10 +726,12 @@ const FileTree = () => {
     await commitWorkTreeChange(nextFiles, targetParentId);
   };
 
-  const handleAddChapter = async (parentId: string) => {
+  const handleAddChapter = (parentId: string) => {
+    const operation = workspaceMutationQueueRef.current.then(async () => {
+    const currentFiles = useFileStore.getState().files;
     // 游客限制：每个作品最多10个章节
     if (isGuestUser(user)) {
-      const parentNode = findNode(files, parentId);
+      const parentNode = findNode(currentFiles, parentId);
       const chapterCount = parentNode?.children?.filter(c => c.type === 'file').length || 0;
       if (chapterCount >= GUEST_LIMITS.MAX_CHAPTERS_PER_WORK) {
         addToast(`访客每个作品最多可创建 ${GUEST_LIMITS.MAX_CHAPTERS_PER_WORK} 个章节，登录后无限制`, 'info');
@@ -683,9 +745,14 @@ const FileTree = () => {
     // Or better, count the siblings.
     
     // Find parent node to count children
-    const parentNode = findNode(files, parentId);
-    const childCount = parentNode?.children?.length || 0;
-    const name = `未命名章节${childCount + 1}`;
+    const parentNode = findNode(currentFiles, parentId);
+    const nextNumber = Math.max(
+      0,
+      ...(parentNode?.children || [])
+        .filter((child) => child.type === 'file')
+        .map((child) => Number(child.name.match(/(\d+)$/)?.[1] || 0))
+    ) + 1;
+    const name = `未命名章节${nextNumber}`;
 
     const newChapterId = uuidv4();
     // Assuming structure: /workspace/p/{workId}/story/{chapterId}
@@ -724,7 +791,7 @@ const FileTree = () => {
       });
     };
 
-    const nextFiles = addNodeRecursive(files);
+    const nextFiles = addNodeRecursive(currentFiles);
     log.info('Creating chapter', {
       userId: user?.id,
       isGuest: isGuestUser(user),
@@ -741,12 +808,17 @@ const FileTree = () => {
     flushLogs();
 
     navigate(newChapter.path!, { state: { fileName: newChapter.name } });
+    });
+    workspaceMutationQueueRef.current = operation.catch(() => undefined);
+    return operation;
   };
 
-  const handleAddMindMap = async (parentId: string) => {
+  const handleAddMindMap = (parentId: string) => {
+    const operation = workspaceMutationQueueRef.current.then(async () => {
+    const currentFiles = useFileStore.getState().files;
     // 游客限制：每个作品最多10个思维导图
     if (isGuestUser(user)) {
-      const parentNode = findNode(files, parentId);
+      const parentNode = findNode(currentFiles, parentId);
       const mindmapCount = parentNode?.children?.filter(c => c.type === 'mindmap').length || 0;
       if (mindmapCount >= GUEST_LIMITS.MAX_MINDMAPS_PER_WORK) {
         addToast(`访客每个作品最多可创建 ${GUEST_LIMITS.MAX_MINDMAPS_PER_WORK} 个思维导图，登录后无限制`, 'info');
@@ -754,9 +826,14 @@ const FileTree = () => {
       }
     }
 
-    const parentNode = findNode(files, parentId);
-    const childCount = parentNode?.children?.length || 0;
-    const name = `新建大纲${childCount + 1}`;
+    const parentNode = findNode(currentFiles, parentId);
+    const nextNumber = Math.max(
+      0,
+      ...(parentNode?.children || [])
+        .filter((child) => child.type === 'mindmap')
+        .map((child) => Number(child.name.match(/(\d+)$/)?.[1] || 0))
+    ) + 1;
+    const name = `新建大纲${nextNumber}`;
     const newId = uuidv4();
     
     let workId: string | null = null;
@@ -796,7 +873,7 @@ const FileTree = () => {
       });
     };
 
-    const nextFiles = addNodeRecursive(files);
+    const nextFiles = addNodeRecursive(currentFiles);
     log.info('Creating custom mind map', {
       userId: user?.id,
       isGuest: isGuestUser(user),
@@ -810,6 +887,9 @@ const FileTree = () => {
       log.success('Custom mind map created', { workId, mindMapId: newId, name });
       flushLogs();
     }
+    });
+    workspaceMutationQueueRef.current = operation.catch(() => undefined);
+    return operation;
   };
 
   // Helper to find a node by ID (for getting workId)
@@ -1003,8 +1083,9 @@ const FileTree = () => {
     flushLogs();
   };
 
-  const handleDelete = async (targetNode: FileNode) => {
-    if (!window.confirm(`确定要将 "${targetNode.name}" 移至废稿箱吗？`)) return;
+  const handleDelete = async (targetNode: FileNode, options: { skipConfirm?: boolean } = {}) => {
+    if (!options.skipConfirm && !window.confirm(`确定要将 "${targetNode.name}" 移至废稿箱吗？`)) return false;
+    const currentFiles = useFileStore.getState().files;
     log.info('Deleting workspace node to trash', {
       userId: user?.id,
       isGuest: isGuestUser(user),
@@ -1035,7 +1116,7 @@ const FileTree = () => {
       return false;
     };
 
-    findContext(files, undefined, 'root');
+    findContext(currentFiles, undefined, 'root');
 
     // If it's a top-level work, the workName is the node's name itself
     if (parentId === 'root') {
@@ -1066,8 +1147,8 @@ const FileTree = () => {
       });
     };
 
-    const nextFiles = deleteNodeRecursive(files);
-    const currentWorks = files?.[0]?.children || [];
+    const nextFiles = deleteNodeRecursive(currentFiles);
+    const currentWorks = currentFiles?.[0]?.children || [];
     const deletedWorkIndex = currentWorks.findIndex((node) => node.id === targetNode.id);
 
     const fallbackWork = isDeletingWork
@@ -1259,6 +1340,7 @@ const FileTree = () => {
     if (redirectPath) {
       navigate(redirectPath, { replace: true });
     }
+    return true;
   };
 
   const handleExportWork = async (workNode: FileNode) => {
@@ -1326,6 +1408,77 @@ const FileTree = () => {
     }
   };
 
+  const handleStartBulkDelete = (parentId: string) => {
+    const parentNode = findNode(useFileStore.getState().files, parentId);
+    if (!parentNode) return;
+    setSelectionMode(true);
+    setBulkParentId(parentId);
+    setSelectedNodeIds(new Set());
+    log.info('Bulk workspace deletion selection started', {
+      userId: user?.id,
+      parentId,
+      candidateCount: parentNode.children?.filter((child) => child.type === 'file' || child.type === 'mindmap').length || 0,
+    });
+  };
+
+  const handleToggleSelection = (node: FileNode) => {
+    setSelectedNodeIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(node.id)) next.delete(node.id);
+      else next.add(node.id);
+      return next;
+    });
+  };
+
+  const handleCancelBulkDelete = () => {
+    setSelectionMode(false);
+    setBulkParentId(null);
+    setSelectedNodeIds(new Set());
+  };
+
+  const handleBulkDelete = async (parentId: string) => {
+    if (bulkDeleting) return;
+    const currentParent = findNode(useFileStore.getState().files, parentId);
+    const selectedIds = new Set(selectedNodeIds);
+    const targets = (currentParent?.children || []).filter(
+      (node) => selectedIds.has(node.id) && (node.type === 'file' || node.type === 'mindmap')
+    );
+    if (!targets.length) {
+      addToast('请先选择要删除的章节或大纲', 'info');
+      return;
+    }
+    if (!window.confirm(`确定要将选中的 ${targets.length} 项移至废稿箱吗？`)) return;
+
+    setBulkDeleting(true);
+    log.info('Bulk workspace deletion started', {
+      userId: user?.id,
+      parentId,
+      count: targets.length,
+      nodeIds: targets.map((node) => node.id),
+    });
+    try {
+      for (const target of targets) {
+        const latestTarget = findNode(useFileStore.getState().files, target.id);
+        if (latestTarget) {
+          await handleDelete(latestTarget, { skipConfirm: true });
+        }
+      }
+      log.success('Bulk workspace deletion completed', {
+        userId: user?.id,
+        parentId,
+        count: targets.length,
+      });
+      handleCancelBulkDelete();
+      flushLogs();
+    } catch (error) {
+      log.error('Bulk workspace deletion failed', { userId: user?.id, parentId }, error);
+      addToast(error instanceof Error ? error.message : '批量删除失败，请稍后重试', 'error');
+      flushLogs();
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -1334,13 +1487,40 @@ const FileTree = () => {
           <Folder className="w-4 h-4 mr-2" />
           我的作品
         </div>
-        <button
-          onClick={handleCreateWork}
-          className="p-1 hover:bg-gray-200 rounded transition-colors text-gray-500 hover:text-gray-900"
-          title="新建作品"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          {selectionMode && (
+            <>
+              <span className="text-xs text-gray-500">已选 {selectedNodeIds.size} 项</span>
+              <button
+                onClick={() => bulkParentId && handleBulkDelete(bulkParentId)}
+                disabled={bulkDeleting}
+                className="p-1 rounded hover:bg-red-100 text-red-600 disabled:opacity-50"
+                title="确认批量删除"
+                aria-label="确认批量删除"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+              <button
+                onClick={handleCancelBulkDelete}
+                disabled={bulkDeleting}
+                className="p-1 rounded hover:bg-gray-200 text-gray-500 disabled:opacity-50"
+                title="退出批量选择"
+                aria-label="退出批量选择"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </>
+          )}
+          {!selectionMode && (
+            <button
+              onClick={handleCreateWork}
+              className="p-1 hover:bg-gray-200 rounded transition-colors text-gray-500 hover:text-gray-900"
+              title="新建作品"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tree Content */}
@@ -1366,6 +1546,12 @@ const FileTree = () => {
             dragOver={dragOver}
             setDragOver={setDragOver}
             onDragEnd={handleDragEnd}
+            selectionMode={selectionMode}
+            selectedNodeIds={selectedNodeIds}
+            bulkParentId={bulkParentId}
+            onToggleSelection={handleToggleSelection}
+            onStartBulkDelete={handleStartBulkDelete}
+            onConfirmBulkDelete={handleBulkDelete}
           />
         ))}
       </div>

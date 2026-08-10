@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Code, Mail, Github, Globe } from 'lucide-react';
+import { X, Code, MessageCircle, Globe } from 'lucide-react';
 
 interface AboutUsModalProps {
   isOpen: boolean;
@@ -51,11 +51,11 @@ export const AboutUsModal: React.FC<AboutUsModalProps> = ({ isOpen, onClose }) =
 
             <div className="flex items-center gap-3 text-sm text-gray-600">
               <div className="w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center">
-                <Mail className="w-4 h-4 text-gray-500" />
+                <MessageCircle className="w-4 h-4 text-gray-500" />
               </div>
               <div className="flex flex-col">
-                <span className="font-medium text-gray-800">联系邮箱</span>
-                <a href="mailto:support@simplechat.ai" className="text-purple-600 hover:underline">support@simplechat.ai</a>
+                <span className="font-medium text-gray-800">联系群聊</span>
+                <span>官方QQ群号待补充</span>
               </div>
             </div>
 
@@ -65,7 +65,7 @@ export const AboutUsModal: React.FC<AboutUsModalProps> = ({ isOpen, onClose }) =
               </div>
               <div className="flex flex-col">
                 <span className="font-medium text-gray-800">官方网站</span>
-                <a href="https://simplechat.ai" target="_blank" rel="noopener noreferrer" className="text-purple-600 hover:underline">simplechat.ai</a>
+                <a href="https://simplechat.love" target="_blank" rel="noopener noreferrer" className="text-purple-600 hover:underline">simplechat.love</a>
               </div>
             </div>
           </div>

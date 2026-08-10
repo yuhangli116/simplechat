@@ -66,6 +66,9 @@ export const createUserPrompt = async (
 
   if (error || !data) {
     log.error('Failed to create user prompt', { userId, error: error?.message }, error);
+    if (error?.code === 'P0001' || String(error?.message || '').includes('USER_PROMPTS_LIMIT_REACHED')) {
+      throw new Error('你的指令工坊最多保存 100 个指令，请先删除不用的指令后再导入');
+    }
     throw error || new Error('创建指令失败');
   }
 

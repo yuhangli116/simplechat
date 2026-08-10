@@ -1887,10 +1887,12 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
     setIsGenerating(true);
     const startedAt = Date.now();
+    const traceId = uuidv4();
     let generatedNodeCount = 0;
     let usedSummary = false;
     let generationBillingGroupId: string | undefined;
     log.info('Mind map AI generation requested', {
+      traceId,
       userId: user?.id,
       workId,
       mindMapId: id || `mm-${type}-${workId}`,
@@ -1921,6 +1923,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                 const summaryRes = await aiService.summarizeContext(combinedContext, user?.id, model, billingGroupId);
                 if (summaryRes.error) {
                     log.error('Mind map AI generation failed', {
+                      traceId,
                       userId: user?.id,
                       workId,
                       mindMapId: id || `mm-${type}-${workId}`,
@@ -1977,7 +1980,8 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             context: finalContext,
             model: model as any, 
             userId: user?.id,
-            billingGroupId
+            billingGroupId,
+            traceId,
         });
         generationBillingGroupId = billingGroupId;
 
@@ -2007,26 +2011,35 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                     stateChanged = true;
                 }
 
-                if (result.children.length > 0) {
-                    const existingChildIds = new Set<string>();
-                    const queue = currentEdges.filter((edge) => edge.source === targetNodeId).map((edge) => edge.target);
+                // A successful regeneration replaces the complete subtree. This
+                // prevents old descendants and edges from mixing with the new
+                // result and keeps the operation atomic from the UI's view.
+                const existingChildIds = new Set<string>();
+                const queue = currentEdges.filter((edge) => edge.source === targetNodeId).map((edge) => edge.target);
+                while (queue.length > 0) {
+                  const currentId = queue.shift()!;
+                  if (existingChildIds.has(currentId)) continue;
+                  existingChildIds.add(currentId);
+                  currentEdges
+                    .filter((edge) => edge.source === currentId)
+                    .forEach((edge) => queue.push(edge.target));
+                }
 
-                    while (queue.length > 0) {
-                      const currentId = queue.shift()!;
-                      if (existingChildIds.has(currentId)) {
-                        continue;
-                      }
-                      existingChildIds.add(currentId);
-                      currentEdges
-                        .filter((edge) => edge.source === currentId)
-                        .forEach((edge) => queue.push(edge.target));
-                    }
-
+                if (existingChildIds.size > 0) {
                     currentNodes = currentNodes.filter((node) => !existingChildIds.has(node.id));
                     currentEdges = currentEdges.filter(
                       (edge) => edge.source !== targetNodeId && !existingChildIds.has(edge.source) && !existingChildIds.has(edge.target)
                     );
+                    stateChanged = true;
+                    log.info('Mind map AI regeneration cleared previous subtree', {
+                      traceId,
+                      workId,
+                      targetNodeId,
+                      removedNodeCount: existingChildIds.size,
+                    });
+                }
 
+                if (result.children.length > 0) {
                     const newNodesToAdd: Node[] = [];
                     const newEdgesToAdd: Edge[] = [];
 
@@ -2040,7 +2053,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
                       children.forEach((child, index) => {
                         const childId = uuidv4();
                         const posX = parentX + 296;
-                        const posY = parentY + index * 52 + level * 3;
+                        const posY = parentY + index * 96 + level * 12;
 
                         newNodesToAdd.push({
                           id: childId,
@@ -2108,6 +2121,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
 
                 fetchBalance();
                 log.success('Mind map AI generation succeeded', {
+                  traceId,
                   userId: user?.id,
                   workId,
                   mindMapId: id || `mm-${type}-${workId}`,
@@ -2129,6 +2143,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             } catch (e) {
                 console.error('JSON Parse Error:', e);
                 log.error('Mind map AI generation failed', {
+                  traceId,
                   userId: user?.id,
                   workId,
                   mindMapId: id || `mm-${type}-${workId}`,
@@ -2143,6 +2158,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
             }
         } else if (response.error) {
             log.error('Mind map AI generation failed', {
+              traceId,
               userId: user?.id,
               workId,
               mindMapId: id || `mm-${type}-${workId}`,
@@ -2160,6 +2176,7 @@ const MindMapEditor: React.FC<MindMapEditorProps> = ({ type = 'outline', workId,
     } catch (error) {
         console.error('AI Gen Error:', error);
         log.error('Mind map AI generation failed', {
+          traceId,
           userId: user?.id,
           workId,
           mindMapId: id || `mm-${type}-${workId}`,
