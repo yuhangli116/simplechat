@@ -987,12 +987,13 @@ const getEffectiveBalance = async (supabase, userId) => {
   const expired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt < Date.now();
   const memberDiamonds = expired ? 0 : Number(data.member_diamonds ?? 0);
   const permanentDiamonds = Number(data.permanent_diamonds ?? 0);
+  const totalRemaining = expired ? 0 : memberDiamonds + permanentDiamonds;
 
   log.info('User balance fetched', {
     userId,
     memberDiamonds,
     permanentDiamonds,
-    totalRemaining: memberDiamonds + permanentDiamonds,
+    totalRemaining,
     membershipType: expired ? 'free' : data.membership_type,
     expired,
   });
@@ -1001,7 +1002,7 @@ const getEffectiveBalance = async (supabase, userId) => {
     expired,
     memberDiamonds,
     permanentDiamonds,
-    totalRemaining: memberDiamonds + permanentDiamonds,
+    totalRemaining,
     membershipType: expired ? 'free' : data.membership_type ?? 'free',
     membershipExpiresAt: expired ? null : data.membership_expires_at ?? null,
   };
@@ -1109,6 +1110,19 @@ const ensureBudgetPreflight = async ({ supabase, userId, model, kind, prompt, co
     throw createUserFacingError(
       `本次请求预估需要 ${estimatedDiamonds} 钻石，超过单次上限 ${SINGLE_CALL_DIAMOND_CAP}，请缩短上下文或拆分生成。`,
       { estimatedRequired: estimatedDiamonds, available: balance.totalRemaining }
+    );
+  }
+
+  if (balance.expired && estimatedDiamonds > 0) {
+    log.warn('Budget preflight rejected: membership expired, fuel packs locked', {
+      userId,
+      model,
+      estimatedDiamonds,
+      availablePermanent: balance.permanentDiamonds,
+    });
+    throw createUserFacingError(
+      '会员已到期，请先续费后再使用加油包钻石。',
+      { estimatedRequired: estimatedDiamonds, available: 0 }
     );
   }
 

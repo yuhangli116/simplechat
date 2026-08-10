@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import express from 'express'
 import { createClient } from '@supabase/supabase-js'
 import { generateTextServer, getRequestContext, parseRequestBody, sendJson, sendNdjson, streamGenerateTextServer, summarizeContextServer } from './server/aiProxy.js'
 import { createServerLogger, persistBatchLogs, initLogger } from './server/logger.js'
@@ -14,6 +15,7 @@ import {
   sendGuardError,
 } from './server/security/requestGuards.js'
 import { checkSecurityControls, sendSecurityBlocked } from './server/security/securityControls.js'
+import { createPaymentSystem } from './server/payments/index.js'
 
 const log = createServerLogger('ViteDev')
 const sharedMaintenanceStatePath = path.resolve(process.cwd(), '..', '.codex', 'site-maintenance-state.json')
@@ -93,11 +95,20 @@ export default defineConfig(({ mode }) => {
       },
     })
     : null
+  const paymentSystem = createPaymentSystem({
+    env,
+    supabase: securitySupabase,
+    logger: createServerLogger('PaymentsDev'),
+  })
+  const paymentCallbackApp = express()
+  paymentCallbackApp.use(paymentSystem.callbackRouter)
+  const paymentUserApp = express()
+  paymentUserApp.use(paymentSystem.userRouter)
 
   return {
     define: publicSupabaseEnv,
     server: {
-      port: 3000,
+      port: Number(env.PORT || 3000),
       strictPort: true,
       host: '127.0.0.1',
     },
@@ -106,6 +117,8 @@ export default defineConfig(({ mode }) => {
       {
         name: 'local-ai-proxy',
         configureServer(server) {
+          // 支付宝回调在维护中也必须可达；非回调路径会继续进入后续中间件。
+          server.middlewares.use('/api/payments', paymentCallbackApp)
           server.middlewares.use('/api', async (req, res, next) => {
             if (req.url?.startsWith('/health') || req.url?.startsWith('/site-maintenance-state')) {
               next()
@@ -159,6 +172,8 @@ export default defineConfig(({ mode }) => {
 
             next()
           })
+
+          server.middlewares.use('/api/payments', paymentUserApp)
 
           server.middlewares.use('/api/site-maintenance-state', (req, res) => {
             if (req.method !== 'GET') {
@@ -364,6 +379,10 @@ export default defineConfig(({ mode }) => {
             }).catch((error) => {
               sendJson(res, 500, { error: error instanceof Error ? error.message : 'Failed to sync maintenance state' })
             })
+          })
+
+          server.httpServer?.once('close', () => {
+            paymentSystem.close().catch(() => {})
           })
         },
       },

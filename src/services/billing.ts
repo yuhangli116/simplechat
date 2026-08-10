@@ -3,15 +3,15 @@ import { createLogger } from '@/lib/logger';
 
 const log = createLogger('Billing');
 
-export const PRICING_VERSION = 'v4.1';
+export const PRICING_VERSION = 'v4.2-test';
 
 export const PRICING_CONFIG = {
   DIAMONDS_PER_YUAN: 250000,
   NEW_USER_BONUS: 500000,
   MEMBERSHIP: {
-    monthly: { key: 'monthly', name: '月卡', price: 49.9, diamonds: 12000000, days: 30 },
-    quarterly: { key: 'quarterly', name: '季卡', price: 139.9, diamonds: 35000000, days: 90 },
-    yearly: { key: 'yearly', name: '年卡', price: 579.9, diamonds: 150000000, days: 365 },
+    monthly: { key: 'monthly', name: '月卡', price: 0.01, diamonds: 12000000, days: 30 },
+    quarterly: { key: 'quarterly', name: '季卡', price: 0.01, diamonds: 35000000, days: 90 },
+    yearly: { key: 'yearly', name: '年卡', price: 0.01, diamonds: 150000000, days: 365 },
   },
   FUEL_PACKS: {
     starter: { key: 'starter', name: '体验包', price: 9.9, diamonds: 2500000 },
@@ -19,6 +19,104 @@ export const PRICING_CONFIG = {
     value: { key: 'value', name: '超值包', price: 99.9, diamonds: 30000000 },
   },
 } as const;
+
+export type PaymentProductOrderType = 'membership' | 'fuel_pack';
+
+export interface PaymentProduct {
+  product_key: string;
+  name: string;
+  order_type: PaymentProductOrderType;
+  amount_cny: number;
+  diamonds_granted: number;
+  membership_days: number | null;
+  version: number;
+  active: boolean;
+  updated_at: string | null;
+}
+
+export type PricingProduct = {
+  key: string;
+  name: string;
+  price: number;
+  diamonds: number;
+  days?: number;
+  version?: number;
+};
+
+export const FALLBACK_MEMBERSHIP_PRODUCTS: PricingProduct[] = Object.values(PRICING_CONFIG.MEMBERSHIP).map((plan) => ({
+  key: plan.key,
+  name: plan.name,
+  price: plan.price,
+  diamonds: plan.diamonds,
+  days: plan.days,
+}));
+
+export const FALLBACK_FUEL_PACK_PRODUCTS: PricingProduct[] = Object.values(PRICING_CONFIG.FUEL_PACKS).map((pack) => ({
+  key: pack.key,
+  name: pack.name,
+  price: pack.price,
+  diamonds: pack.diamonds,
+}));
+
+const productOrder: Record<string, number> = {
+  monthly: 10,
+  quarterly: 20,
+  yearly: 30,
+  starter: 110,
+  standard: 120,
+  value: 130,
+};
+
+const normalizePaymentProduct = (row: PaymentProduct): PricingProduct | null => {
+  const price = Number(row.amount_cny);
+  const diamonds = Number(row.diamonds_granted);
+  const days = row.membership_days === null ? undefined : Number(row.membership_days);
+  if (!row.product_key || !row.name || !Number.isFinite(price) || price <= 0 || !Number.isFinite(diamonds) || diamonds < 0) {
+    return null;
+  }
+  if (row.order_type === 'membership' && (!Number.isFinite(days) || Number(days) <= 0)) {
+    return null;
+  }
+  return {
+    key: row.product_key,
+    name: row.name,
+    price,
+    diamonds,
+    days,
+    version: Number(row.version || 1),
+  };
+};
+
+export async function listActivePaymentProducts(): Promise<{
+  membership: PricingProduct[];
+  fuelPacks: PricingProduct[];
+}> {
+  const { data, error } = await supabase
+    .from('payment_products')
+    .select('product_key,name,order_type,amount_cny,diamonds_granted,membership_days,version,active,updated_at')
+    .eq('active', true);
+
+  if (error) {
+    log.warn('Failed to load payment products from database, using fallback config', { error: error.message });
+    return {
+      membership: FALLBACK_MEMBERSHIP_PRODUCTS,
+      fuelPacks: FALLBACK_FUEL_PACK_PRODUCTS,
+    };
+  }
+
+  const rows = ((data || []) as PaymentProduct[])
+    .map(normalizePaymentProduct)
+    .filter((product): product is PricingProduct => Boolean(product))
+    .sort((left, right) => (productOrder[left.key] ?? 999) - (productOrder[right.key] ?? 999));
+
+  const membership = rows.filter((product) => typeof product.days === 'number');
+  const fuelPacks = rows.filter((product) => typeof product.days !== 'number');
+
+  return {
+    membership: membership.length ? membership : FALLBACK_MEMBERSHIP_PRODUCTS,
+    fuelPacks: fuelPacks.length ? fuelPacks : FALLBACK_FUEL_PACK_PRODUCTS,
+  };
+}
 
 export type ModelKey = string;
 
@@ -188,12 +286,13 @@ export const getEffectiveProfileDiamonds = (profile: {
   const expired = isMembershipExpired(profile.membership_expires_at);
   const memberDiamonds = expired ? 0 : Number(profile.member_diamonds ?? 0);
   const permanentDiamonds = Number(profile.permanent_diamonds ?? 0);
+  const totalDiamonds = expired ? 0 : memberDiamonds + permanentDiamonds;
 
   return {
     expired,
     memberDiamonds,
     permanentDiamonds,
-    totalDiamonds: memberDiamonds + permanentDiamonds,
+    totalDiamonds,
     membershipType: expired ? 'free' : profile.membership_type ?? 'free',
     membershipExpiresAt: expired ? null : profile.membership_expires_at ?? null,
   };

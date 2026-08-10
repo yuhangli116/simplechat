@@ -15,6 +15,7 @@ import {
   sendGuardError,
 } from './security/requestGuards.js';
 import { checkSecurityControls, sendSecurityBlocked } from './security/securityControls.js';
+import { createPaymentSystem } from './payments/index.js';
 
 const log = createServerLogger('Server');
 
@@ -53,6 +54,14 @@ const createSecuritySupabase = () => {
 };
 
 const securitySupabase = createSecuritySupabase();
+const paymentSystem = createPaymentSystem({
+  env: process.env,
+  supabase: securitySupabase,
+  logger: createServerLogger('Payments'),
+});
+
+// 支付宝回调必须在维护锁之前处理，避免已扣款但未到账。
+app.use('/api/payments', paymentSystem.callbackRouter);
 
 app.use(
   express.json({
@@ -155,6 +164,8 @@ app.use('/api', async (req, res, next) => {
 
   return next();
 });
+
+app.use('/api/payments', paymentSystem.userRouter);
 
 // ─── 日志接收端点（前端批量日志持久化） ───
 
@@ -406,3 +417,11 @@ const port = Number(process.env.PORT || 3001);
 app.listen(port, () => {
   log.info(`SimpleChat server started`, { port, logDir: LOG_DIR, nodeEnv: process.env.NODE_ENV || 'development' });
 });
+
+const shutdown = async () => {
+  await paymentSystem.close();
+  process.exit(0);
+};
+
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);
